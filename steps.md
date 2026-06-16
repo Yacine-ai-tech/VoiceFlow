@@ -62,3 +62,7 @@ major work per EXECUTION_PLAN.
 - **Writing (Week 12):** `drafts/` (gitignored): `blog_post_4_speech_to_intelligence.md`,
   `upwork_proposal_templates.md` (3 niches), `demo_script.md` (60s).
 - Validated earlier on T4: faster-whisper local STT (JFK clip exact, 1.7s).
+
+## Comprehensive QA pass (2026-06-16)
+- **16 tests pass**. §4.10 verified: WhisperX+alignment, Deepgram, AssemblyAI, diarization, TTS.
+- All 6 projects + both packages green; 28/28 STRATEGY §.10 feature claims code-verified.
