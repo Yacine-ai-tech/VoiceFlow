@@ -45,3 +45,20 @@ major work per EXECUTION_PLAN.
 4. **Meeting-analysis eval**: action-item / decision extraction scored against a labeled set
    (route via RAGeval).
 5. **Realtime demo** (streaming STT) + TTS provider A/B (Kokoro / ElevenLabs / OpenAI).
+
+## Phase 4 build pass (2026-06-16, post-GPU)
+- **Assessment:** scaffold was more complete than expected — `meeting_analyzer` (5 analysis
+  types, multi-LLM tiers), `transcription_router` (LOCAL_WHISPERX/Groq/Deepgram/AssemblyAI, gated
+  + fallback), `whisperx_service` (lazy, forced alignment, pyannote→NeMo→skip diarization),
+  `tts_service` (edge-tts), `demo/record.html` (browser MediaRecorder→/pipeline) all real.
+- **BUG (import-unsafe):** `voice_service.py` was a duplicate standalone app that loaded
+  `WhisperModel("tiny")` at **import time** (breaks tests/CI). **Fix:** rewrote it into
+  import-safe service functions `transcribe_audio` / `detect_language` that delegate to the
+  router (lazy model load).
+- **BUG (/tts stub):** `api.py` `/tts` returned a note instead of audio. **Fix:** wired it to
+  `tts_service.generate_speech` → `StreamingResponse(audio/mpeg)`; empty text → 400.
+- **Tests (Week 10 Day 66):** added `test_analyzer.py`, `test_api.py`, `test_voice.py` —
+  import-safe (no keys/models). **Studio pytest: 16 passed.**
+- **Writing (Week 12):** `drafts/` (gitignored): `blog_post_4_speech_to_intelligence.md`,
+  `upwork_proposal_templates.md` (3 niches), `demo_script.md` (60s).
+- Validated earlier on T4: faster-whisper local STT (JFK clip exact, 1.7s).
