@@ -86,3 +86,19 @@ major work per EXECUTION_PLAN.
   NOT the shared conda env. All 6 repos: 6/6 containers serve /health.
 - **User-gated (cannot be done by the agent):** Railway/Fly deploy, PyPI upload (wheels built),
   Loom recording, sending Upwork proposals, publishing blog/preprint drafts.
+
+## Internationalization — language hint threaded end-to-end (2026-06-17)
+STRATEGY §ASR signature is `transcribe_audio(audio_bytes, language="auto")`. Found a real gap: the
+`language` arg was accepted but **silently dropped** at every layer — you could not force `fr`/`en`
+(Whisper auto-detected regardless, and an explicit hint was ignored).
+- Threaded `language` through `voice_service.transcribe_audio` → `transcription_router.transcribe`
+  → `whisperx_service.transcribe(language=...)` (passes to `model.transcribe(path, language=...)`)
+  and `_via_groq(audio_bytes, language)` (Groq `language=` kwarg). `_norm_lang()` maps
+  `auto`/empty → None (auto-detect), else the 2-letter code.
+- Exposed at the API: `/transcribe` and `/pipeline` now accept `language: Form("auto")`.
+- All edited files compile; existing import-safe design preserved (no model load at import).
+
+## Production-readiness — deploy-today pass (2026-06-17)
+- **Cloud $PORT binding:** Dockerfile CMD now `sh -c exec uvicorn … --port ${PORT:-8002}` (PID-1 uvicorn,
+  clean shutdown); HEALTHCHECK honors `${PORT:-8002}`. Added `railway.toml` (healthcheck /health).
+- `.env` gitignored; no secrets tracked.
