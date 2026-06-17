@@ -70,3 +70,8 @@ major work per EXECUTION_PLAN.
 ## Remediation — LIVE behavior validation (2026-06-17)
 - Added `tests/test_live_analyzer.py` (real LLM, skip-if-no-key): **meeting analysis LIVE**: real transcript → structured action_items/decisions/summary/next_steps (real LLM).
 - Addresses the "tests prove imports not behavior" gap with a real, measured run.
+
+## Remediation — ASR WER benchmark (2026-06-17)
+- `eval/run_wer_benchmark.py` + `eval/WER_BENCHMARK.md`: faster-whisper on **LibriSpeech
+  test-clean** (standard) → **WER 2.9% / CER 0.9%** (N=20, base, CPU). Honest: small N, published
+  base ~5-6%. (datasets now needs torchcodec for audio → bypassed via Audio(decode=False)+soundfile.)
