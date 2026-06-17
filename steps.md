@@ -75,3 +75,7 @@ major work per EXECUTION_PLAN.
 - `eval/run_wer_benchmark.py` + `eval/WER_BENCHMARK.md`: faster-whisper on **LibriSpeech
   test-clean** (standard) → **WER 2.9% / CER 0.9%** (N=20, base, CPU). Honest: small N, published
   base ~5-6%. (datasets now needs torchcodec for audio → bypassed via Audio(decode=False)+soundfile.)
+
+## Remediation (GPU) — large-v3 SOTA WER (2026-06-17)
+- whisper-**large-v3** on LibriSpeech test-clean (T4, N=150): **WER 2.2% / CER 0.8%** (vs base 2.9%);
+  near published SOTA ~1.8%. Tuned via model selection (base→large-v3), measured on the standard set.
