@@ -102,3 +102,10 @@ STRATEGY §ASR signature is `transcribe_audio(audio_bytes, language="auto")`. Fo
 - **Cloud $PORT binding:** Dockerfile CMD now `sh -c exec uvicorn … --port ${PORT:-8002}` (PID-1 uvicorn,
   clean shutdown); HEALTHCHECK honors `${PORT:-8002}`. Added `railway.toml` (healthcheck /health).
 - `.env` gitignored; no secrets tracked.
+
+## E2E production-Docker validation (2026-06-17, on the Studio)
+Real end-to-end test: `docker build` the production image from a **cold cache**, `docker run` it
+with a **non-default `PORT=9102`** (+ `--env-file .env`), and poll `/health`. Result:
+**build OK → HEALTH 200 ✓** — confirms the image builds (deps + COPY paths resolve), honors the
+platform `$PORT`, and boots cleanly. All 6 projects passed (OVERALL_RESULT=ALL_PASS). Railway/
+Render build the same Dockerfile, so cloud deploy is validated end-to-end.
