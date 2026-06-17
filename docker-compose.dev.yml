@@ -1,0 +1,48 @@
+# Lightweight dev compose for VoiceFlow — runs in the voiceflow Lightning Studio.
+# ffmpeg is baked into the image (Dockerfile installs via apt).
+# Whisper model (~150MB for 'base') downloads on first run and caches in /root/.cache
+# inside the named volume — persists across container restarts.
+#
+# Usage inside the Studio:
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# Reach it from the laptop: ssh -L 8002:localhost:8002 lightning-voiceflow
+# Then: http://localhost:8002/health
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: voiceflow:dev
+    volumes:
+      - ./core:/app/core
+      - ./services:/app/services
+      - ./api.py:/app/api.py
+      - ./demo:/app/demo
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+      - whisper_cache:/root/.cache/huggingface
+    ports:
+      - "8002:8002"
+    env_file: .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      WHISPER_MODEL: base
+      WHISPER_DEVICE: cpu
+    command: >
+      uvicorn api:app
+      --host 0.0.0.0
+      --port 8002
+      --reload
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  whisper_cache:
+    # Persists Whisper model download across container restarts

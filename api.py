@@ -18,8 +18,11 @@ import asyncio
 import json
 from typing import Any, Dict, Optional
 
+import io
+
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -27,6 +30,7 @@ from core.config import settings
 from core.logger import get_logger
 from services.meeting_analyzer import MeetingAnalyzer
 from services.transcription_router import transcribe as route_transcribe
+from services.tts_service import generate_speech
 
 log = get_logger(__name__)
 
@@ -55,7 +59,8 @@ class AnalyzeRequest(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
-    voice: str = "en-US-AriaNeural"
+    language: str = "en"           # en | fr
+    voice_gender: str = "default"  # default | male | female
     provider: str = "edge"
 
 
@@ -70,26 +75,27 @@ async def health() -> Dict[str, Any]:
 async def transcribe_endpoint(
     file: UploadFile = File(...),
     provider: str = Form("LOCAL_WHISPERX"),
+    language: str = Form("auto"),
     diarize: bool = Form(False),
 ) -> Dict[str, Any]:
     audio = await file.read()
-    return await route_transcribe(audio, provider=provider, diarize=diarize)
+    return await route_transcribe(audio, provider=provider, language=language, diarize=diarize)
 
 
 @app.post("/tts")
-async def tts_endpoint(req: TTSRequest) -> Dict[str, Any]:
-    """Synthesize speech (text → audio).
-
-    For brevity, returns a stub. To wire properly, use edge-tts:
-        from edge_tts import Communicate
-        Communicate(req.text, req.voice).save(path)
-    """
-    return {
-        "voice": req.voice,
-        "provider": req.provider,
-        "text_length": len(req.text),
-        "note": "TTS audio synthesis stub — wire edge-tts/ElevenLabs at deploy time",
-    }
+async def tts_endpoint(req: TTSRequest) -> StreamingResponse:
+    """Synthesize speech (text → audio/mpeg) via edge-tts neural voices (EN/FR, no API key)."""
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="text required")
+    try:
+        audio = await generate_speech(req.text, language=req.language, voice_gender=req.voice_gender)
+    except RuntimeError as e:  # edge-tts not installed
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        log.exception("tts failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    return StreamingResponse(io.BytesIO(audio), media_type="audio/mpeg",
+                             headers={"Content-Disposition": 'inline; filename="speech.mp3"'})
 
 
 @app.post("/analyze")
@@ -102,9 +108,10 @@ async def pipeline_endpoint(
     file: UploadFile = File(...),
     analysis_type: str = Form("meeting"),
     provider: str = Form("LOCAL_WHISPERX"),
+    language: str = Form("auto"),
 ) -> Dict[str, Any]:
     audio = await file.read()
-    trans = await route_transcribe(audio, provider=provider)
+    trans = await route_transcribe(audio, provider=provider, language=language)
     analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type)
     return {"transcript": trans, "analysis": analysis, "analysis_type": analysis_type}
 
