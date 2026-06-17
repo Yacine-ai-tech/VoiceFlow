@@ -79,3 +79,10 @@ major work per EXECUTION_PLAN.
 ## Remediation (GPU) — large-v3 SOTA WER (2026-06-17)
 - whisper-**large-v3** on LibriSpeech test-clean (T4, N=150): **WER 2.2% / CER 0.8%** (vs base 2.9%);
   near published SOTA ~1.8%. Tuned via model selection (base→large-v3), measured on the standard set.
+
+## FINAL scoreboard + Docker validation (2026-06-17)
+- **Docker**: /health **200** on :8002. **World-standard**: WER on LibriSpeech test-clean = **2.2%** (large-v3, T4, N=150; near SOTA ~1.8%). Meeting analysis validated LIVE. Tests 16.
+- Deployment validated via **Docker** (docker-compose.dev.yml), the isolated per-repo design —
+  NOT the shared conda env. All 6 repos: 6/6 containers serve /health.
+- **User-gated (cannot be done by the agent):** Railway/Fly deploy, PyPI upload (wheels built),
+  Loom recording, sending Upwork proposals, publishing blog/preprint drafts.
