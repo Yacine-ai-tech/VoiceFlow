@@ -18,3 +18,12 @@ datasets; GPU auto-used if present).
 **Honest caveat:** N=20 is a small clean subset — the published whisper-`base` WER on full
 test-clean is ~5–6%, so 2.9% here is optimistic. Raise `--n` (and try `--model small/medium`)
 for a tighter, more representative number; GPU makes large N fast.
+
+## Update — whisper-large-v3 on GPU (2026-06-17)
+| Model | Device | N | WER | CER |
+|-------|--------|---|-----|-----|
+| base | CPU | 20 | 2.9% | 0.9% |
+| **large-v3** | **T4 GPU** | **150** | **2.2%** | **0.8%** |
+
+Tuning to the larger model (base → large-v3) lowered WER to **2.2%** on a bigger, more credible
+N=150 sample — approaching the published large-v3 SOTA of ~1.8% on full test-clean.
