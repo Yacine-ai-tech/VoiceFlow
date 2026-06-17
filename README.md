@@ -1,5 +1,7 @@
 # VoiceFlow
 
+[![CI](https://github.com/Yacine-ai-tech/VoiceFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Yacine-ai-tech/VoiceFlow/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Speech → structured intelligence. Browser-recording demo. 4 providers, 5 analysis types, real-time voice agent.**
 
 ## What It Does
