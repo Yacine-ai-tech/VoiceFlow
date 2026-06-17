@@ -19,39 +19,55 @@ log = get_logger(__name__)
 _whisperx = WhisperXService()
 
 
+def _norm_lang(language: Optional[str]) -> Optional[str]:
+    """'auto'/empty -> None (let the model auto-detect); otherwise the 2-letter code."""
+    if not language or language.lower() == "auto":
+        return None
+    return language[:2].lower()
+
+
 async def transcribe(
     audio_bytes: bytes,
     provider: Optional[str] = None,
+    language: str = "auto",
     diarize: bool = False,
 ) -> Dict[str, Any]:
     """
     Transcribe audio via the chosen provider.
 
     Providers: LOCAL_WHISPERX | GROQ_WHISPER | DEEPGRAM | ASSEMBLYAI.
+    ``language`` is a 2-letter code (e.g. 'en', 'fr') or 'auto' to detect it.
     """
     provider = (provider or os.getenv("TRANSCRIPTION_PROVIDER", "LOCAL_WHISPERX")).upper()
+    lang = _norm_lang(language)
 
     if provider == "GROQ_WHISPER" and settings.GROQ_API_KEY:
-        return await _via_groq(audio_bytes)
+        return await _via_groq(audio_bytes, lang)
     if provider == "DEEPGRAM" and settings.DEEPGRAM_API_KEY:
         return await _via_deepgram(audio_bytes)
     if provider == "ASSEMBLYAI" and settings.ASSEMBLYAI_API_KEY:
         return await _via_assemblyai(audio_bytes)
 
     # default: local whisperx
-    return _whisperx.transcribe(audio_bytes, diarize=diarize)
+    return _whisperx.transcribe(audio_bytes, language=lang, diarize=diarize)
 
 
-async def _via_groq(audio_bytes: bytes) -> Dict[str, Any]:
+async def _via_groq(audio_bytes: bytes, language: Optional[str] = None) -> Dict[str, Any]:
     try:
         from groq import Groq  # type: ignore
         client = Groq(api_key=settings.GROQ_API_KEY)
         import io
-        result = client.audio.transcriptions.create(
-            file=("audio.wav", io.BytesIO(audio_bytes)),
-            model="whisper-large-v3-turbo",
-        )
-        return {"text": result.text, "method": "groq_whisper", "diarized": False}
+        kwargs: Dict[str, Any] = {
+            "file": ("audio.wav", io.BytesIO(audio_bytes)),
+            "model": "whisper-large-v3-turbo",
+        }
+        if language:  # omit for auto-detect (Groq detects when language is unset)
+            kwargs["language"] = language
+        result = client.audio.transcriptions.create(**kwargs)
+        return {
+            "text": result.text, "method": "groq_whisper", "diarized": False,
+            "language": language or "auto",
+        }
     except Exception as e:
         log.exception("groq transcription failed: %s", e)
         return {"text": "", "method": "groq_whisper", "error": str(e)}

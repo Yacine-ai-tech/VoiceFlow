@@ -29,7 +29,7 @@ async def transcribe_audio(
     router falls back to local when a provider's key is missing.
     """
     t0 = time.time()
-    result = await _route(audio_bytes, provider=provider, diarize=diarize)
+    result = await _route(audio_bytes, provider=provider, language=language, diarize=diarize)
     if isinstance(result, dict):
         result.setdefault("latency_seconds", round(time.time() - t0, 3))
         result.setdefault("segments", [])

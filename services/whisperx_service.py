@@ -38,12 +38,16 @@ class WhisperXService:
             log.info("Loading WhisperX model: %s (%s)", self.model_name, self.device)
             self._model = whisperx.load_model(self.model_name, device=self.device, compute_type="int8")
 
-    def transcribe(self, audio_bytes: bytes, diarize: bool = False) -> Dict[str, Any]:
+    def transcribe(
+        self, audio_bytes: bytes, language: Optional[str] = None, diarize: bool = False
+    ) -> Dict[str, Any]:
         """
         Transcribe + (optional) diarize an audio clip.
 
         Args:
             audio_bytes: Raw audio bytes (mp3, wav, m4a, etc.).
+            language: 2-letter code (e.g. 'en', 'fr') to force the language, or None to
+                auto-detect it (Whisper detects the spoken language from the audio).
             diarize: If True, attach speaker labels via pyannote (requires HF_TOKEN).
 
         Returns:
@@ -57,8 +61,9 @@ class WhisperXService:
             path = f.name
         try:
             self._ensure_loaded()
-            result = self._model.transcribe(path)  # type: ignore
-            language = result.get("language", "en")
+            # language=None lets Whisper auto-detect; a concrete code forces it.
+            result = self._model.transcribe(path, language=language)  # type: ignore
+            language = result.get("language", language or "en")
 
             # Forced alignment (optional)
             try:

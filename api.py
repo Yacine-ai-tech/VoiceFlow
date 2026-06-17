@@ -75,10 +75,11 @@ async def health() -> Dict[str, Any]:
 async def transcribe_endpoint(
     file: UploadFile = File(...),
     provider: str = Form("LOCAL_WHISPERX"),
+    language: str = Form("auto"),
     diarize: bool = Form(False),
 ) -> Dict[str, Any]:
     audio = await file.read()
-    return await route_transcribe(audio, provider=provider, diarize=diarize)
+    return await route_transcribe(audio, provider=provider, language=language, diarize=diarize)
 
 
 @app.post("/tts")
@@ -107,9 +108,10 @@ async def pipeline_endpoint(
     file: UploadFile = File(...),
     analysis_type: str = Form("meeting"),
     provider: str = Form("LOCAL_WHISPERX"),
+    language: str = Form("auto"),
 ) -> Dict[str, Any]:
     audio = await file.read()
-    trans = await route_transcribe(audio, provider=provider)
+    trans = await route_transcribe(audio, provider=provider, language=language)
     analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type)
     return {"transcript": trans, "analysis": analysis, "analysis_type": analysis_type}
 
