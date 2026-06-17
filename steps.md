@@ -66,3 +66,7 @@ major work per EXECUTION_PLAN.
 ## Comprehensive QA pass (2026-06-16)
 - **16 tests pass**. §4.10 verified: WhisperX+alignment, Deepgram, AssemblyAI, diarization, TTS.
 - All 6 projects + both packages green; 28/28 STRATEGY §.10 feature claims code-verified.
+
+## Remediation — LIVE behavior validation (2026-06-17)
+- Added `tests/test_live_analyzer.py` (real LLM, skip-if-no-key): **meeting analysis LIVE**: real transcript → structured action_items/decisions/summary/next_steps (real LLM).
+- Addresses the "tests prove imports not behavior" gap with a real, measured run.
