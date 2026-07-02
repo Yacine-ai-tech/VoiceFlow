@@ -157,15 +157,47 @@ async def ws_stream(ws: WebSocket):
 
 @app.websocket("/realtime")
 async def ws_realtime(ws: WebSocket):
-    """OpenAI Realtime API bridge scaffold. Production: relay to api.openai.com/v1/realtime."""
+    """OpenAI Realtime API bridge (voice agent) — relays the browser session bidirectionally
+    to wss://api.openai.com/v1/realtime. Needs OPENAI_API_KEY; degrades to an informative
+    message when the key is absent so the socket never dead-ends on an echo."""
     await ws.accept()
+    key = getattr(settings, "OPENAI_API_KEY", "") or ""
+    if not key:
+        await ws.send_json({"type": "error",
+                            "message": "OPENAI_API_KEY not configured — set it to enable the realtime voice agent."})
+        await ws.close()
+        return
+    import inspect
+    import websockets
+    model = getattr(settings, "OPENAI_REALTIME_MODEL", None) or "gpt-4o-realtime-preview"
+    url = f"wss://api.openai.com/v1/realtime?model={model}"
+    headers = [("Authorization", f"Bearer {key}"), ("OpenAI-Beta", "realtime=v1")]
+    # websockets renamed extra_headers -> additional_headers around v13; support both.
+    hkw = "additional_headers" if "additional_headers" in inspect.signature(websockets.connect).parameters else "extra_headers"
     try:
-        await ws.send_json({
-            "type": "ready",
-            "message": "VoiceFlow realtime bridge — wire to OpenAI Realtime API at deploy time",
-        })
-        while True:
-            msg = await ws.receive_text()
-            await ws.send_json({"type": "echo", "data": msg})
+        async with websockets.connect(url, max_size=None, **{hkw: headers}) as upstream:
+            await ws.send_json({"type": "ready", "message": f"Connected to OpenAI Realtime ({model})"})
+
+            async def client_to_openai():
+                try:
+                    while True:
+                        await upstream.send(await ws.receive_text())
+                except Exception:
+                    pass
+
+            async def openai_to_client():
+                try:
+                    async for msg in upstream:
+                        await ws.send_text(msg if isinstance(msg, str) else msg.decode("utf-8", "ignore"))
+                except Exception:
+                    pass
+
+            await asyncio.gather(client_to_openai(), openai_to_client())
     except WebSocketDisconnect:
         log.info("realtime client disconnected")
+    except Exception as e:
+        log.warning("realtime relay error: %s", e)
+        try:
+            await ws.send_json({"type": "error", "message": f"Realtime relay failed: {e}"})
+        except Exception:
+            pass
