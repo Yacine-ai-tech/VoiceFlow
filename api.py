@@ -22,7 +22,7 @@ import io
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -65,6 +65,16 @@ class TTSRequest(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/", include_in_schema=False)
+async def dashboard():
+    """Serve the accessible VoiceFlow dashboard at the root."""
+    import os
+    path = os.path.join(os.path.dirname(__file__), "demo", "index.html")
+    if os.path.exists(path):
+        return FileResponse(path)
+    return {"service": "voiceflow", "docs": "/docs"}
+
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
