@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#070b16" />
+<title>VoiceFlow — Speech → Intelligence</title>
+<meta name="description" content="VoiceFlow — transcription, TTS and meeting/call intelligence over speech. Bilingual EN/FR." />
+<style>
+  :root{
+    --bg:#070b16;--bg2:#0a1020;--surface:#0f1628;--surface2:#151d34;--border:rgba(125,155,215,.16);
+    --border2:rgba(125,155,215,.28);--text:#eaf1ff;--text2:#9fb0d0;--text3:#5f6f8e;
+    --primary:#38bdf8;--cyan:#22d3ee;--indigo:#6366f1;--ok:#2dd4bf;--bad:#fb7185;--warn:#fbbf24;
+    --grad:linear-gradient(120deg,#4f46e5 0%,#2563eb 45%,#22d3ee 100%);
+    --gradline:linear-gradient(120deg,rgba(99,102,241,.5),rgba(34,211,238,.5));
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --r:14px;--sh:0 12px 32px rgba(2,6,18,.55);--ig:inset 0 1px 0 rgba(150,190,255,.06),inset 0 0 26px rgba(34,211,238,.035);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Inter,system-ui,-apple-system,'Segoe UI',sans-serif;color:var(--text);line-height:1.55;
+    background:radial-gradient(1100px 620px at 6% -12%,rgba(79,70,229,.16),transparent 60%),
+      radial-gradient(960px 600px at 102% 2%,rgba(34,211,238,.11),transparent 55%),var(--bg);
+    min-height:100vh;-webkit-font-smoothing:antialiased}
+  a{color:var(--primary);text-decoration:none}
+  .wrap{max-width:1080px;margin:0 auto;padding:34px 22px 60px}
+  header{display:flex;align-items:center;gap:14px;margin-bottom:8px;flex-wrap:wrap}
+  .mark{filter:drop-shadow(0 4px 14px rgba(34,211,238,.45))}
+  .brand{font-family:'Space Grotesk',Inter,sans-serif;font-weight:700;font-size:1.7rem;
+    background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:-.02em}
+  .sub{color:var(--text3);font-size:.72rem;text-transform:uppercase;letter-spacing:.14em}
+  .spacer{flex:1}
+  .badge{display:inline-flex;align-items:center;gap:7px;padding:5px 12px;border:1px solid var(--border2);
+    border-radius:999px;font-size:.78rem;color:var(--text2)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--text3);box-shadow:0 0 0 3px rgba(95,111,142,.18)}
+  .dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(45,212,191,.18)}
+  .dot.bad{background:var(--bad);box-shadow:0 0 0 3px rgba(251,113,133,.18)}
+  .lead{color:var(--text2);font-size:1.02rem;margin:14px 0 26px;max-width:640px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
+  .card{position:relative;background:linear-gradient(180deg,var(--surface),#0d1424) padding-box,var(--gradline) border-box;
+    border:1px solid transparent;border-radius:var(--r);padding:20px 22px;box-shadow:var(--sh),var(--ig)}
+  .card::after{content:'';position:absolute;top:-1px;right:-1px;width:22px;height:22px;pointer-events:none;
+    border-top:2px solid var(--cyan);border-right:2px solid var(--cyan);border-top-right-radius:var(--r);opacity:.32;
+    -webkit-mask:linear-gradient(225deg,#000 0 42%,transparent 42%);mask:linear-gradient(225deg,#000 0 42%,transparent 42%)}
+  .card h2{font-family:'Space Grotesk',Inter,sans-serif;font-size:1.05rem;display:flex;align-items:center;gap:9px;margin-bottom:6px}
+  .card h2 .i{color:var(--cyan)}
+  .hint{color:var(--text3);font-size:.82rem;margin-bottom:14px}
+  label{display:block;font-size:.78rem;font-weight:600;color:var(--text2);margin:10px 0 6px}
+  textarea,input,select{width:100%;padding:10px 13px;background:var(--bg2);border:1px solid var(--border2);
+    border-radius:10px;color:var(--text);font-size:.9rem;font-family:inherit;transition:.15s}
+  textarea{resize:vertical;min-height:88px}
+  textarea:focus,input:focus,select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(56,189,248,.16)}
+  .row{display:flex;gap:10px;flex-wrap:wrap}.row>*{flex:1;min-width:120px}
+  button{display:inline-flex;align-items:center;justify-content:center;gap:8px;margin-top:14px;padding:10px 18px;
+    border:0;border-radius:10px;background:var(--grad);color:#04121f;font-weight:700;font-size:.88rem;cursor:pointer;
+    box-shadow:0 4px 14px rgba(45,140,235,.35);transition:.15s}
+  button:hover{filter:brightness(1.08);transform:translateY(-1px)}
+  button:disabled{opacity:.55;cursor:not-allowed;transform:none}
+  .out{margin-top:14px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:13px;
+    font-family:var(--mono);font-size:.8rem;color:var(--text2);white-space:pre-wrap;max-height:320px;overflow:auto;display:none}
+  .out.show{display:block}
+  audio{width:100%;margin-top:14px;display:none}audio.show{display:block}
+  footer{margin-top:40px;color:var(--text3);font-size:.8rem;text-align:center}
+  .spin{width:14px;height:14px;border:2px solid rgba(4,18,31,.4);border-top-color:#04121f;border-radius:50%;
+    display:inline-block;animation:s .7s linear infinite}@keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <svg class="mark" width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+      <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset=".5" stop-color="#2563eb"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
+      <path d="M20 3.4 33.3 11V26L20 33.6 6.7 26V11Z" stroke="url(#g)" stroke-width="2.2" stroke-linejoin="round"/>
+      <path d="M20 3.4V18M20 18 6.7 11M20 18l13.3-7" stroke="url(#g)" stroke-width="1.3" opacity=".45"/>
+      <path d="M20 27V13.4M14.4 19 20 13.4 25.6 19" stroke="url(#g)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div>
+      <div class="brand">VoiceFlow</div>
+      <div class="sub">Speech → Structured Intelligence</div>
+    </div>
+    <div class="spacer"></div>
+    <span class="badge"><span class="dot" id="hdot"></span><span id="hstat">checking…</span></span>
+  </header>
+  <p class="lead">Turn speech into structured intelligence — neural text-to-speech, transcription, and
+    LLM meeting/call analysis. Bilingual (EN/FR), no API keys required for TTS.</p>
+
+  <div class="grid">
+    <!-- TTS -->
+    <section class="card">
+      <h2><span class="i">🔊</span> Text → Speech</h2>
+      <p class="hint">Neural voices via edge-tts (EN/FR). Type text and synthesize audio instantly.</p>
+      <label for="ttsText">Text</label>
+      <textarea id="ttsText">Welcome to VoiceFlow — speech turned into structured intelligence.</textarea>
+      <div class="row">
+        <div><label for="ttsLang">Language</label><select id="ttsLang"><option value="en">English</option><option value="fr">Français</option></select></div>
+        <div><label for="ttsVoice">Voice</label><select id="ttsVoice"><option value="default">Default</option><option value="female">Female</option><option value="male">Male</option></select></div>
+      </div>
+      <button id="ttsBtn" onclick="doTTS()">Synthesize speech</button>
+      <audio id="ttsAudio" controls></audio>
+      <div class="out" id="ttsOut"></div>
+    </section>
+
+    <!-- Analyze -->
+    <section class="card">
+      <h2><span class="i">🧠</span> Analyze Transcript</h2>
+      <p class="hint">LLM analysis of a meeting/call transcript — summary, decisions, action items, sentiment.</p>
+      <label for="anText">Transcript / notes</label>
+      <textarea id="anText">Alice: We should ship the new pricing next week. Bob: Agreed, I'll prepare the rollout plan by Friday. We were worried about churn but Q3 retention is strong.</textarea>
+      <label for="anType">Analysis type</label>
+      <select id="anType"><option value="meeting">Meeting</option><option value="sales_call">Sales call</option><option value="support_call">Support call</option></select>
+      <button id="anBtn" onclick="doAnalyze()">Analyze</button>
+      <div class="out" id="anOut"></div>
+    </section>
+
+    <!-- Transcribe -->
+    <section class="card">
+      <h2><span class="i">🎙️</span> Transcribe Audio</h2>
+      <p class="hint">Upload an audio file (wav/mp3/m4a) to transcribe. Provider auto-routes to the best available.</p>
+      <label for="trFile">Audio file</label>
+      <input id="trFile" type="file" accept="audio/*" />
+      <label for="trLang">Language</label>
+      <select id="trLang"><option value="auto">Auto-detect</option><option value="en">English</option><option value="fr">Français</option></select>
+      <button id="trBtn" onclick="doTranscribe()">Transcribe</button>
+      <div class="out" id="trOut"></div>
+    </section>
+  </div>
+
+  <footer>VoiceFlow · <a href="/docs">API docs</a> · <a href="/health">health</a> · part of the OmniIntel portfolio</footer>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+function busy(btn,on,label){btn.disabled=on;btn.innerHTML=on?'<span class="spin"></span> '+(label||'Working…'):btn.dataset.label;}
+document.querySelectorAll('button').forEach(b=>b.dataset.label=b.textContent);
+function show(el,txt){el.textContent=typeof txt==='string'?txt:JSON.stringify(txt,null,2);el.classList.add('show');}
+
+(async()=>{try{const r=await fetch('/health');const j=await r.json();
+  $('hdot').className='dot '+(r.ok?'ok':'bad');$('hstat').textContent=r.ok?('online · v'+(j.version||'')):'offline';}
+  catch{ $('hdot').className='dot bad';$('hstat').textContent='offline';}})();
+
+async function doTTS(){const b=$('ttsBtn');busy(b,true,'Synthesizing…');$('ttsOut').classList.remove('show');
+  try{const r=await fetch('/tts',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({text:$('ttsText').value,language:$('ttsLang').value,voice_gender:$('ttsVoice').value})});
+    if(!r.ok){show($('ttsOut'),'Error '+r.status+': '+await r.text());return;}
+    const blob=await r.blob();const a=$('ttsAudio');a.src=URL.createObjectURL(blob);a.classList.add('show');a.play().catch(()=>{});}
+  catch(e){show($('ttsOut'),'Request failed: '+e);}finally{busy(b,false);}}
+
+async function doAnalyze(){const b=$('anBtn');busy(b,true,'Analyzing…');
+  try{const r=await fetch('/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({text:$('anText').value,analysis_type:$('anType').value})});
+    show($('anOut'),await r.json());}
+  catch(e){show($('anOut'),'Request failed: '+e);}finally{busy(b,false);}}
+
+async function doTranscribe(){const b=$('trBtn');const f=$('trFile').files[0];
+  if(!f){show($('trOut'),'Please choose an audio file first.');return;}
+  busy(b,true,'Transcribing…');
+  try{const fd=new FormData();fd.append('file',f);fd.append('language',$('trLang').value);
+    const r=await fetch('/transcribe',{method:'POST',body:fd});show($('trOut'),await r.json());}
+  catch(e){show($('trOut'),'Request failed: '+e);}finally{busy(b,false);}}
+</script>
+</body>
+</html>
