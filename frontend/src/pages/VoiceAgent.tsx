@@ -85,9 +85,9 @@ export default function VoiceAgent() {
             <div>
               <div className="text-sm font-semibold text-body">Realtime agent not configured on this deployment</div>
               <p className="mt-1 max-w-xl text-[13px] leading-6 text-dim">
-                The server answered honestly: <em>{statusMsg}</em> — the relay itself is implemented
-                and live; it activates the moment an <code className="font-mono text-[12px]">OPENAI_API_KEY</code>{" "}
-                is set in the environment. No simulated conversation is shown here by design.
+                The server reported: <em>{statusMsg}</em> The relay is fully implemented and
+                activates the moment an <code className="font-mono text-[12px]">OPENAI_API_KEY</code>{" "}
+                is set in the environment. No simulated conversation is displayed.
               </p>
             </div>
           </div>
