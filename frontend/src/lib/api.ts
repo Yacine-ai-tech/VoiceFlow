@@ -40,6 +40,22 @@ export const api = {
       body: JSON.stringify({ text, analysis_type: analysisType }),
     }),
 
+  analyzeCustom: (text: string, fields: string[], instructions = "") =>
+    req<Analysis>("/analyze/custom", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, fields, instructions }),
+    }),
+
+  relay: (url: string, payload: unknown) =>
+    req<{ ok: boolean; status: number; response: string }>("/integrations/relay", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, payload }),
+    }),
+
+  analytics: () => req<{ counters: Record<string, number>; total_analyses: number; stream_sessions: number; relays: number; by_mode: Record<string, number> }>("/analytics"),
+
   pipeline(file: Blob, filename: string, analysisType: string, provider = "GROQ_WHISPER") {
     const fd = new FormData();
     fd.append("file", file, filename);
