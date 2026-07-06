@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Mic, Sparkles, AudioLines, Volume2, LucideIcon } from "lucide-react";
+import { ArrowRight, Mic, Sparkles, AudioLines, Volume2, LucideIcon } from "lucide-react";
 import { PageHeader } from "../kit/AppShell";
 import { Card } from "../kit/primitives";
 
@@ -35,7 +35,7 @@ export default function Workspace() {
           {["Voice", "Transcription", "AI reasoning", "Structured extraction", "Business intelligence", "Action"].map((s, i, arr) => (
             <span key={s} className="flex items-center gap-2">
               <span className={`rounded-lg border px-2.5 py-1 ${i === 3 ? "border-[var(--accent)] text-body" : "border-line"}`}>{s}</span>
-              {i < arr.length - 1 && <span className="text-muted">→</span>}
+              {i < arr.length - 1 && <ArrowRight size={13} className="text-muted" />}
             </span>
           ))}
         </div>

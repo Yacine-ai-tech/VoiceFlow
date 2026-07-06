@@ -20,7 +20,7 @@ export default function Models() {
           <div className="mt-3 space-y-2 text-[13px] leading-6 text-dim">
             <div><Chip tone="accent">GROQ_WHISPER</Chip> Whisper large on Groq — fast cloud STT (used when a Groq key is configured; the live deployment's default).</div>
             <div><Chip>DEEPGRAM</Chip> / <Chip>ASSEMBLYAI</Chip> alternate cloud providers, key-gated.</div>
-            <div><Chip>LOCAL_WHISPERX</Chip> private on-host WhisperX; when unavailable the API returns a clear error instead of pretending.</div>
+            <div><Chip>LOCAL_WHISPERX</Chip> private on-host WhisperX; the API returns an explicit error when it is unavailable.</div>
           </div>
         </Card>
 
