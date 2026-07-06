@@ -51,6 +51,10 @@ except RuntimeError:
 
 analyzer = MeetingAnalyzer()
 
+# Process-local usage counters (v1 "Analytics" ask) — real, reset on restart.
+from collections import Counter as _Counter
+_stats: "_Counter[str]" = _Counter()
+
 
 class AnalyzeRequest(BaseModel):
     text: str
@@ -114,7 +118,58 @@ async def tts_endpoint(req: TTSRequest) -> StreamingResponse:
 
 @app.post("/analyze")
 async def analyze_endpoint(req: AnalyzeRequest) -> Dict[str, Any]:
+    _stats[f"analyze:{req.analysis_type}"] += 1
     return await analyzer.analyze(req.text, analysis_type=req.analysis_type)
+
+
+class CustomAnalyzeRequest(BaseModel):
+    text: str
+    fields: list[str]
+    instructions: str = ""
+
+
+@app.post("/analyze/custom")
+async def analyze_custom_endpoint(req: CustomAnalyzeRequest) -> Dict[str, Any]:
+    """Extract a caller-defined schema from a transcript (v1 custom extraction schemas)."""
+    if not req.fields:
+        raise HTTPException(status_code=400, detail="fields required")
+    _stats["analyze:custom"] += 1
+    return await analyzer.analyze_custom(req.text, req.fields, req.instructions)
+
+
+class RelayRequest(BaseModel):
+    url: str
+    payload: Dict[str, Any]
+
+
+@app.post("/integrations/relay")
+async def integrations_relay(req: RelayRequest) -> Dict[str, Any]:
+    """Post structured output to any webhook (Slack/Zapier/n8n/custom). This is the real
+    integration surface — the browser can't POST cross-origin, so the server relays it."""
+    if not req.url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="invalid_url")
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(req.url, json=req.payload)
+        _stats["relay"] += 1
+        return {"ok": resp.status_code < 400, "status": resp.status_code,
+                "response": (resp.text or "")[:500]}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"relay_failed: {e}")
+
+
+@app.get("/analytics")
+async def analytics() -> Dict[str, Any]:
+    """Real session usage counters."""
+    total_analyses = sum(v for k, v in _stats.items() if k.startswith("analyze:"))
+    return {
+        "counters": dict(_stats),
+        "total_analyses": total_analyses,
+        "stream_sessions": _stats.get("stream_sessions", 0),
+        "relays": _stats.get("relay", 0),
+        "by_mode": {k.split(":", 1)[1]: v for k, v in _stats.items() if k.startswith("analyze:")},
+    }
 
 
 @app.post("/pipeline")
@@ -127,6 +182,7 @@ async def pipeline_endpoint(
     audio = await file.read()
     trans = await route_transcribe(audio, provider=provider, language=language)
     analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type)
+    _stats["pipeline"] += 1
     return {"transcript": trans, "analysis": analysis, "analysis_type": analysis_type}
 
 
@@ -135,6 +191,7 @@ async def meeting_process(file: UploadFile = File(...)) -> Dict[str, Any]:
     audio = await file.read()
     trans = await route_transcribe(audio)
     analysis = await analyzer.analyze_meeting(trans.get("text", ""))
+    _stats["meeting"] += 1
     return {"transcript": trans, "meeting_notes": analysis}
 
 
@@ -143,20 +200,58 @@ async def call_analyze(file: UploadFile = File(...), call_type: str = Form("sale
     audio = await file.read()
     trans = await route_transcribe(audio)
     analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=call_type)
+    _stats["call"] += 1
     return {"transcript": trans, "call_analysis": analysis, "call_type": call_type}
 
 
 @app.websocket("/stream")
 async def ws_stream(ws: WebSocket):
-    """Streaming transcription scaffold. Production: integrate Whisper streaming or Deepgram WS."""
+    """Real incremental transcription. The browser sends audio chunks as binary frames;
+    the socket accumulates them and re-transcribes the growing buffer via the provider
+    router, emitting partial transcripts. On {"type":"stop"} it returns the final text.
+    Works with any configured STT provider (Groq Whisper on the live deployment)."""
     await ws.accept()
+    buf = bytearray()
+    provider = None
+    seq = 0
     try:
-        await ws.send_json({"type": "ready", "message": "VoiceFlow streaming socket"})
+        await ws.send_json({"type": "ready", "provider": settings.TRANSCRIPTION_PROVIDER,
+                            "message": "Send audio chunks (binary); {\"type\":\"stop\"} to finalize."})
         while True:
-            msg = await ws.receive_text()
-            await ws.send_json({"type": "echo", "data": msg})
+            msg = await ws.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            data = msg.get("bytes")
+            text = msg.get("text")
+            if data:
+                buf.extend(data)
+                seq += 1
+                # Re-transcribe the accumulated buffer periodically (partial result).
+                if seq % 3 == 0 and len(buf) > 8000:
+                    try:
+                        out = await route_transcribe(bytes(buf), provider=provider)
+                        await ws.send_json({"type": "partial", "text": out.get("text", ""),
+                                            "seq": seq, "bytes": len(buf)})
+                    except Exception as e:
+                        await ws.send_json({"type": "warn", "message": f"partial failed: {e}"})
+            elif text:
+                try:
+                    cmd = json.loads(text)
+                except json.JSONDecodeError:
+                    cmd = {"type": text}
+                if cmd.get("type") == "config":
+                    provider = cmd.get("provider") or provider
+                    await ws.send_json({"type": "ack", "provider": provider or settings.TRANSCRIPTION_PROVIDER})
+                elif cmd.get("type") == "stop":
+                    final = await route_transcribe(bytes(buf), provider=provider) if buf else {"text": ""}
+                    await ws.send_json({"type": "final", "text": final.get("text", ""),
+                                        "bytes": len(buf), "language": final.get("language")})
+                    _stats["stream_sessions"] += 1
+                    buf = bytearray(); seq = 0
     except WebSocketDisconnect:
         log.info("stream client disconnected")
+    except Exception as e:
+        log.warning("stream error: %s", e)
 
 
 @app.websocket("/realtime")
