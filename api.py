@@ -70,7 +70,11 @@ class TTSRequest(BaseModel):
 async def dashboard():
     """Serve the accessible VoiceFlow dashboard at the root."""
     import os
-    path = os.path.join(os.path.dirname(__file__), "demo", "index.html")
+    root = os.path.dirname(__file__)
+    spa = os.path.join(root, "frontend", "dist", "index.html")
+    if os.path.exists(spa):
+        return FileResponse(spa)
+    path = os.path.join(root, "demo", "index.html")
     if os.path.exists(path):
         return FileResponse(path)
     return {"service": "voiceflow", "docs": "/docs"}
@@ -201,3 +205,18 @@ async def ws_realtime(ws: WebSocket):
             await ws.send_json({"type": "error", "message": f"Realtime relay failed: {e}"})
         except Exception:
             pass
+
+
+# ─── SPA serving (registered last so every API route above wins) ─────────────
+import os as _os
+
+_DIST = _os.path.join(_os.path.dirname(__file__), "frontend", "dist")
+if _os.path.isdir(_os.path.join(_DIST, "assets")):
+    app.mount("/assets", StaticFiles(directory=_os.path.join(_DIST, "assets")), name="spa_assets")
+
+    @app.get("/{spa_path:path}", include_in_schema=False)
+    async def spa_fallback(spa_path: str):
+        candidate = _os.path.join(_DIST, spa_path)
+        if spa_path and _os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse(_os.path.join(_DIST, "index.html"))
