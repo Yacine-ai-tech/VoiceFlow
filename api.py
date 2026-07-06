@@ -156,7 +156,8 @@ async def integrations_relay(req: RelayRequest) -> Dict[str, Any]:
         return {"ok": resp.status_code < 400, "status": resp.status_code,
                 "response": (resp.text or "")[:500]}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"relay_failed: {e}")
+        detail = str(e) or type(e).__name__
+        raise HTTPException(status_code=502, detail=f"relay_failed: {detail}")
 
 
 @app.get("/analytics")
@@ -256,42 +257,93 @@ async def ws_stream(ws: WebSocket):
 
 @app.websocket("/realtime")
 async def ws_realtime(ws: WebSocket):
-    """OpenAI Realtime API bridge (voice agent) — relays the browser session bidirectionally
-    to wss://api.openai.com/v1/realtime. Needs OPENAI_API_KEY; degrades to an informative
-    message when the key is absent so the socket never dead-ends on an echo."""
+    """OpenAI Realtime API bridge (voice agent) — relays the browser session bidirectionally.
+    Supports both OpenAI and Gemini (translation layer)."""
     await ws.accept()
-    key = getattr(settings, "OPENAI_API_KEY", "") or ""
-    if not key:
+    openai_key = getattr(settings, "OPENAI_API_KEY", "") or ""
+    gemini_key = getattr(settings, "GEMINI_API_KEY", "") or ""
+    
+    if not openai_key and not gemini_key:
         await ws.send_json({"type": "error",
-                            "message": "OPENAI_API_KEY not configured — set it to enable the realtime voice agent."})
+                            "message": "OPENAI_API_KEY or GEMINI_API_KEY not configured — set one to enable the realtime voice agent."})
         await ws.close()
         return
+
     import inspect
     import websockets
-    model = getattr(settings, "OPENAI_REALTIME_MODEL", None) or "gpt-4o-realtime-preview"
-    url = f"wss://api.openai.com/v1/realtime?model={model}"
-    headers = [("Authorization", f"Bearer {key}"), ("OpenAI-Beta", "realtime=v1")]
-    # websockets renamed extra_headers -> additional_headers around v13; support both.
+    import json
+    
+    use_gemini = bool(gemini_key and not openai_key)
+    
+    if use_gemini:
+        url = f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key={gemini_key}"
+        headers = []
+        model_name = "Gemini Multimodal Live"
+    else:
+        model = getattr(settings, "OPENAI_REALTIME_MODEL", None) or "gpt-4o-realtime-preview"
+        url = f"wss://api.openai.com/v1/realtime?model={model}"
+        headers = [("Authorization", f"Bearer {openai_key}"), ("OpenAI-Beta", "realtime=v1")]
+        model_name = f"OpenAI Realtime ({model})"
+
     hkw = "additional_headers" if "additional_headers" in inspect.signature(websockets.connect).parameters else "extra_headers"
     try:
         async with websockets.connect(url, max_size=None, **{hkw: headers}) as upstream:
-            await ws.send_json({"type": "ready", "message": f"Connected to OpenAI Realtime ({model})"})
+            await ws.send_json({"type": "ready", "message": f"Connected to {model_name}"})
 
-            async def client_to_openai():
+            async def client_to_upstream():
                 try:
                     while True:
-                        await upstream.send(await ws.receive_text())
+                        msg_text = await ws.receive_text()
+                        if not use_gemini:
+                            await upstream.send(msg_text)
+                        else:
+                            # Translate OpenAI client format to Gemini clientContent
+                            try:
+                                data = json.loads(msg_text)
+                                if data.get("type") == "conversation.item.create":
+                                    item = data.get("item", {})
+                                    content = item.get("content", [])
+                                    text = "".join(c.get("text", "") for c in content if c.get("type") == "input_text")
+                                    if text:
+                                        gemini_msg = {
+                                            "clientContent": {
+                                                "turns": [{"role": "user", "parts": [{"text": text}]}],
+                                                "turnComplete": True
+                                            }
+                                        }
+                                        await upstream.send(json.dumps(gemini_msg))
+                                # Ignore response.create as Gemini automatically responds
+                            except Exception:
+                                pass
                 except Exception:
                     pass
 
-            async def openai_to_client():
+            async def upstream_to_client():
                 try:
                     async for msg in upstream:
-                        await ws.send_text(msg if isinstance(msg, str) else msg.decode("utf-8", "ignore"))
+                        msg_text = msg if isinstance(msg, str) else msg.decode("utf-8", "ignore")
+                        if not use_gemini:
+                            await ws.send_text(msg_text)
+                        else:
+                            # Translate Gemini serverContent to OpenAI response.text.delta
+                            try:
+                                data = json.loads(msg_text)
+                                if "serverContent" in data:
+                                    model_turn = data["serverContent"].get("modelTurn")
+                                    if model_turn:
+                                        for part in model_turn.get("parts", []):
+                                            if "text" in part:
+                                                await ws.send_json({
+                                                    "type": "response.text.delta",
+                                                    "delta": part["text"]
+                                                })
+                                        await ws.send_json({"type": "response.done"})
+                            except Exception:
+                                pass
                 except Exception:
                     pass
 
-            await asyncio.gather(client_to_openai(), openai_to_client())
+            await asyncio.gather(client_to_upstream(), upstream_to_client())
     except WebSocketDisconnect:
         log.info("realtime client disconnected")
     except Exception as e:
