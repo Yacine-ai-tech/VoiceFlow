@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from core.config import settings
 from core.logger import get_logger
@@ -95,6 +95,35 @@ class MeetingAnalyzer:
             return {"error": "non_json_response", "raw": content[:500] if 'content' in dir() else ""}
         except Exception as e:
             log.exception("analyze (%s) failed: %s", analysis_type, e)
+            return {"error": str(e)}
+
+    async def analyze_custom(self, transcript: str, fields: List[str],
+                             instructions: str = "") -> Dict[str, Any]:
+        """Extract a caller-defined JSON schema from a transcript (v1 custom-schema ask)."""
+        if not _LITELLM:
+            return {"error": "litellm_not_installed"}
+        field_list = ", ".join(f for f in fields if f.strip())
+        prompt = (
+            "Extract the following fields from this transcript as JSON: "
+            f"{field_list}. "
+            + (f"Additional instructions: {instructions}. " if instructions.strip() else "")
+            + "Return ONLY valid JSON with exactly these keys; use null for anything absent."
+        )
+        try:
+            resp = await acompletion(
+                model=settings.LLM_REASONING,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": transcript[:12000]},
+                ],
+                temperature=0.1,
+            )
+            content = resp.choices[0].message.content or "{}"
+            return json.loads(_strip_fences(content))
+        except json.JSONDecodeError:
+            return {"error": "non_json_response", "raw": (content[:500] if "content" in dir() else "")}
+        except Exception as e:
+            log.exception("analyze_custom failed: %s", e)
             return {"error": str(e)}
 
     async def analyze_meeting(self, transcript: str) -> Dict[str, Any]:

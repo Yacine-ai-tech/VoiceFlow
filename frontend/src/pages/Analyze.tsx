@@ -5,6 +5,7 @@ import { Button, Card, EmptyState } from "../kit/primitives";
 import { ExecutionStages, Label, Segmented } from "../kit/misc";
 import { ResultView } from "../components/Results";
 import { Analysis, ANALYSIS_TYPES, api, saveHistory, Transcript } from "../lib/api";
+import { X } from "lucide-react";
 
 const SAMPLE =
   "Sarah: We need the procurement decision before Friday the 20th. The server budget is $45,000 and finance already signed off. " +
@@ -14,6 +15,9 @@ const SAMPLE =
 export default function Analyze() {
   const [tab, setTab] = useState("text");
   const [mode, setMode] = useState("meeting");
+  const [customFields, setCustomFields] = useState<string[]>(["owner", "deadline", "priority", "task"]);
+  const [fieldInput, setFieldInput] = useState("");
+  const [instructions, setInstructions] = useState("");
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
@@ -25,7 +29,9 @@ export default function Analyze() {
     try {
       if (tab === "text") {
         if (!text.trim()) throw new Error("Paste a transcript first");
-        const analysis = await api.analyze(text, mode);
+        const analysis = mode === "custom"
+          ? await api.analyzeCustom(text, customFields, instructions)
+          : await api.analyze(text, mode);
         setResult({ analysis, type: mode });
         saveHistory({ ts: Date.now(), kind: mode, title: text.slice(0, 60) + "…", result: { analysis, analysis_type: mode } });
       } else {
@@ -53,7 +59,24 @@ export default function Analyze() {
             <Segmented value={tab} onChange={(t) => { setTab(t); setErr(""); }} options={[{ value: "text", label: "Transcript text" }, { value: "audio", label: "Audio file" }]} />
             <div>
               <Label>Intelligence mode</Label>
-              <Segmented value={mode} onChange={setMode} options={ANALYSIS_TYPES.map((t) => ({ value: t.value, label: t.label }))} />
+              <Segmented value={mode} onChange={setMode} options={[...ANALYSIS_TYPES.map((t) => ({ value: t.value, label: t.label })), { value: "custom", label: "Custom schema" }]} />
+            {mode === "custom" && tab === "text" && (
+              <div className="mt-3 space-y-2 rounded-xl border border-line bg-surface-2 p-3">
+                <Label>Fields to extract</Label>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {customFields.map((f) => (
+                    <span key={f} className="inline-flex items-center gap-1 rounded-full border border-line-strong px-2.5 py-1 text-xs text-body">
+                      {f}<button onClick={() => setCustomFields((cs) => cs.filter((x) => x !== f))}><X size={11} className="text-muted hover:text-body" /></button>
+                    </span>
+                  ))}
+                  <input value={fieldInput} onChange={(e) => setFieldInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && fieldInput.trim()) { setCustomFields((cs) => [...new Set([...cs, fieldInput.trim()])]); setFieldInput(""); } }}
+                    placeholder="add field + Enter" className="w-32 rounded-input border border-line bg-bg px-2.5 py-1.5 text-xs text-body outline-none focus:border-[var(--accent)]" />
+                </div>
+                <input value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="optional instructions…"
+                  className="mt-1 w-full rounded-input border border-line bg-bg px-3 py-1.5 text-[12.5px] text-body outline-none focus:border-[var(--accent)]" />
+              </div>
+            )}
             </div>
             {tab === "text" ? (
               <textarea
