@@ -30,6 +30,7 @@ class Settings:
     DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
     ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
 
+    TRANSCRIPTION_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "LOCAL_WHISPERX")
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
     WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 
