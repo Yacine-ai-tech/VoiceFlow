@@ -31,7 +31,7 @@ export default function VoiceAgent() {
       const type = String(data.type ?? "unknown");
       setEvents((e) => [{ type, at: Date.now(), raw: data }, ...e].slice(0, 80));
 
-      if (type === "error" && String(data.message ?? "").includes("OPENAI_API_KEY")) {
+      if (type === "error" && (String(data.message ?? "").includes("OPENAI_API_KEY") || String(data.message ?? "").includes("GEMINI_API_KEY"))) {
         setState("unconfigured");
         setStatusMsg(String(data.message));
         return;
@@ -70,7 +70,7 @@ export default function VoiceAgent() {
     <div>
       <PageHeader
         title="Voice agent"
-        sub="A live bridge to the OpenAI Realtime API — the backend relays this browser session bidirectionally over WebSocket."
+        sub="A live bridge to the OpenAI or Gemini Realtime API — the backend relays this browser session bidirectionally over WebSocket."
         actions={
           <Chip tone={state === "ready" ? "ok" : state === "connecting" ? "warn" : "bad"}>
             {state === "ready" ? <PlugZap size={11} /> : <Plug size={11} />} {state}
@@ -86,7 +86,7 @@ export default function VoiceAgent() {
               <div className="text-sm font-semibold text-body">Realtime agent not configured on this deployment</div>
               <p className="mt-1 max-w-xl text-[13px] leading-6 text-dim">
                 The server reported: <em>{statusMsg}</em> The relay is fully implemented and
-                activates the moment an <code className="font-mono text-[12px]">OPENAI_API_KEY</code>{" "}
+                activates the moment an <code className="font-mono text-[12px]">OPENAI_API_KEY</code> or <code className="font-mono text-[12px]">GEMINI_API_KEY</code>{" "}
                 is set in the environment. No simulated conversation is displayed.
               </p>
             </div>
