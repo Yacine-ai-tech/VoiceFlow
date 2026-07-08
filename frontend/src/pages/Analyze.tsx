@@ -23,9 +23,11 @@ export default function Analyze() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [result, setResult] = useState<{ transcript?: Transcript | null; analysis: Analysis; type: string } | null>(null);
+  const [activeStage, setActiveStage] = useState(0);
 
   const run = async () => {
-    setBusy(true); setErr(""); setResult(null);
+    setBusy(true); setErr(""); setResult(null); setActiveStage(0);
+    const timer = setInterval(() => setActiveStage(s => Math.min(s + 1, tab === "audio" ? 3 : 2)), 1800);
     try {
       if (tab === "text") {
         if (!text.trim()) throw new Error("Paste a transcript first");
@@ -42,7 +44,7 @@ export default function Analyze() {
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
-    } finally { setBusy(false); }
+    } finally { clearInterval(timer); setBusy(false); }
   };
 
   return (
@@ -106,7 +108,7 @@ export default function Analyze() {
                 stages={tab === "audio"
                   ? ["Uploading audio", "Transcribing speech", "AI reasoning", "Structuring intelligence"]
                   : ["Sending transcript", "AI reasoning", "Structuring intelligence"]}
-                active={1}
+                active={activeStage}
               />
             </Card>
           ) : result ? (
