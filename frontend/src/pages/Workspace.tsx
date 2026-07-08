@@ -6,7 +6,7 @@ import { Card } from "../kit/primitives";
 const ACTIONS: { to: string; icon: LucideIcon; title: string; desc: string }[] = [
   { to: "/record", icon: Mic, title: "Start recording", desc: "Capture a live conversation and run the full speech-intelligence pipeline." },
   { to: "/analyze", icon: Sparkles, title: "Analyze a conversation", desc: "Paste a transcript or upload audio — extract action items, deal signals, CRM notes." },
-  { to: "/agent", icon: AudioLines, title: "Voice agent", desc: "Live bridge to the OpenAI Realtime API with a transparent event stream." },
+  { to: "/agent", icon: AudioLines, title: "Voice agent", desc: "Live bridge to the OpenAI or Gemini Realtime API with a transparent event stream." },
   { to: "/speech", icon: Volume2, title: "Text to speech", desc: "Neural EN/FR voices synthesized by the backend — no API key needed." },
 ];
 
