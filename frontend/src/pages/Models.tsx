@@ -49,8 +49,8 @@ export default function Models() {
       <Card title="Realtime voice agent" className="mt-5">
         <p className="text-[13px] leading-6 text-dim">
           The <code className="font-mono text-[12px]">/realtime</code> WebSocket is a true bidirectional
-          relay to the OpenAI Realtime API (<code className="font-mono text-[12px]">gpt-4o-realtime-preview</code>).
-          It is key-gated: without <code className="font-mono text-[12px]">OPENAI_API_KEY</code> the server says so
+          relay to the OpenAI Realtime API (<code className="font-mono text-[12px]">gpt-4o-realtime-preview</code>)
+          or the Gemini Multimodal Live API. It is key-gated: without <code className="font-mono text-[12px]">OPENAI_API_KEY</code> or <code className="font-mono text-[12px]">GEMINI_API_KEY</code> the server says so
           explicitly rather than simulating a conversation — see the Voice Agent page.
         </p>
       </Card>
