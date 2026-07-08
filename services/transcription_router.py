@@ -79,7 +79,7 @@ async def _via_groq(audio_bytes: bytes, language: Optional[str] = None) -> Dict[
         client = Groq(api_key=settings.GROQ_API_KEY)
         import io
         kwargs: Dict[str, Any] = {
-            "file": ("audio.wav", io.BytesIO(audio_bytes)),
+            "file": ("audio.webm", io.BytesIO(audio_bytes)),
             "model": "whisper-large-v3-turbo",
         }
         if language:  # omit for auto-detect (Groq detects when language is unset)
@@ -96,9 +96,10 @@ async def _via_groq(audio_bytes: bytes, language: Optional[str] = None) -> Dict[
 
 async def _via_deepgram(audio_bytes: bytes) -> Dict[str, Any]:
     try:
-        from deepgram import DeepgramClient  # type: ignore
+        from deepgram import DeepgramClient, PrerecordedOptions  # type: ignore
         dg = DeepgramClient(api_key=settings.DEEPGRAM_API_KEY)
-        result = dg.listen.rest.v("1").transcribe_file({"buffer": audio_bytes})
+        options = PrerecordedOptions(model="nova-2", smart_format=True)
+        result = dg.listen.rest.v("1").transcribe_file({"buffer": audio_bytes}, options)
         text = result["results"]["channels"][0]["alternatives"][0]["transcript"]
         return {"text": text, "method": "deepgram", "diarized": False}
     except Exception as e:
