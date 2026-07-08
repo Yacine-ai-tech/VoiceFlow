@@ -21,6 +21,7 @@ export default function Record() {
   const [blob, setBlob] = useState<Blob | null>(null);
   const [liveText, setLiveText] = useState("");
   const [wsState, setWsState] = useState<"off" | "connecting" | "live" | "error">("off");
+  const [activeStage, setActiveStage] = useState(0);
 
   const mediaRef = useRef<MediaRecorder | null>(null);
   const chunks = useRef<BlobPart[]>([]);
@@ -131,7 +132,8 @@ export default function Record() {
   }, [phase, start, stop]);
 
   const process = async (b: Blob) => {
-    setPhase("processing"); setErr("");
+    setPhase("processing"); setErr(""); setActiveStage(0);
+    const timer = setInterval(() => setActiveStage(s => Math.min(s + 1, 3)), 2000);
     try {
       const res = await api.pipeline(b, "recording.webm", mode);
       setResult(res);
@@ -140,6 +142,8 @@ export default function Record() {
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setPhase("error");
+    } finally {
+      clearInterval(timer);
     }
   };
 
@@ -199,7 +203,7 @@ export default function Record() {
           )}
 
           {phase === "processing" && (
-            <ExecutionStages stages={["Uploading audio", "Transcribing speech", "AI reasoning", "Structuring intelligence"]} active={1} />
+            <ExecutionStages stages={["Uploading audio", "Transcribing speech", "AI reasoning", "Structuring intelligence"]} active={activeStage} />
           )}
         </div>
       </Card>
