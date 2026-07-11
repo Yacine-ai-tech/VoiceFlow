@@ -1,0 +1,25 @@
+# Render Blueprint — disaster-recovery / one-click redeploy. Builds from ./Dockerfile (honors $PORT),
+# health-checks /health. No secrets here: every key is `sync: false` (set values in the dashboard).
+# Runs on Render free: local WhisperX is lazy-loaded; for cloud transcription set a provider key
+# (GROQ/DEEPGRAM/ASSEMBLYAI) and TRANSCRIPTION_PROVIDER so no heavy model loads on a 512MB host.
+services:
+  - type: web
+    name: voiceflow
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    plan: free
+    autoDeploy: false
+    envVars:
+      - key: GROQ_API_KEY          # meeting/general analysis + Groq Whisper transcription
+        sync: false
+      - key: ANTHROPIC_API_KEY     # sales/support/interview analysis (Claude)
+        sync: false
+      - key: TRANSCRIPTION_PROVIDER # e.g. groq — avoids loading local WhisperX on free tier
+        sync: false
+      - key: DEEPGRAM_API_KEY      # optional transcription provider
+        sync: false
+      - key: ASSEMBLYAI_API_KEY    # optional transcription provider
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
