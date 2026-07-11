@@ -36,7 +36,7 @@ class Settings:
     WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 
     CORS_ALLOWED_ORIGINS = [
-        o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8002").split(",")
+        o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "*").split(",")
         if o.strip()
     ]
 
