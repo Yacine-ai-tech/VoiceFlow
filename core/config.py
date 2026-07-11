@@ -26,15 +26,17 @@ class Settings:
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     HF_TOKEN = os.getenv("HF_TOKEN", "")
     DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
     ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
 
+    TRANSCRIPTION_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "LOCAL_WHISPERX")
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
     WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 
     CORS_ALLOWED_ORIGINS = [
-        o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8002").split(",")
+        o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "*").split(",")
         if o.strip()
     ]
 
