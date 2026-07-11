@@ -6,6 +6,7 @@ Falls back to local whisperx if no API keys are configured.
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 from typing import Any, Dict, Optional
 
@@ -17,6 +18,11 @@ log = get_logger(__name__)
 
 
 _whisperx = WhisperXService()
+
+# WhisperX is an optional heavy dependency. On slim cloud images (e.g. the 512 MB
+# Render tier) it isn't installed, so the local path can only return a stub. Detect
+# this once so transcribe() can transparently fall back to a configured cloud STT.
+_WHISPERX_AVAILABLE = importlib.util.find_spec("whisperx") is not None
 
 
 def _norm_lang(language: Optional[str]) -> Optional[str]:
@@ -48,7 +54,22 @@ async def transcribe(
     if provider == "ASSEMBLYAI" and settings.ASSEMBLYAI_API_KEY:
         return await _via_assemblyai(audio_bytes)
 
-    # default: local whisperx
+    # Default path: local WhisperX. If it's installed (local/dev), use it. Otherwise
+    # (slim cloud image) auto-fall back to the first configured cloud STT so the
+    # composite endpoints (/pipeline, /meeting/process, /call/analyze) and the default
+    # /transcribe still produce a real transcript in production instead of a stub.
+    if _WHISPERX_AVAILABLE:
+        return _whisperx.transcribe(audio_bytes, language=lang, diarize=diarize)
+    if settings.GROQ_API_KEY:
+        log.info("WhisperX unavailable — falling back to Groq Whisper")
+        return await _via_groq(audio_bytes, lang)
+    if settings.DEEPGRAM_API_KEY:
+        log.info("WhisperX unavailable — falling back to Deepgram")
+        return await _via_deepgram(audio_bytes)
+    if settings.ASSEMBLYAI_API_KEY:
+        log.info("WhisperX unavailable — falling back to AssemblyAI")
+        return await _via_assemblyai(audio_bytes)
+    # Nothing available — return the WhisperX stub (carries a clear error message).
     return _whisperx.transcribe(audio_bytes, language=lang, diarize=diarize)
 
 
@@ -58,7 +79,7 @@ async def _via_groq(audio_bytes: bytes, language: Optional[str] = None) -> Dict[
         client = Groq(api_key=settings.GROQ_API_KEY)
         import io
         kwargs: Dict[str, Any] = {
-            "file": ("audio.wav", io.BytesIO(audio_bytes)),
+            "file": ("audio.webm", io.BytesIO(audio_bytes)),
             "model": "whisper-large-v3-turbo",
         }
         if language:  # omit for auto-detect (Groq detects when language is unset)
@@ -75,9 +96,10 @@ async def _via_groq(audio_bytes: bytes, language: Optional[str] = None) -> Dict[
 
 async def _via_deepgram(audio_bytes: bytes) -> Dict[str, Any]:
     try:
-        from deepgram import DeepgramClient  # type: ignore
+        from deepgram import DeepgramClient, PrerecordedOptions  # type: ignore
         dg = DeepgramClient(api_key=settings.DEEPGRAM_API_KEY)
-        result = dg.listen.rest.v("1").transcribe_file({"buffer": audio_bytes})
+        options = PrerecordedOptions(model="nova-2", smart_format=True)
+        result = dg.listen.rest.v("1").transcribe_file({"buffer": audio_bytes}, options)
         text = result["results"]["channels"][0]["alternatives"][0]["transcript"]
         return {"text": text, "method": "deepgram", "diarized": False}
     except Exception as e:
