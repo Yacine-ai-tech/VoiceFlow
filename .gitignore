@@ -45,3 +45,8 @@ STATUS.md
 # Writing drafts (publish later, not in repo)
 drafts/
 steps.md
+
+# Redesigned SPA: built bundle IS deployed (Render Docker copies the repo)
+frontend/node_modules/
+!frontend/dist/
+!frontend/dist/**
