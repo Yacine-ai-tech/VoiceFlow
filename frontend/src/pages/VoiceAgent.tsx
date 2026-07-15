@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AudioLines, Plug, PlugZap, SendHorizontal, TriangleAlert } from "lucide-react";
+import { AudioLines, Plug, PlugZap, SendHorizontal, TriangleAlert, Mic, MicOff } from "lucide-react";
 import { PageHeader } from "../kit/AppShell";
 import { Button, Card, Chip, EmptyState } from "../kit/primitives";
 import { JSONViewer } from "../kit/JSONViewer";
@@ -9,7 +9,7 @@ import { JSONViewer } from "../kit/JSONViewer";
    {type:"error"} and closes — we show that, not a fake demo. Text-mode
    conversation uses standard Realtime events. */
 
-type Msg = { role: "user" | "assistant"; text: string };
+type Msg = { role: "user" | "assistant"; text: string; isAudio?: boolean };
 
 export default function VoiceAgent() {
   const [state, setState] = useState<"connecting" | "ready" | "unconfigured" | "closed" | "error">("connecting");
@@ -17,8 +17,12 @@ export default function VoiceAgent() {
   const [events, setEvents] = useState<{ type: string; at: number; raw: unknown }[]>([]);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
+  const [isRecording, setIsRecording] = useState(false);
+  
   const wsRef = useRef<WebSocket | null>(null);
   const draft = useRef("");
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   const connect = () => {
     setState("connecting"); setEvents([]); setMsgs([]);
@@ -46,13 +50,13 @@ export default function VoiceAgent() {
       }
       if (type === "response.done") draft.current = "";
     };
-    ws.onclose = () => setState((s) => (s === "unconfigured" ? s : "closed"));
-    ws.onerror = () => setState((s) => (s === "unconfigured" ? s : "error"));
+    ws.onclose = () => { setState((s) => (s === "unconfigured" ? s : "closed")); stopVoice(); };
+    ws.onerror = () => { setState((s) => (s === "unconfigured" ? s : "error")); stopVoice(); };
   };
 
-  useEffect(() => { connect(); return () => wsRef.current?.close(); /* eslint-disable-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { connect(); return () => { wsRef.current?.close(); stopVoice(); }; /* eslint-disable-line react-hooks/exhaustive-deps */ }, []);
 
-  const send = () => {
+  const sendText = () => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== 1 || !input.trim()) return;
     const text = input.trim();
@@ -64,6 +68,53 @@ export default function VoiceAgent() {
       item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
     }));
     ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["text"] } }));
+  };
+
+  const startVoice = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      audioCtxRef.current = audioCtx;
+      const source = audioCtx.createMediaStreamSource(stream);
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      
+      processor.onaudioprocess = (e) => {
+        const inputData = e.inputBuffer.getChannelData(0);
+        const pcm16 = new Int16Array(inputData.length);
+        for (let i = 0; i < inputData.length; i++) {
+          pcm16[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
+        }
+        const buffer = new Uint8Array(pcm16.buffer);
+        let binary = '';
+        for (let i = 0; i < buffer.byteLength; i++) { binary += String.fromCharCode(buffer[i]); }
+        const base64 = btoa(binary);
+        
+        const ws = wsRef.current;
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64 }));
+        }
+      };
+      source.connect(processor);
+      processor.connect(audioCtx.destination);
+      setIsRecording(true);
+      setMsgs((m) => [...m, { role: "user", text: "🎙️ (Speaking...)", isAudio: true }]);
+    } catch (err) {
+      console.error(err);
+      alert("Microphone access denied or not available.");
+    }
+  };
+
+  const stopVoice = () => {
+    if (!isRecording) return;
+    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    if (audioCtxRef.current) audioCtxRef.current.close();
+    setIsRecording(false);
+    const ws = wsRef.current;
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+      ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio", "text"] } }));
+    }
   };
 
   return (
@@ -97,25 +148,33 @@ export default function VoiceAgent() {
           <Card title="Conversation" noPad className="flex min-h-[420px] flex-col overflow-hidden">
             <div className="flex-1 space-y-3 overflow-y-auto p-5">
               {msgs.length === 0 ? (
-                <EmptyState icon={AudioLines} title={state === "ready" ? "Connected — say something" : "Waiting for connection…"} hint="Text-mode conversation over the live Realtime relay." />
+                <EmptyState icon={AudioLines} title={state === "ready" ? "Connected — say something" : "Waiting for connection…"} hint="Speak or type to test the real-time agent." />
               ) : (
                 msgs.map((m, i) => (
-                  <div key={i} className={`max-w-[85%] rounded-2xl border border-line px-4 py-2.5 text-[13.5px] leading-6 ${m.role === "user" ? "ml-auto bg-surface-2 text-body" : "bg-surface text-dim"}`}>
+                  <div key={i} className={`max-w-[85%] rounded-2xl border border-line px-4 py-2.5 text-[13.5px] leading-6 ${m.role === "user" ? "ml-auto bg-surface-2 text-body" : "bg-surface text-dim"} ${m.isAudio ? 'font-medium italic text-[var(--accent)]' : ''}`}>
                     {m.text}
                   </div>
                 ))
               )}
             </div>
             <div className="flex items-center gap-2 border-t border-line p-3">
+              <Button 
+                variant={isRecording ? "primary" : "secondary"} 
+                onClick={isRecording ? stopVoice : startVoice} 
+                disabled={state !== "ready"}
+                style={isRecording ? { backgroundColor: 'var(--danger)', borderColor: 'var(--danger)', color: '#fff' } : {}}
+              >
+                {isRecording ? <MicOff size={16} /> : <Mic size={16} />}
+              </Button>
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && send()}
-                disabled={state !== "ready"}
-                placeholder={state === "ready" ? "Message the agent…" : "Not connected"}
+                onKeyDown={(e) => e.key === "Enter" && sendText()}
+                disabled={state !== "ready" || isRecording}
+                placeholder={state === "ready" ? (isRecording ? "Listening..." : "Message the agent…") : "Not connected"}
                 className="min-w-0 flex-1 rounded-input border border-line-strong bg-surface-2 px-3 py-2 text-sm text-body outline-none focus:border-[var(--accent)] disabled:opacity-40"
               />
-              <Button onClick={send} disabled={state !== "ready"}><SendHorizontal size={14} /></Button>
+              <Button onClick={sendText} disabled={state !== "ready" || isRecording}><SendHorizontal size={14} /></Button>
               {(state === "closed" || state === "error") && (
                 <Button variant="secondary" onClick={connect}>Reconnect</Button>
               )}

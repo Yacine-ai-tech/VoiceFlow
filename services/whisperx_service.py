@@ -95,4 +95,5 @@ class WhisperXService:
             try:
                 os.unlink(path)
             except Exception:
+                import logging; logging.error('Unhandled exception', exc_info=True)
                 pass

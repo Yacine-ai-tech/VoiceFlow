@@ -37,6 +37,25 @@ log = get_logger(__name__)
 app = FastAPI(title="VoiceFlow", version="0.1.0",
               description="Speech → structured intelligence.")
 
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import os as _os
+
+@app.middleware("http")
+async def verify_internal_token(request: Request, call_next):
+    # Allow health checks and public auth routes
+    if request.url.path in ["/health", "/docs", "/openapi.json", "/api/redoc"] or request.url.path.startswith("/api/v1/auth/"):
+        return await call_next(request)
+        
+    token = request.headers.get("X-OmniIntel-Internal-Token")
+    expected_token = _os.environ.get("OMNIINTEL_INTERNAL_TOKEN", "default-dev-token")
+    
+    if token != expected_token and _os.environ.get("REQUIRE_INTERNAL_TOKEN", "true").lower() == "true":
+        return JSONResponse(status_code=403, content={"detail": "Missing or invalid X-OmniIntel-Internal-Token"})
+        
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ALLOWED_ORIGINS or ["*"],
@@ -314,8 +333,10 @@ async def ws_realtime(ws: WebSocket):
                                         await upstream.send(json.dumps(gemini_msg))
                                 # Ignore response.create as Gemini automatically responds
                             except Exception:
+                                import logging; logging.error('Unhandled exception', exc_info=True)
                                 pass
                 except Exception:
+                    import logging; logging.error('Unhandled exception', exc_info=True)
                     pass
 
             async def upstream_to_client():
@@ -339,8 +360,10 @@ async def ws_realtime(ws: WebSocket):
                                                 })
                                         await ws.send_json({"type": "response.done"})
                             except Exception:
+                                import logging; logging.error('Unhandled exception', exc_info=True)
                                 pass
                 except Exception:
+                    import logging; logging.error('Unhandled exception', exc_info=True)
                     pass
 
             await asyncio.gather(client_to_upstream(), upstream_to_client())
@@ -351,6 +374,7 @@ async def ws_realtime(ws: WebSocket):
         try:
             await ws.send_json({"type": "error", "message": f"Realtime relay failed: {e}"})
         except Exception:
+            import logging; logging.error('Unhandled exception', exc_info=True)
             pass
 
 
