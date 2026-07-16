@@ -17,11 +17,12 @@ export const ANALYSIS_TYPES = [
   { value: "general", label: "General" },
 ] as const;
 
+const BASE = import.meta.env.VITE_API_BASE_URL || "";
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function req<T>(path: string, init?: RequestInit, retryCount = 0): Promise<T> {
   try {
-    const res = await fetch(path, init);
+    const res = await fetch(BASE + path, init);
     if (!res.ok) {
       if (res.status >= 500 && retryCount < 5) {
         await delay(2000 * (retryCount + 1));
@@ -87,7 +88,7 @@ export const api = {
 
   /** Returns an object URL for the synthesized MP3. */
   async tts(text: string, language: "en" | "fr", voiceGender: string): Promise<string> {
-    const res = await fetch("/tts", {
+    const res = await fetch(BASE + "/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, language, voice_gender: voiceGender }),
