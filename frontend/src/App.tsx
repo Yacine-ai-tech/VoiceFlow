@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Code2, useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { LayoutGrid, Mic, Sparkles, AudioLines, Volume2, History as HistoryIcon, Cpu, Webhook, BarChart3 } from "lucide-react";
 import { AppShell } from "./kit/AppShell";
@@ -13,6 +13,7 @@ import History from "./pages/History";
 import Models from "./pages/Models";
 import Integrations from "./pages/Integrations";
 import Analytics from "./pages/Analytics";
+import ApiDocs from "./pages/ApiDocs";
 
 const NAV = [
   { to: "/", label: "Workspace", icon: LayoutGrid },
@@ -24,6 +25,7 @@ const NAV = [
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/history", label: "History", icon: HistoryIcon },
   { to: "/models", label: "Models", icon: Cpu },
+  { to: "/api-docs", label: "API Docs", icon: Code2 },
 ];
 
 export default function App() {
@@ -60,7 +62,8 @@ export default function App() {
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/history" element={<History />} />
             <Route path="/models" element={<Models />} />
-            <Route path="*" element={<Workspace />} />
+            <Route path="/api-docs" element={<ApiDocs />} />
+                  <Route path="*" element={<Workspace />} />
           </Routes>
         )}
       </AppShell>
