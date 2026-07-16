@@ -78,4 +78,4 @@ This project collects anonymous, GDPR-compliant startup pings to help the author
 
 
 <!-- Scarf Analytics Pixel -->
-<img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=voiceflow-yacine-ai-projects" />
+<img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=6a393ceb-5b77-4c80-9358-7b71bef0db7c" />
