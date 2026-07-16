@@ -44,7 +44,7 @@ async def transcribe(
     Providers: LOCAL_WHISPERX | GROQ_WHISPER | DEEPGRAM | ASSEMBLYAI.
     ``language`` is a 2-letter code (e.g. 'en', 'fr') or 'auto' to detect it.
     """
-    provider = (provider or os.getenv("TRANSCRIPTION_PROVIDER", "LOCAL_WHISPERX")).upper()
+    provider = (provider or os.getenv("TRANSCRIPTION_PROVIDER", "DEEPGRAM")).upper()
     lang = _norm_lang(language)
 
     if provider == "GROQ_WHISPER" and settings.GROQ_API_KEY:

@@ -5,6 +5,7 @@
 **Speech → structured intelligence. Browser-recording demo. 4 providers, 5 analysis types, real-time voice agent.**
 > 🔗 **Live demo (record in your browser):** https://voiceflow.ysiddo-ai-projects.app/demo
 > On-demand backend (first request ~30–60 s to wake).
+> Self-hosting: see [SELF_HOSTING.md](SELF_HOSTING.md).
 
 ## What It Does
 
@@ -79,3 +80,10 @@ This project collects anonymous, GDPR-compliant startup pings to help the author
 
 <!-- Scarf Analytics Pixel -->
 <img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=6a393ceb-5b77-4c80-9358-7b71bef0db7c" />
+
+## Licensing
+This project is licensed under the [AGPL-3.0 License](LICENSE).
+
+**Commercial Use:** If you wish to use this software commercially without releasing your own source code, please see [COMMERCIAL.md](COMMERCIAL.md) to obtain a commercial license.
+
+**Telemetry:** See [TELEMETRY.md](TELEMETRY.md) for our privacy-first data practices.
