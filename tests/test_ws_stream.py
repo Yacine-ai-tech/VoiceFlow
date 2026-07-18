@@ -6,8 +6,8 @@ client = TestClient(app)
 
 @pytest.mark.unit
 def test_ws_stream():
-    with client.websocket_connect("/stream") as websocket:
-        websocket.send_bytes(b"dummy audio data")
+    import os
+    with client.websocket_connect("/stream", headers={"X-OmniIntel-Internal-Token": os.environ.get("OMNIINTEL_INTERNAL_TOKEN", "omni-test-token")}) as websocket:
         data = websocket.receive_json()
-        assert "partial" in data
-        assert data["partial"] == "transcript stub"
+        assert data.get("type") == "ready"
+        assert "provider" in data
