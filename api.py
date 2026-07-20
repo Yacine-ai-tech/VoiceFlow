@@ -92,6 +92,13 @@ try:
 except RuntimeError:
     log.warning("demo/ directory not found")
 
+try:
+    _assets_dir = _os.path.join(_os.path.dirname(__file__), "frontend", "dist", "assets")
+    if _os.path.exists(_assets_dir):
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+except Exception as e:
+    log.warning("assets mount failed: %s", e)
+
 analyzer = MeetingAnalyzer()
 
 # Process-local usage counters (v1 "Analytics" ask) — real, reset on restart.
