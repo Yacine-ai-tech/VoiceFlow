@@ -87,10 +87,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-try:
-    app.mount("/demo", StaticFiles(directory="demo", html=True), name="demo")
-except RuntimeError:
-    log.warning("demo/ directory not found")
+
 
 try:
     _assets_dir = _os.path.join(_os.path.dirname(__file__), "frontend", "dist", "assets")
@@ -128,9 +125,6 @@ async def dashboard():
     spa = os.path.join(root, "frontend", "dist", "index.html")
     if os.path.exists(spa):
         return FileResponse(spa)
-    path = os.path.join(root, "demo", "index.html")
-    if os.path.exists(path):
-        return FileResponse(path)
     return {"service": "voiceflow", "docs": "/docs"}
 
 
