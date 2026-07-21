@@ -5,8 +5,8 @@
 
 [![CI](https://github.com/Yacine-ai-tech/VoiceFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Yacine-ai-tech/VoiceFlow/actions/workflows/ci.yml) [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
-**Speech → structured intelligence. Browser-recording demo. 4 providers, 5 analysis types, real-time voice agent.**
-> 🔗 **Live demo (record in your browser):** https://voiceflow.ysiddo-ai-projects.app/demo
+**Speech → structured intelligence. Complete web dashboard. 4 providers, 5 analysis types, real-time voice agent.**
+> 🔗 **Live web dashboard (record in your browser):** https://voiceflow.ysiddo-ai-projects.app/
 > On-demand backend (first request ~30–60 s to wake).
 > Self-hosting: see [SELF_HOSTING.md](SELF_HOSTING.md).
 
@@ -20,7 +20,7 @@
   - `interview` → Claude Sonnet 4.6
   - `general` → Groq Llama 3.3
 - **Diarization fallback chain**: pyannote 3.x → NeMo → no-diarization
-- **Browser-recording demo** at `/demo`
+- **Full web dashboard** at `/`
 - **OpenAI Realtime API bridge** at `WS /realtime`
 
 ## Quick Start
@@ -32,7 +32,7 @@ cp .env.example .env  # add GROQ_API_KEY at minimum
 uvicorn api:app --port 8002
 ```
 
-Open http://localhost:8002/demo
+Open http://localhost:8002/
 
 ## Architecture
 
@@ -64,7 +64,7 @@ Open http://localhost:8002/demo
 
 ## License
 
-MIT
+AGPL-3.0
 
 ## ⚖️ License & Enterprise Use (Dual-License)
 
