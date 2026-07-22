@@ -1,0 +1,45 @@
+AlertTriangle
+AlertTriangle Activity
+AlertTriangle X ClipboardCopy
+AudioLines
+BarChart3
+BookOpen FileAudio
+Boxes History as HistoryIcon
+BrainCircuit
+Check
+Check LayoutGrid
+ChevronDown
+ChevronRight
+Code2
+Copy
+Copy LucideIcon
+Cpu
+Globe
+History as HistoryIcon
+Inbox LucideIcon
+Layers ArrowRight
+Loader2
+LucideIcon Check
+LucideIcon Terminal
+Menu
+Mic
+MicOff AudioWaveform
+Plug
+PlugZap
+Radio AudioLines
+RefreshCw
+RefreshCw Check
+RotateCw
+Send
+SendHorizontal
+Shield
+Slack
+Sparkles
+Square
+Trash2 Mic
+TriangleAlert
+Volume2
+Volume2 Volume2
+Webhook
+X Webhook
+Zap
