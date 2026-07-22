@@ -23,15 +23,15 @@ async def main():
     import io
     import jiwer
     from datasets import Audio, load_dataset
-    from src.core.config import settings
-    from src.services.transcription_router import route_transcription
+    from core.config import settings
+    from services.transcription_router import transcribe
 
     if not settings.DEEPGRAM_API_KEY:
         print("Missing DEEPGRAM_API_KEY")
         sys.exit(1)
 
     print(f"\nWER benchmark — LibriSpeech test-clean — model=DEEPGRAM N={a.n}")
-    ds = load_dataset("librispeech_asr", "clean", split="test", streaming=True)
+    ds = load_dataset("openslr/librispeech_asr", "clean", split="test", streaming=True, trust_remote_code=True)
     ds = ds.cast_column("audio", Audio(decode=False))
 
     refs, hyps = [], []
@@ -48,7 +48,8 @@ async def main():
         # Call deepgram via our router
         # route_transcription signature: async def route_transcription(audio_bytes: bytes, filename: str, provider: str = None) -> str
         try:
-            transcript = await route_transcription(audio_bytes, "test.flac", provider="DEEPGRAM")
+            res = await transcribe(audio_bytes, "test.flac", provider="DEEPGRAM")
+            transcript = res.get("text", "")
         except Exception as e:
             print(f"Error on {i}: {e}")
             transcript = ""

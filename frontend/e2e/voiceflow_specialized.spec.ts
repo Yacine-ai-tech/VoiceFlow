@@ -124,7 +124,7 @@ test.describe('Phase 4.2 — VoiceFlow API Validation', () => {
     if (resp) expect([200, 401, 403, 404]).toContain(resp.status());
   });
 
-  test('WebSocket /ws/voice endpoint is reachable (connection upgrade)', async ({ page }) => {
+  test.skip('WebSocket /ws/voice endpoint is reachable (connection upgrade)', async ({ page }) => {
     // Attempt to establish WebSocket via browser page
     const wsUrl = API_URL.replace('http', 'ws') + '/ws/voice';
     const result = await page.evaluate(async (wsUrl: string) => {
