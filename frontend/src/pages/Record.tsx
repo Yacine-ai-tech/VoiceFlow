@@ -44,8 +44,15 @@ export default function Record() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
       // open the live transcription socket
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      const ws = new WebSocket(`${proto}://${location.host}/stream`);
+      let wsUrl;
+      const baseEnv = import.meta.env.VITE_API_BASE_URL;
+      if (baseEnv) {
+        wsUrl = baseEnv.replace(/^http/, "ws") + "/stream";
+      } else {
+        const proto = location.protocol === "https:" ? "wss" : "ws";
+        wsUrl = `${proto}://${location.host}/stream`;
+      }
+      const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
       setWsState("connecting");

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import * as Recharts from "recharts";
+const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } = Recharts;
 import { Activity, Mic, Send, RefreshCw, Layers } from "lucide-react";
 import { PageHeader } from "../kit/AppShell";
 import { Button, Card, EmptyState, Skeleton, StatTile } from "../kit/primitives";
