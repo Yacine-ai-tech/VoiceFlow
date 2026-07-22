@@ -13,7 +13,7 @@ const AUTH_URL = process.env.INTELAI_API_URL   || '/';
 
 async function getAuthToken(request: any): Promise<string> {
   const resp = await request.post(`${AUTH_URL}/api/login`, {
-    data: { username: 'admin', password = 'REDACTED' }
+    data: { username: 'admin', password: 'fLNtwDH2VaQLbO' }
   }).catch(() => null);
   if (resp && resp.ok()) {
     const body = await resp.json();
@@ -36,7 +36,7 @@ test.describe('Phase 4.2 — VoiceFlow UI Workflows', () => {
     await page.goto(`${BASE_URL}/`);
     const routes = ['/analytics', '/analyze', '/history', '/integrations', '/models', '/record', '/speech', '/workspace'];
     for (const route of routes) {
-      await page.goto(`${'/'}${route}`);
+      await page.goto(`${BASE_URL}${route}`);
       await page.waitForLoadState('domcontentloaded');
       await assertNoReactCrash(page);
       console.log(`✅ VoiceFlow ${route} — OK`);
