@@ -1,3 +1,5 @@
+import BenchmarkPage from './pages/BenchmarkPage';
+import ApiDocsPage from './pages/ApiDocsPage';
 import { useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { LayoutGrid, Mic, Sparkles, AudioLines, Volume2, History as HistoryIcon, Cpu, Webhook, BarChart3 , Code2 } from "lucide-react";
@@ -64,7 +66,9 @@ export default function App() {
             <Route path="/models" element={<Models />} />
             <Route path="/api-docs" element={<ApiDocs />} />
                   <Route path="*" element={<Workspace />} />
-          </Routes>
+                <Route path="/benchmark" element={<BenchmarkPage />} />
+      <Route path="/api-docs" element={<ApiDocsPage />} />
+</Routes>
         )}
       </AppShell>
     </BrowserRouter>
