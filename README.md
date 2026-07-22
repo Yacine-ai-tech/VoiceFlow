@@ -20,8 +20,10 @@
   - `interview` → Claude Sonnet 4.6
   - `general` → Groq Llama 3.3
 - **Diarization fallback chain**: pyannote 3.x → NeMo → no-diarization
+- **TTS**: `POST /tts` with configurable voice and provider
 - **Full web dashboard** at `/`
-- **OpenAI Realtime API bridge** at `WS /realtime`
+- **OpenAI Realtime API bridge** at `WS /realtime` (primary: OpenAI; fallback: Gemini Multimodal Live when only `GEMINI_API_KEY` is set)
+- **38 tests** across smoke, API, analyzer, voice, e2e, and realtime
 
 ## Quick Start
 
@@ -61,6 +63,14 @@ Open http://localhost:8002/
 | Sales call CRM  | Claude Sonnet   | pain_points, objections, deal_stage          |
 | Support QA      | Claude Haiku    | severity, escalation, follow_ups             |
 | Interview       | Claude Sonnet   | strengths, gaps, recommendation              |
+
+## Tests
+
+38 test functions across smoke, API, analyzer, voice, e2e, WebSocket, and realtime:
+
+```bash
+pytest tests/ -q
+```
 
 ## License
 

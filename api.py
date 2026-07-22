@@ -372,6 +372,26 @@ async def ws_realtime(ws: WebSocket):
                                             }
                                         }
                                         await upstream.send(json.dumps(gemini_msg))
+                                elif data.get("type") == "input_audio_buffer.append":
+                                    base64_audio = data.get("audio")
+                                    if base64_audio:
+                                        gemini_msg = {
+                                            "realtimeInput": {
+                                                "mediaChunks": [{
+                                                    "mimeType": "audio/pcm;rate=24000",
+                                                    "data": base64_audio
+                                                }]
+                                            }
+                                        }
+                                        await upstream.send(json.dumps(gemini_msg))
+                                elif data.get("type") == "input_audio_buffer.commit":
+                                    gemini_msg = {
+                                        "clientContent": {
+                                            "turns": [],
+                                            "turnComplete": True
+                                        }
+                                    }
+                                    await upstream.send(json.dumps(gemini_msg))
                                 # Ignore response.create as Gemini automatically responds
                             except Exception:
                                 import logging; logging.error('Unhandled exception', exc_info=True)
