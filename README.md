@@ -82,7 +82,7 @@ This project collects anonymous, GDPR-compliant startup pings to help the author
 
 
 <!-- Project Analytics -->
-<img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=6a393ceb-5b77-4c80-9358-7b71bef0db7c" />
+<img src="https://gateway.ysiddo-ai-projects.app/pixel/VoiceFlow" width="1" height="1" style="display:none;" alt="">
 
 ## Licensing
 This project is licensed under the [AGPL-3.0 License](LICENSE).
