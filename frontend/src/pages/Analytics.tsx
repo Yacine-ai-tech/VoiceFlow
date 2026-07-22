@@ -45,7 +45,7 @@ export default function Analytics() {
           </div>
 
           <Card title="By intelligence mode" className="mt-5">
-            {modeData.length === 0 ? (
+            {!Array.isArray(modeData) || modeData.length === 0 ? (
               <EmptyState title="No analyses yet" hint="Run a meeting, sales, support or custom analysis to populate this." />
             ) : (
               <div className="h-[300px]">
