@@ -1,3 +1,5 @@
+export class ApiError extends Error { constructor(public status: number, message: string) { super(message); this.name = 'ApiError'; } }
+
 /** Typed client for the VoiceFlow API (shapes verified in GAP_REPORT.md §1). */
 
 export type Transcript = Record<string, unknown> & { text?: string; error?: string };
