@@ -26,8 +26,15 @@ export default function VoiceAgent() {
 
   const connect = () => {
     setState("connecting"); setEvents([]); setMsgs([]);
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/realtime`);
+    let wsUrl;
+    const baseEnv = import.meta.env.VITE_API_BASE_URL;
+    if (baseEnv) {
+      wsUrl = baseEnv.replace(/^http/, "ws") + "/realtime";
+    } else {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      wsUrl = `${proto}://${location.host}/realtime`;
+    }
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     ws.onmessage = (m) => {
       let data: Record<string, unknown>;

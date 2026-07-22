@@ -60,6 +60,6 @@ This benchmark evaluates the latency and connection stability of the `/realtime`
 
 **Analysis:** The VoiceFlow `/realtime` endpoint successfully intercepts missing OpenAI keys and reroutes the bidi websocket connection directly to the `Gemini Multimodal Live` API without disruption.
 """
-    with open(md_path, "w") as f:
+    with open(md_path, "a") as f:
         f.write(content)
     print(f"Wrote benchmark results to {md_path}")
