@@ -66,12 +66,11 @@ export default function App() {
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/history" element={<History />} />
             <Route path="/models" element={<Models />} />
-            <Route path="/api-docs" element={<ApiDocs />} />
-                  <Route path="*" element={<Workspace />} />
-                <Route path="/benchmark" element={<BenchmarkPage />} />
-      <Route path="/api-docs" element={<ApiDocsPage />} />
-      <Route path="/user-guide" element={<UserGuidePage />} />
-</Routes>
+            <Route path="/benchmark" element={<BenchmarkPage />} />
+            <Route path="/api-docs" element={<ApiDocsPage />} />
+            <Route path="/user-guide" element={<UserGuidePage />} />
+            <Route path="*" element={<Workspace />} />
+          </Routes>
         )}
       </AppShell>
     </BrowserRouter>
