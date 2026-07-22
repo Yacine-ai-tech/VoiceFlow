@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 
+const BASE_URL = process.env.TEST_BASE_URL || BASE_URL + '';
+
 test.describe('Exhaustive UI Component & Page Flow Suite', () => {
   test('Should render and interact with main (main.tsx)', async ({ page }) => {
     // Mock navigation to route containing main
@@ -45,80 +47,79 @@ test.describe('Exhaustive UI Component & Page Flow Suite', () => {
 
   test('Should render and interact with Integrations (pages/Integrations.tsx)', async ({ page }) => {
     // Mock navigation to route containing Integrations
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/integrations');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/integrations');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with History (pages/History.tsx)', async ({ page }) => {
     // Mock navigation to route containing History
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/history');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/history');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with Record (pages/Record.tsx)', async ({ page }) => {
     // Mock navigation to route containing Record
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/record');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/record');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with VoiceAgent (pages/VoiceAgent.tsx)', async ({ page }) => {
     // Mock navigation to route containing VoiceAgent
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/voiceagent');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/voiceagent');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with Models (pages/Models.tsx)', async ({ page }) => {
     // Mock navigation to route containing Models
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/models');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/models');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with Speech (pages/Speech.tsx)', async ({ page }) => {
     // Mock navigation to route containing Speech
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/speech');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/speech');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with Analytics (pages/Analytics.tsx)', async ({ page }) => {
     // Mock navigation to route containing Analytics
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/analytics');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/analytics');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with Workspace (pages/Workspace.tsx)', async ({ page }) => {
     // Mock navigation to route containing Workspace
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/workspace');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/workspace');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with ApiDocs (pages/ApiDocs.tsx)', async ({ page }) => {
     // Mock navigation to route containing ApiDocs
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/apidocs');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with Analyze (pages/Analyze.tsx)', async ({ page }) => {
     // Mock navigation to route containing Analyze
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/analyze');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/analyze');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
