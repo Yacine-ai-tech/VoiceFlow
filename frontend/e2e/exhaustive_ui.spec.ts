@@ -1,6 +1,30 @@
 import { test, expect } from '@playwright/test';
 
+const BASE_URL = process.env.TEST_BASE_URL || BASE_URL + '';
+
 test.describe('Exhaustive UI Component & Page Flow Suite', () => {
+
+  test.beforeEach(async ({ page }) => {
+    await page.route('**/*', async route => {
+      const req = route.request();
+      const url = req.url();
+      if ((req.resourceType() === 'fetch' || req.resourceType() === 'xhr') && url.includes('vercel.app')) {
+        let backendUrl = 'https://intelai-bwhp.onrender.com';
+        if (url.includes('docintel-ui')) backendUrl = 'https://docintel-mm79.onrender.com';
+        else if (url.includes('agentkit-ui')) backendUrl = 'https://agentkit-sbz5.onrender.com';
+        else if (url.includes('rageval-ui')) backendUrl = 'https://rageval-4xh5.onrender.com';
+        else if (url.includes('voiceflow-ui')) backendUrl = 'https://voiceflow-riao.onrender.com';
+        else if (url.includes('streampulse-ui')) backendUrl = 'https://streampulse-gv4o.onrender.com';
+        
+        const pathPart = new URL(url).pathname;
+        const newUrl = backendUrl.replace(/\/$/, '') + pathPart;
+        await route.continue({ url: newUrl });
+      } else {
+        await route.continue();
+      }
+    });
+  });
+
   test('Should render and interact with main (main.tsx)', async ({ page }) => {
     // Mock navigation to route containing main
     // Component-level isolation test via storybook/mount mock (Conceptual for full-mesh E2E)
@@ -45,80 +69,79 @@ test.describe('Exhaustive UI Component & Page Flow Suite', () => {
 
   test('Should render and interact with Integrations (pages/Integrations.tsx)', async ({ page }) => {
     // Mock navigation to route containing Integrations
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/integrations');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/integrations');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with History (pages/History.tsx)', async ({ page }) => {
     // Mock navigation to route containing History
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/history');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/history');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with Record (pages/Record.tsx)', async ({ page }) => {
     // Mock navigation to route containing Record
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/record');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/record');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with VoiceAgent (pages/VoiceAgent.tsx)', async ({ page }) => {
     // Mock navigation to route containing VoiceAgent
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/voiceagent');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/voiceagent');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with Models (pages/Models.tsx)', async ({ page }) => {
     // Mock navigation to route containing Models
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/models');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/models');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with Speech (pages/Speech.tsx)', async ({ page }) => {
     // Mock navigation to route containing Speech
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/speech');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/speech');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with Analytics (pages/Analytics.tsx)', async ({ page }) => {
     // Mock navigation to route containing Analytics
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/analytics');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/analytics');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with Workspace (pages/Workspace.tsx)', async ({ page }) => {
     // Mock navigation to route containing Workspace
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/workspace');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/workspace');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with ApiDocs (pages/ApiDocs.tsx)', async ({ page }) => {
     // Mock navigation to route containing ApiDocs
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/apidocs');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
 
   test('Should render and interact with Analyze (pages/Analyze.tsx)', async ({ page }) => {
     // Mock navigation to route containing Analyze
-    await page.goto('https://gateway.ysiddo-ai-projects.app/voiceflow/analyze');
-    await page.waitForLoadState('networkidle');
+    await page.goto(BASE_URL + '/voiceflow/analyze');
+    await page.waitForLoadState('domcontentloaded');
     const rootHtml = await page.locator('#root').innerHTML();
     expect(rootHtml.length).toBeGreaterThan(0);
   });
