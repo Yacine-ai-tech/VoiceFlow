@@ -13,7 +13,7 @@ const AUTH_URL = process.env.INTELAI_API_URL   || '/';
 
 async function getAuthToken(request: any): Promise<string> {
   const resp = await request.post(`${AUTH_URL}/api/login`, {
-    data: { username: 'admin', password: 'fLNtwDH2VaQLbO' }
+    data: { username: 'admin', password = 'REDACTED' }
   }).catch(() => null);
   if (resp && resp.ok()) {
     const body = await resp.json();
@@ -252,9 +252,7 @@ test.describe('Phase 4.3 — Deep Interactivity', () => {
   });
 
   test('Deep analytical insights from audio view', async ({ page }) => {
-    await page.route('**/api/analyze/*', async route => {
-      await route.fulfill({ json: { sentiment: 'positive', keywords: ['hello', 'world'] }, status: 200 });
-    });
+    
 
     await page.goto(`${BASE_URL}/analyze`);
     await page.waitForLoadState('domcontentloaded');
@@ -267,10 +265,7 @@ test.describe('Phase 4.3 — Deep Interactivity', () => {
 
   test('Continuous long-polling stress test mock', async ({ page }) => {
     let pollCount = 0;
-    await page.route('**/api/sessions', async route => {
-      pollCount++;
-      await route.fulfill({ json: [{ id: `session-${pollCount}` }], status: 200 });
-    });
+    
 
     await page.goto(`${BASE_URL}/history`);
     await page.waitForLoadState('domcontentloaded');
