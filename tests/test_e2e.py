@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from api import app
 
 client = TestClient(app)
-TOKEN = os.getenv("OMNIINTEL_INTERNAL_TOKEN", "omniintel-prod-internal-2026")
+TOKEN = os.getenv("OMNIINTEL_INTERNAL_TOKEN", "REDACTED_SECRET")
 HEADERS = {"X-OmniIntel-Internal-Token": TOKEN}
 
 @pytest.mark.asyncio
