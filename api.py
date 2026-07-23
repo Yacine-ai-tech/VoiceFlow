@@ -436,9 +436,16 @@ async def ws_realtime(ws: WebSocket):
                                         for part in model_turn.get("parts", []):
                                             if "text" in part:
                                                 await ws.send_json({
-                                                    "type": "response.text.delta",
+                                                    "type": "response.audio_transcript.delta",
                                                     "delta": part["text"]
                                                 })
+                                            if "inlineData" in part:
+                                                audio_data = part["inlineData"].get("data")
+                                                if audio_data:
+                                                    await ws.send_json({
+                                                        "type": "response.audio.delta",
+                                                        "delta": audio_data
+                                                    })
                                         await ws.send_json({"type": "response.done"})
                             except Exception:
                                 import logging; logging.error('Unhandled exception', exc_info=True)
