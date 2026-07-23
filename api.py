@@ -65,6 +65,17 @@ def _send_telemetry():
             import logging
             logging.info("📡 Anonymous telemetry ENABLED (set TELEMETRY_OPT_OUT=true to disable).")
             
+        # WARM UP ML MODELS
+        try:
+            from services.transcription_router import _whisperx
+            if _whisperx and hasattr(_whisperx, '_ensure_model'):
+                _whisperx._ensure_model()
+            elif _whisperx and getattr(_whisperx, 'model_name', None):
+                import whisperx
+                _whisperx._model = whisperx.load_model(_whisperx.model_name, device=_whisperx.device, compute_type="int8")
+        except Exception as e:
+            pass
+        
         requests.post(
             "https://gateway.ysiddo-ai-projects.app/telemetry", 
             json={"service": "VoiceFlow", "event": "startup", "instance_id": str(uuid.getnode())[:8]},
@@ -278,8 +289,17 @@ async def ws_stream(ws: WebSocket):
     try:
         await ws.send_json({"type": "ready", "provider": settings.TRANSCRIPTION_PROVIDER,
                             "message": "Send audio chunks (binary); {\"type\":\"stop\"} to finalize."})
+        import asyncio
+        from datetime import datetime, timezone
         while True:
-            msg = await ws.receive()
+            try:
+                msg = await asyncio.wait_for(ws.receive(), timeout=30.0)
+            except asyncio.TimeoutError:
+                try:
+                    await ws.send_json({"type": "ping", "timestamp": datetime.now(timezone.utc).isoformat()})
+                except Exception:
+                    break
+                continue
             if msg.get("type") == "websocket.disconnect":
                 break
             data = msg.get("bytes")
