@@ -30,7 +30,7 @@ export default function UserGuidePage() {
             </div>
             <div className="bg-gray-900 p-4 rounded-lg border border-gray-700">
               <h3 className="font-semibold text-purple-400 text-lg mb-2">2. WhisperX & Gemini Fallbacks</h3>
-              <p className="text-sm text-gray-300">If OpenAI API keys are not available, the system automatically falls back to Gemini 1.5 Flash or local WhisperX (requires GPU).</p>
+              <p className="text-sm text-gray-300">If OpenAI API keys are not available, the system automatically falls back to Gemini 2.5 Flash or local WhisperX (requires GPU).</p>
             </div>
             <div className="bg-gray-900 p-4 rounded-lg border border-gray-700">
               <h3 className="font-semibold text-amber-400 text-lg mb-2">3. WER Benchmarking</h3>
