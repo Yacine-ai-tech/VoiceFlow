@@ -129,6 +129,17 @@ analyzer = MeetingAnalyzer()
 from collections import Counter as _Counter
 _stats: "_Counter[str]" = _Counter()
 
+def _check_diarization_available(settings) -> dict:
+    """Return diarization status dict to include in API responses."""
+    pyannote_token = getattr(settings, "PYANNOTE_TOKEN", "") or getattr(settings, "HF_TOKEN", "") or ""
+    if not pyannote_token:
+        return {
+            "diarization_available": False,
+            "diarization_warning": "Speaker diarization is disabled: PYANNOTE_TOKEN not set. Transcription will proceed without speaker labels.",
+        }
+    return {"diarization_available": True, "diarization_warning": None}
+
+
 
 class AnalyzeRequest(BaseModel):
     text: str
