@@ -370,11 +370,20 @@ async def ws_realtime(ws: WebSocket):
         async with websockets.connect(url, max_size=None, **{hkw: headers}) as upstream:
             await ws.send_json({"type": "ready", "message": f"Connected to {model_name}"})
 
+            cancel_flag = [False]
+
             async def client_to_upstream():
                 try:
                     while True:
                         msg_text = await ws.receive_text()
                         if not use_gemini:
+                            try:
+                                data = json.loads(msg_text)
+                                if data.get("type") == "client.speech_started":
+                                    await upstream.send(json.dumps({"type": "response.cancel"}))
+                                    continue
+                            except Exception:
+                                pass
                             await upstream.send(msg_text)
                         else:
                             # Translate OpenAI client format to Gemini clientContent
@@ -412,6 +421,9 @@ async def ws_realtime(ws: WebSocket):
                                         }
                                     }
                                     await upstream.send(json.dumps(gemini_msg))
+                                    cancel_flag[0] = False
+                                elif data.get("type") == "client.speech_started":
+                                    cancel_flag[0] = True
                                 # Ignore response.create as Gemini automatically responds
                             except Exception:
                                 import logging; logging.error('Unhandled exception', exc_info=True)
@@ -431,6 +443,9 @@ async def ws_realtime(ws: WebSocket):
                             try:
                                 data = json.loads(msg_text)
                                 if "serverContent" in data:
+                                    if cancel_flag[0]:
+                                        continue  # Drop response due to barge-in
+
                                     model_turn = data["serverContent"].get("modelTurn")
                                     if model_turn:
                                         for part in model_turn.get("parts", []):

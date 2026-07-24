@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Plug, PlugZap, Mic, MicOff, Settings, X, Loader2 } from "lucide-react";
+import { Plug, PlugZap, Mic, MicOff, Settings, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 type Msg = { role: "user" | "assistant"; text: string; interim?: boolean };
@@ -19,6 +19,14 @@ export default function VoiceAgent() {
   const recognitionRef = useRef<any>(null);
   const msgsEndRef = useRef<HTMLDivElement>(null);
 
+  // VAD & Playback states
+  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastAudioTimeRef = useRef<number>(Date.now());
+  const playbackQueueRef = useRef<Float32Array[]>([]);
+  const nextPlayTimeRef = useRef<number>(0);
+  const isPlayingRef = useRef(false);
+  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+
   const connect = () => {
     setState("connecting"); setMsgs([]);
     let wsUrl;
@@ -31,6 +39,7 @@ export default function VoiceAgent() {
     }
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
+    
     ws.onmessage = (m) => {
       let data: Record<string, unknown>;
       try { data = JSON.parse(m.data); } catch { return; }
@@ -48,8 +57,11 @@ export default function VoiceAgent() {
           return [...rest, { role: "assistant", text: draft.current }];
         });
       }
+      if (type === "response.audio.delta") {
+        const base64 = String(data.delta ?? "");
+        queueAudioPlayback(base64);
+      }
       if (type === "response.done" || type === "response.audio.done") {
-        setAgentSpeaking(false);
         draft.current = "";
       }
     };
@@ -58,39 +70,168 @@ export default function VoiceAgent() {
   };
 
   useEffect(() => { connect(); return () => { wsRef.current?.close(); stopVoice(); }; }, []);
-  useEffect(() => { msgsEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, userInterim]);
+  useEffect(() => { msgsEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, userInterim, agentSpeaking]);
+
+  // Audio Playback Engine
+  const queueAudioPlayback = (base64: string) => {
+    if (!audioCtxRef.current) return;
+    try {
+      const binary = atob(base64);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+      
+      const int16 = new Int16Array(bytes.buffer);
+      const float32 = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) {
+        float32[i] = int16[i] / 32768.0;
+      }
+      
+      playbackQueueRef.current.push(float32);
+      scheduleNextBuffers();
+    } catch (e) {
+      console.error("Audio decode error", e);
+    }
+  };
+
+  const scheduleNextBuffers = () => {
+    const audioCtx = audioCtxRef.current;
+    if (!audioCtx) return;
+
+    if (playbackQueueRef.current.length === 0) return;
+
+    isPlayingRef.current = true;
+    setAgentSpeaking(true);
+
+    while (playbackQueueRef.current.length > 0) {
+      const float32 = playbackQueueRef.current.shift()!;
+      const audioBuffer = audioCtx.createBuffer(1, float32.length, 24000);
+      audioBuffer.getChannelData(0).set(float32);
+      
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioCtx.destination);
+      
+      const currTime = audioCtx.currentTime;
+      const startTime = Math.max(currTime, nextPlayTimeRef.current);
+      
+      source.start(startTime);
+      activeSourcesRef.current.push(source);
+      nextPlayTimeRef.current = startTime + audioBuffer.duration;
+      
+      source.onended = () => {
+        // Remove from active sources
+        activeSourcesRef.current = activeSourcesRef.current.filter(s => s !== source);
+        setTimeout(() => {
+          if (playbackQueueRef.current.length === 0 && audioCtxRef.current && audioCtxRef.current.currentTime >= nextPlayTimeRef.current - 0.1) {
+            isPlayingRef.current = false;
+            setAgentSpeaking(false);
+          }
+        }, 100);
+      };
+    }
+  };
+
+  const stopAudioPlayback = () => {
+    playbackQueueRef.current = [];
+    nextPlayTimeRef.current = 0;
+    isPlayingRef.current = false;
+    setAgentSpeaking(false);
+    activeSourcesRef.current.forEach(s => {
+      try { s.stop(); } catch (e) {}
+    });
+    activeSourcesRef.current = [];
+  };
+
+const workletCode = `
+class VADProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.isSilent = true;
+    this.lastAudioTime = Date.now();
+  }
+  process(inputs, outputs, parameters) {
+    const input = inputs[0];
+    if (input && input.length > 0) {
+      const channelData = input[0];
+      let sum = 0;
+      const pcm16 = new Int16Array(channelData.length);
+      for (let i = 0; i < channelData.length; i++) {
+        sum += channelData[i] * channelData[i];
+        pcm16[i] = Math.max(-1, Math.min(1, channelData[i])) * 32767;
+      }
+      const vol = Math.sqrt(sum / channelData.length);
+      
+      this.port.postMessage({ type: 'volume', vol });
+      
+      const now = Date.now();
+      if (vol > 0.03) {
+        this.lastAudioTime = now;
+        if (this.isSilent) {
+          this.isSilent = false;
+          this.port.postMessage({ type: 'speech_started' });
+        }
+      } else {
+        if (!this.isSilent && now - this.lastAudioTime > 1200) {
+          this.isSilent = true;
+          this.port.postMessage({ type: 'speech_stopped' });
+        }
+      }
+      
+      if (!this.isSilent) {
+        // Send audio chunks ONLY when actively speaking (VAD gating)
+        this.port.postMessage({ type: 'audio', buffer: pcm16.buffer }, [pcm16.buffer]);
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('vad-processor', VADProcessor);
+`;
 
   const startVoice = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
+      
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       audioCtxRef.current = audioCtx;
-      const source = audioCtx.createMediaStreamSource(stream);
-      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      nextPlayTimeRef.current = audioCtx.currentTime;
       
-      processor.onaudioprocess = (e) => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        let sum = 0;
-        const pcm16 = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          sum += inputData[i] * inputData[i];
-          pcm16[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
-        }
-        setVolume(Math.sqrt(sum / inputData.length));
-
-        const buffer = new Uint8Array(pcm16.buffer);
-        let binary = '';
-        for (let i = 0; i < buffer.byteLength; i++) { binary += String.fromCharCode(buffer[i]); }
-        const base64 = btoa(binary);
-        
+      const blob = new Blob([workletCode], { type: 'application/javascript' });
+      const workletUrl = URL.createObjectURL(blob);
+      await audioCtx.audioWorklet.addModule(workletUrl);
+      
+      const source = audioCtx.createMediaStreamSource(stream);
+      const workletNode = new AudioWorkletNode(audioCtx, 'vad-processor');
+      
+      workletNode.port.onmessage = (e) => {
+        const data = e.data;
         const ws = wsRef.current;
-        if (ws && ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64 }));
+        const isWsReady = ws && ws.readyState === 1;
+
+        if (data.type === 'volume') {
+          setVolume(data.vol);
+        } else if (data.type === 'speech_started') {
+          if (isPlayingRef.current) {
+            stopAudioPlayback();
+            if (isWsReady) ws.send(JSON.stringify({ type: "client.speech_started" }));
+          }
+        } else if (data.type === 'speech_stopped') {
+          if (isWsReady) {
+            ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+            ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio", "text"] } }));
+          }
+        } else if (data.type === 'audio' && isWsReady) {
+          const buffer = new Uint8Array(data.buffer);
+          let binary = '';
+          for (let i = 0; i < buffer.byteLength; i++) { binary += String.fromCharCode(buffer[i]); }
+          ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(binary) }));
         }
       };
-      source.connect(processor);
-      processor.connect(audioCtx.destination);
+      
+      source.connect(workletNode);
+      workletNode.connect(audioCtx.destination);
       setIsRecording(true);
       
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -124,7 +265,10 @@ export default function VoiceAgent() {
   const stopVoice = () => {
     if (!isRecording) return;
     if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
-    if (audioCtxRef.current) audioCtxRef.current.close();
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close();
+      audioCtxRef.current = null;
+    }
     if (recognitionRef.current) { recognitionRef.current.stop(); recognitionRef.current = null; }
     if (userInterim) {
       setMsgs(m => [...m, { role: "user", text: userInterim }]);
@@ -132,14 +276,10 @@ export default function VoiceAgent() {
     }
     setIsRecording(false);
     setVolume(0);
-    const ws = wsRef.current;
-    if (ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-      ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio", "text"] } }));
-    }
+    stopAudioPlayback();
   };
 
-  const orbScale = isRecording ? 1 + volume * 5 : agentSpeaking ? 1.1 : 1;
+  const orbScale = isRecording && !agentSpeaking ? 1 + volume * 5 : agentSpeaking ? 1.1 + Math.random() * 0.1 : 1;
   const orbColor = agentSpeaking ? "rgba(124, 58, 237, 0.8)" : isRecording ? "rgba(16, 185, 129, 0.8)" : "rgba(255, 255, 255, 0.1)";
   const bgGradient = agentSpeaking 
     ? "radial-gradient(circle at center, rgba(124, 58, 237, 0.15) 0%, rgba(9,9,11,1) 60%)" 
@@ -183,7 +323,7 @@ export default function VoiceAgent() {
         <div className="mx-auto flex w-full max-w-3xl flex-col justify-end space-y-8">
           {msgs.length === 0 && !userInterim && state === "ready" && (
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="text-center mt-32">
-              <p className="text-2xl font-light tracking-wide text-white/40">Tap the microphone and start speaking.</p>
+              <p className="text-2xl font-light tracking-wide text-white/40">Tap the microphone and leave it open. Start speaking.</p>
             </motion.div>
           )}
 
@@ -244,7 +384,7 @@ export default function VoiceAgent() {
 
         <div className="mt-8 flex h-7 items-center rounded-full bg-white/5 px-4 backdrop-blur-xl border border-white/10 pointer-events-auto">
           <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/50">
-            {state !== "ready" ? "Initializing..." : isRecording ? "Listening" : agentSpeaking ? "Speaking" : "Ready"}
+            {state !== "ready" ? "Initializing..." : agentSpeaking ? "Speaking" : isRecording ? "Listening" : "Ready"}
           </span>
         </div>
       </div>
