@@ -353,67 +353,39 @@ async def ws_stream(ws: WebSocket):
 
 @app.websocket("/realtime")
 async def ws_realtime(ws: WebSocket):
-    """OpenAI Realtime API bridge (voice agent) — relays the browser session bidirectionally.
-    Supports both OpenAI and Gemini (translation layer)."""
+    """OpenAI Realtime API & Gemini Multimodal Live bridge (voice agent).
+    Env-driven: OpenAI Realtime first (if OPENAI_API_KEY set); falls back to Gemini Multimodal Live (if GEMINI_API_KEY set).
+    Can also force provider via REALTIME_PROVIDER='gemini' or 'openai'."""
     await ws.accept()
-    openai_key = getattr(settings, "OPENAI_API_KEY", "") or ""
-    gemini_key = getattr(settings, "GEMINI_API_KEY", "") or ""
-    groq_key = getattr(settings, "GROQ_API_KEY", "") or ""
-    anthropic_key = getattr(settings, "ANTHROPIC_API_KEY", "") or ""
-    
-    if not openai_key and not gemini_key:
-        if groq_key or anthropic_key:
-            await ws.send_json({"type": "ready", "message": "Connected to VoiceFlow Engine (LLaMA-3.3 / Claude-3.5)"})
-            try:
-                buf = bytearray()
-                while True:
-                    msg_text = await ws.receive_text()
-                    try:
-                        data = json.loads(msg_text)
-                        msg_type = data.get("type")
-                        if msg_type == "conversation.item.create":
-                            item = data.get("item", {})
-                            content = item.get("content", [])
-                            text = "".join(c.get("text", "") for c in content if c.get("type") == "input_text")
-                            if text:
-                                answer = await route_analysis(text)
-                                text_response = answer.get("summary") or answer.get("analysis") or f"VoiceFlow Agent: Processing '{text}'."
-                                await ws.send_json({"type": "response.audio_transcript.delta", "delta": text_response})
-                                await ws.send_json({"type": "response.done"})
-                        elif msg_type == "input_audio_buffer.append":
-                            base64_audio = data.get("audio")
-                            if base64_audio:
-                                import base64
-                                buf.extend(base64.b64decode(base64_audio))
-                        elif msg_type == "input_audio_buffer.commit":
-                            if buf:
-                                transcription = await route_transcribe(bytes(buf), provider=getattr(settings, "TRANSCRIPTION_PROVIDER", "groq"))
-                                text_in = transcription.get("text", "")
-                                if text_in:
-                                    answer = await route_analysis(text_in)
-                                    text_response = answer.get("summary") or answer.get("analysis") or f"VoiceFlow Agent: Recognized audio '{text_in}'."
-                                    await ws.send_json({"type": "response.audio_transcript.delta", "delta": text_response})
-                                    await ws.send_json({"type": "response.done"})
-                                buf = bytearray()
-                    except Exception as ex:
-                        log.warning("realtime bridge frame error: %s", ex)
-            except WebSocketDisconnect:
-                log.info("VoiceFlow realtime client disconnected")
-            except Exception as e:
-                log.warning("VoiceFlow realtime error: %s", e)
-            return
+    openai_key = getattr(settings, "OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "") or ""
+    gemini_key = getattr(settings, "GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "") or ""
+    forced_provider = (os.getenv("REALTIME_PROVIDER", "") or "").lower()
+
+    if forced_provider == "gemini":
+        use_gemini = True
+    elif forced_provider == "openai":
+        use_gemini = False
+    else:
+        # Auto-fallback strategy: use OpenAI if key present; otherwise fall back to Gemini Multimodal Live
+        use_gemini = bool(gemini_key and not openai_key)
+
+    if use_gemini and not gemini_key:
+        await ws.send_json({"type": "error", "message": "GEMINI_API_KEY not configured — required for Gemini Multimodal Live."})
+        await ws.close()
+        return
+
+    if not use_gemini and not openai_key:
+        if gemini_key:
+            use_gemini = True
         else:
-            await ws.send_json({"type": "error",
-                                "message": "OPENAI_API_KEY, GEMINI_API_KEY, or GROQ_API_KEY not configured — set one to enable the realtime voice agent."})
+            await ws.send_json({"type": "error", "message": "Neither OPENAI_API_KEY nor GEMINI_API_KEY configured — set one to enable the realtime voice agent."})
             await ws.close()
             return
 
     import inspect
     import websockets
     import json
-    
-    use_gemini = bool(gemini_key and not openai_key)
-    
+
     if use_gemini:
         url = f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key={gemini_key}"
         headers = []
