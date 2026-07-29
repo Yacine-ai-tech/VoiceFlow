@@ -358,12 +358,55 @@ async def ws_realtime(ws: WebSocket):
     await ws.accept()
     openai_key = getattr(settings, "OPENAI_API_KEY", "") or ""
     gemini_key = getattr(settings, "GEMINI_API_KEY", "") or ""
+    groq_key = getattr(settings, "GROQ_API_KEY", "") or ""
+    anthropic_key = getattr(settings, "ANTHROPIC_API_KEY", "") or ""
     
     if not openai_key and not gemini_key:
-        await ws.send_json({"type": "error",
-                            "message": "OPENAI_API_KEY or GEMINI_API_KEY not configured — set one to enable the realtime voice agent."})
-        await ws.close()
-        return
+        if groq_key or anthropic_key:
+            await ws.send_json({"type": "ready", "message": "Connected to VoiceFlow Engine (LLaMA-3.3 / Claude-3.5)"})
+            try:
+                buf = bytearray()
+                while True:
+                    msg_text = await ws.receive_text()
+                    try:
+                        data = json.loads(msg_text)
+                        msg_type = data.get("type")
+                        if msg_type == "conversation.item.create":
+                            item = data.get("item", {})
+                            content = item.get("content", [])
+                            text = "".join(c.get("text", "") for c in content if c.get("type") == "input_text")
+                            if text:
+                                answer = await route_analysis(text)
+                                text_response = answer.get("summary") or answer.get("analysis") or f"VoiceFlow Agent: Processing '{text}'."
+                                await ws.send_json({"type": "response.audio_transcript.delta", "delta": text_response})
+                                await ws.send_json({"type": "response.done"})
+                        elif msg_type == "input_audio_buffer.append":
+                            base64_audio = data.get("audio")
+                            if base64_audio:
+                                import base64
+                                buf.extend(base64.b64decode(base64_audio))
+                        elif msg_type == "input_audio_buffer.commit":
+                            if buf:
+                                transcription = await route_transcribe(bytes(buf), provider=getattr(settings, "TRANSCRIPTION_PROVIDER", "groq"))
+                                text_in = transcription.get("text", "")
+                                if text_in:
+                                    answer = await route_analysis(text_in)
+                                    text_response = answer.get("summary") or answer.get("analysis") or f"VoiceFlow Agent: Recognized audio '{text_in}'."
+                                    await ws.send_json({"type": "response.audio_transcript.delta", "delta": text_response})
+                                    await ws.send_json({"type": "response.done"})
+                                buf = bytearray()
+                    except Exception as ex:
+                        log.warning("realtime bridge frame error: %s", ex)
+            except WebSocketDisconnect:
+                log.info("VoiceFlow realtime client disconnected")
+            except Exception as e:
+                log.warning("VoiceFlow realtime error: %s", e)
+            return
+        else:
+            await ws.send_json({"type": "error",
+                                "message": "OPENAI_API_KEY, GEMINI_API_KEY, or GROQ_API_KEY not configured — set one to enable the realtime voice agent."})
+            await ws.close()
+            return
 
     import inspect
     import websockets
