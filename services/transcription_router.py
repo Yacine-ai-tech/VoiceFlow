@@ -45,38 +45,32 @@ async def transcribe(
     diarize: bool = False,
 ) -> Dict[str, Any]:
     """
-    Transcribe audio via the chosen provider.
-
-    Providers: LOCAL_WHISPERX | GROQ_WHISPER | DEEPGRAM | ASSEMBLYAI.
-    ``language`` is a 2-letter code (e.g. 'en', 'fr') or 'auto' to detect it.
+    Transcribe audio via unified adapter using ASR_PROVIDER priorities or explicit provider parameter.
     """
-    provider = (provider or os.getenv("TRANSCRIPTION_PROVIDER", "DEEPGRAM")).upper()
-    lang = _norm_lang(language)
+    from services.transcription_adapter import transcribe as _adapter_transcribe
+    
+    # If caller specifies explicit provider, map aliases
+    p_norm = (provider or "").strip().lower()
+    if p_norm in ("groq", "groq_whisper", "groq-whisper"):
+        res = await _via_groq(audio_bytes, _norm_lang(language))
+        if res and res.get("text"):
+            return res
+    elif p_norm in ("deepgram", "deepgram_nova2", "deepgram-nova2"):
+        res = await _via_deepgram(audio_bytes)
+        if res and res.get("text"):
+            return res
+    elif p_norm in ("assemblyai", "assembly_ai"):
+        res = await _via_assemblyai(audio_bytes)
+        if res and res.get("text"):
+            return res
+    elif p_norm in ("orchestrator", "remote"):
+        from services.transcription_adapter import _orchestrator_whisper
+        res = _orchestrator_whisper(audio_bytes, _norm_lang(language), diarize)
+        if res and res.get("text"):
+            return res
 
-    if provider == "GROQ_WHISPER" and settings.GROQ_API_KEY:
-        return await _via_groq(audio_bytes, lang)
-    if provider == "DEEPGRAM" and settings.DEEPGRAM_API_KEY:
-        return await _via_deepgram(audio_bytes)
-    if provider == "ASSEMBLYAI" and settings.ASSEMBLYAI_API_KEY:
-        return await _via_assemblyai(audio_bytes)
-
-    # Default path: local WhisperX. If it's installed (local/dev), use it. Otherwise
-    # (slim cloud image) auto-fall back to the first configured cloud STT so the
-    # composite endpoints (/pipeline, /meeting/process, /call/analyze) and the default
-    # /transcribe still produce a real transcript in production instead of a stub.
-    if _WHISPERX_AVAILABLE:
-        return _whisperx.transcribe(audio_bytes, language=lang, diarize=diarize)
-    if settings.GROQ_API_KEY:
-        log.info("WhisperX unavailable — falling back to Groq Whisper")
-        return await _via_groq(audio_bytes, lang)
-    if settings.DEEPGRAM_API_KEY:
-        log.info("WhisperX unavailable — falling back to Deepgram")
-        return await _via_deepgram(audio_bytes)
-    if settings.ASSEMBLYAI_API_KEY:
-        log.info("WhisperX unavailable — falling back to AssemblyAI")
-        return await _via_assemblyai(audio_bytes)
-    # Nothing available — return the WhisperX stub (carries a clear error message).
-    return _whisperx.transcribe(audio_bytes, language=lang, diarize=diarize)
+    # Unified dynamic priority chain (ASR_PROVIDER env var + automatic fallback)
+    return await _adapter_transcribe(audio_bytes, language=_norm_lang(language), diarize=diarize)
 
 
 async def _via_groq(audio_bytes: bytes, language: Optional[str] = None) -> Dict[str, Any]:
