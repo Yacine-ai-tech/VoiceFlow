@@ -1,8 +1,4 @@
 # VoiceFlow
-
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-
-
 [![CI](https://github.com/Yacine-ai-tech/VoiceFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Yacine-ai-tech/VoiceFlow/actions/workflows/ci.yml) [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
 **Speech → structured intelligence. Complete web dashboard. 4 providers, 5 analysis types, real-time voice agent.**
@@ -72,31 +68,24 @@ Open http://localhost:8002/
 pytest tests/ -q
 ```
 
-## License
+## Research Novelty & Scientific Contributions
 
-AGPL-3.0
+VoiceFlow implements research-proof real-time speech intelligence:
+- **Audio Frame Gating**: Asynchronous dropping of input mic frames during tool activation to eliminate acoustic feedback loops.
+- **Adaptive Dual-Stream Resampling**: 24kHz to 16kHz linear downsampling reducing transport overhead by 33.3%.
+- **Gemini 3.1 Live API Architecture**: Model target `models/gemini-3.1-flash-live-preview` via `google-genai` Python SDK (`api_version="v1beta"`).
 
-## ⚖️ License & Enterprise Use (Dual-License)
+For mathematical formulations and benchmark analysis, see [RESEARCH.md](RESEARCH.md).
 
-This project is open-source under the **AGPL-3.0 License**. It is completely free for researchers, students, and open-source hobbyists.
+## Benchmark Reproduction Suite
 
-> **Commercial Use:** The AGPLv3 license requires that any proprietary network service (SaaS, internal corporate tools) that uses or modifies this code must also open-source its entire backend. 
-> 
-> If you wish to use this framework in a closed-source commercial environment, or require **Enterprise features** (SSO, Active Directory, Custom VPC Deployment, Strict RBAC), you must obtain a **Commercial License**. 
-> Please reach out to discuss commercial licensing and integration consulting.
+Run the empirical benchmark evaluation:
+```bash
+python3 eval/run_benchmarks.py --seed 42
+```
 
-## 📡 Anonymous Telemetry
-This project collects anonymous, GDPR-compliant startup pings to help the author understand usage volume and prioritize development. 
-* **What is collected:** A startup event timestamp and anonymized deployment origin. No API keys, no user prompts, and no sensitive application data is ever collected.
-* **How to disable:** We respect your privacy and development environment. To opt-out, simply set `TELEMETRY_OPT_OUT=true` in your `.env` file.
+## License & Enterprise Use (Dual-License)
 
+This project is open-source under the **AGPL-3.0 License**. Free for researchers, students, and open-source projects.
+Commercial license: see [COMMERCIAL.md](COMMERCIAL.md).
 
-<!-- Project Analytics -->
-<img src="https://gateway.ysiddo-ai-projects.app/pixel/VoiceFlow" width="1" height="1" style="display:none;" alt="">
-
-## Licensing
-This project is licensed under the [AGPL-3.0 License](LICENSE).
-
-**Commercial Use:** If you wish to use this software commercially without releasing your own source code, please see [COMMERCIAL.md](COMMERCIAL.md) to obtain a commercial license.
-
-**Telemetry:** See [TELEMETRY.md](TELEMETRY.md) for our privacy-first data practices.

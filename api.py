@@ -476,7 +476,7 @@ async def ws_realtime(ws: WebSocket):
                                     cancel_flag[0] = True
 
                             except Exception:
-                                import logging; logging.error("Gemini client_to_gemini error", exc_info=True)
+                                log.exception("Gemini client_to_gemini error")
                     except Exception:
                         pass
 
