@@ -354,11 +354,20 @@ async def ws_stream(ws: WebSocket):
 @app.websocket("/realtime")
 async def ws_realtime(ws: WebSocket):
     """OpenAI Realtime API & Gemini Multimodal Live bridge (voice agent).
-    Env-driven: OpenAI Realtime first (if OPENAI_API_KEY set); falls back to Gemini Multimodal Live (if GEMINI_API_KEY set).
-    Can also force provider via REALTIME_PROVIDER='gemini' or 'openai'."""
+
+    Provider selection (env-driven):
+      - OPENAI_API_KEY set  → OpenAI Realtime API (gpt-4o-realtime-preview, raw WS relay).
+      - GEMINI_API_KEY set  → Gemini Multimodal Live (gemini-3.1-flash-live-preview,
+                               official google-genai SDK on v1beta).
+      - REALTIME_PROVIDER='gemini'|'openai' to force a provider.
+
+    Audio specs:
+      - OpenAI: 24kHz PCM 16-bit input/output (no resampling needed).
+      - Gemini: 16kHz PCM 16-bit input, 24kHz output (server downsamples input).
+    """
     await ws.accept()
     openai_key = getattr(settings, "OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "") or ""
-    gemini_key = getattr(settings, "GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "") or ""
+    gemini_key  = getattr(settings, "GEMINI_API_KEY", "")  or os.getenv("GEMINI_API_KEY", "")  or ""
     forced_provider = (os.getenv("REALTIME_PROVIDER", "") or "").lower()
 
     if forced_provider == "gemini":
@@ -366,150 +375,185 @@ async def ws_realtime(ws: WebSocket):
     elif forced_provider == "openai":
         use_gemini = False
     else:
-        # Auto-fallback strategy: use OpenAI if key present; otherwise fall back to Gemini Multimodal Live
         use_gemini = bool(gemini_key and not openai_key)
 
     if use_gemini and not gemini_key:
-        await ws.send_json({"type": "error", "message": "GEMINI_API_KEY not configured — required for Gemini Multimodal Live."})
-        await ws.close()
-        return
+        await ws.send_json({"type": "error", "message": "GEMINI_API_KEY not configured."})
+        await ws.close(); return
 
     if not use_gemini and not openai_key:
         if gemini_key:
             use_gemini = True
         else:
-            await ws.send_json({"type": "error", "message": "Neither OPENAI_API_KEY nor GEMINI_API_KEY configured — set one to enable the realtime voice agent."})
-            await ws.close()
-            return
+            await ws.send_json({"type": "error", "message": "Neither OPENAI_API_KEY nor GEMINI_API_KEY configured."})
+            await ws.close(); return
 
+    # ── GEMINI PATH — official google-genai SDK (v1beta, gemini-3.1-flash-live-preview) ──
+    if use_gemini:
+        try:
+            from google import genai as _genai
+            from google.genai import types as _gtypes
+        except ImportError:
+            await ws.send_json({"type": "error", "message": "google-genai package not installed. Run: pip install google-genai"})
+            await ws.close(); return
+
+        GEMINI_LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "models/gemini-3.1-flash-live-preview")
+
+        _client = _genai.Client(
+            http_options={"api_version": "v1beta"},
+            api_key=gemini_key,
+        )
+        _config = _gtypes.LiveConnectConfig(
+            response_modalities=["AUDIO"],
+            speech_config=_gtypes.SpeechConfig(
+                voice_config=_gtypes.VoiceConfig(
+                    prebuilt_voice_config=_gtypes.PrebuiltVoiceConfig(voice_name="Zephyr")
+                )
+            ),
+            context_window_compression=_gtypes.ContextWindowCompressionConfig(
+                trigger_tokens=104857,
+                sliding_window=_gtypes.SlidingWindow(target_tokens=52428),
+            ),
+        )
+
+        try:
+            async with _client.aio.live.connect(model=GEMINI_LIVE_MODEL, config=_config) as session:
+                await ws.send_json({"type": "ready", "message": f"Connected to Gemini Multimodal Live ({GEMINI_LIVE_MODEL})"})
+
+                is_tool_active = [False]
+                cancel_flag = [False]
+                audio_out_queue: asyncio.Queue = asyncio.Queue()
+
+                async def _client_to_gemini():
+                    """Forward browser audio/text frames to Gemini session."""
+                    try:
+                        while True:
+                            msg_text = await ws.receive_text()
+                            if is_tool_active[0]:
+                                continue  # Gate: drop all input during tool execution
+                            try:
+                                data = json.loads(msg_text)
+                                evt = data.get("type", "")
+
+                                if evt == "input_audio_buffer.append":
+                                    b64 = data.get("audio")
+                                    if b64:
+                                        import base64, audioop
+                                        pcm_24k = base64.b64decode(b64)
+                                        pcm_16k, _ = audioop.ratecv(pcm_24k, 2, 1, 24000, 16000, None)
+                                        await session.send(input={
+                                            "data": pcm_16k,
+                                            "mime_type": "audio/pcm;rate=16000"
+                                        })
+
+                                elif evt == "input_audio_buffer.commit":
+                                    await session.send(input=".", end_of_turn=True)
+                                    cancel_flag[0] = False
+
+                                elif evt == "conversation.item.create":
+                                    item = data.get("item", {})
+                                    text = "".join(
+                                        c.get("text", "") for c in item.get("content", [])
+                                        if c.get("type") == "input_text"
+                                    )
+                                    if text:
+                                        await session.send(input=text, end_of_turn=True)
+
+                                elif evt == "client.speech_started":
+                                    cancel_flag[0] = True
+
+                            except Exception:
+                                import logging; logging.error("Gemini client_to_gemini error", exc_info=True)
+                    except Exception:
+                        pass
+
+                async def _gemini_to_client():
+                    """Receive Gemini responses and forward to browser."""
+                    try:
+                        while True:
+                            turn = session.receive()
+                            async for response in turn:
+                                if cancel_flag[0]:
+                                    continue
+
+                                if response.data:
+                                    import base64
+                                    await ws.send_json({
+                                        "type": "response.audio.delta",
+                                        "delta": base64.b64encode(response.data).decode()
+                                    })
+
+                                if response.text:
+                                    await ws.send_json({
+                                        "type": "response.audio_transcript.delta",
+                                        "delta": response.text
+                                    })
+
+                                if response.tool_call:
+                                    is_tool_active[0] = True
+
+                                if response.server_content and getattr(response.server_content, "turn_complete", False):
+                                    is_tool_active[0] = False
+                                    cancel_flag[0] = False
+                                    await ws.send_json({"type": "response.done"})
+                    except Exception:
+                        pass
+
+                await asyncio.gather(_client_to_gemini(), _gemini_to_client())
+
+        except WebSocketDisconnect:
+            log.info("realtime gemini client disconnected")
+        except Exception as e:
+            log.warning("realtime gemini error: %s", e)
+            try:
+                await ws.send_json({"type": "error", "message": f"Gemini Live relay failed: {e}"})
+            except Exception:
+                pass
+        return
+
+    # ── OPENAI PATH — raw WebSocket relay ──────────────────────────────────────────────
     import inspect
     import websockets
-    import json
 
-    if use_gemini:
-        url = f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key={gemini_key}"
-        headers = []
-        model_name = "Gemini Multimodal Live"
-    else:
-        model = getattr(settings, "OPENAI_REALTIME_MODEL", None) or "gpt-4o-realtime-preview"
-        url = f"wss://api.openai.com/v1/realtime?model={model}"
-        headers = [("Authorization", f"Bearer {openai_key}"), ("OpenAI-Beta", "realtime=v1")]
-        model_name = f"OpenAI Realtime ({model})"
+    model = getattr(settings, "OPENAI_REALTIME_MODEL", None) or "gpt-4o-realtime-preview"
+    url     = f"wss://api.openai.com/v1/realtime?model={model}"
+    headers = [("Authorization", f"Bearer {openai_key}"), ("OpenAI-Beta", "realtime=v1")]
+    model_name = f"OpenAI Realtime ({model})"
 
     hkw = "additional_headers" if "additional_headers" in inspect.signature(websockets.connect).parameters else "extra_headers"
     try:
         async with websockets.connect(url, max_size=None, **{hkw: headers}) as upstream:
             await ws.send_json({"type": "ready", "message": f"Connected to {model_name}"})
 
-            cancel_flag = [False]
-
             async def client_to_upstream():
                 try:
                     while True:
                         msg_text = await ws.receive_text()
-                        if not use_gemini:
-                            try:
-                                data = json.loads(msg_text)
-                                if data.get("type") == "client.speech_started":
-                                    await upstream.send(json.dumps({"type": "response.cancel"}))
-                                    continue
-                            except Exception:
-                                pass
-                            await upstream.send(msg_text)
-                        else:
-                            # Translate OpenAI client format to Gemini clientContent
-                            try:
-                                data = json.loads(msg_text)
-                                if data.get("type") == "conversation.item.create":
-                                    item = data.get("item", {})
-                                    content = item.get("content", [])
-                                    text = "".join(c.get("text", "") for c in content if c.get("type") == "input_text")
-                                    if text:
-                                        gemini_msg = {
-                                            "clientContent": {
-                                                "turns": [{"role": "user", "parts": [{"text": text}]}],
-                                                "turnComplete": True
-                                            }
-                                        }
-                                        await upstream.send(json.dumps(gemini_msg))
-                                elif data.get("type") == "input_audio_buffer.append":
-                                    base64_audio = data.get("audio")
-                                    if base64_audio:
-                                        gemini_msg = {
-                                            "realtimeInput": {
-                                                "mediaChunks": [{
-                                                    "mimeType": "audio/pcm;rate=24000",
-                                                    "data": base64_audio
-                                                }]
-                                            }
-                                        }
-                                        await upstream.send(json.dumps(gemini_msg))
-                                elif data.get("type") == "input_audio_buffer.commit":
-                                    gemini_msg = {
-                                        "clientContent": {
-                                            "turns": [],
-                                            "turnComplete": True
-                                        }
-                                    }
-                                    await upstream.send(json.dumps(gemini_msg))
-                                    cancel_flag[0] = False
-                                elif data.get("type") == "client.speech_started":
-                                    cancel_flag[0] = True
-                                # Ignore response.create as Gemini automatically responds
-                            except Exception:
-                                import logging; logging.error('Unhandled exception', exc_info=True)
-                                pass
+                        try:
+                            data = json.loads(msg_text)
+                            if data.get("type") == "client.speech_started":
+                                await upstream.send(json.dumps({"type": "response.cancel"}))
+                                continue
+                        except Exception:
+                            pass
+                        await upstream.send(msg_text)
                 except Exception:
-                    import logging; logging.error('Unhandled exception', exc_info=True)
                     pass
 
             async def upstream_to_client():
                 try:
                     async for msg in upstream:
                         msg_text = msg if isinstance(msg, str) else msg.decode("utf-8", "ignore")
-                        if not use_gemini:
-                            await ws.send_text(msg_text)
-                        else:
-                            # Translate Gemini serverContent to OpenAI response.text.delta
-                            try:
-                                data = json.loads(msg_text)
-                                if "serverContent" in data:
-                                    if cancel_flag[0]:
-                                        continue  # Drop response due to barge-in
-
-                                    model_turn = data["serverContent"].get("modelTurn")
-                                    if model_turn:
-                                        for part in model_turn.get("parts", []):
-                                            if "text" in part:
-                                                await ws.send_json({
-                                                    "type": "response.audio_transcript.delta",
-                                                    "delta": part["text"]
-                                                })
-                                            if "inlineData" in part:
-                                                audio_data = part["inlineData"].get("data")
-                                                if audio_data:
-                                                    await ws.send_json({
-                                                        "type": "response.audio.delta",
-                                                        "delta": audio_data
-                                                    })
-                                        await ws.send_json({"type": "response.done"})
-                            except Exception:
-                                import logging; logging.error('Unhandled exception', exc_info=True)
-                                pass
+                        await ws.send_text(msg_text)
                 except Exception:
-                    import logging; logging.error('Unhandled exception', exc_info=True)
                     pass
 
             await asyncio.gather(client_to_upstream(), upstream_to_client())
     except WebSocketDisconnect:
-        log.info("realtime client disconnected")
+        log.info("realtime openai client disconnected")
     except Exception as e:
-        log.warning("realtime relay error: %s", e)
+        log.warning("realtime openai relay error: %s", e)
         try:
-            await ws.send_json({"type": "error", "message": f"Realtime relay failed: {e}"})
+            await ws.send_json({"type": "error", "message": f"OpenAI Realtime relay failed: {e}"})
         except Exception:
-            import logging; logging.error('Unhandled exception', exc_info=True)
             pass
-
-
-
