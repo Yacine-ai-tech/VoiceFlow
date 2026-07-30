@@ -36,6 +36,8 @@ import os
 import urllib.request
 from typing import Any, Dict, Optional
 
+from core.config import settings
+
 log = logging.getLogger(__name__)
 
 
@@ -103,7 +105,7 @@ def _orchestrator_whisper(
 # ─── Groq Whisper ─────────────────────────────────────────────────────────────
 
 async def _groq_whisper(audio_bytes: bytes, language: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    key = os.getenv("GROQ_API_KEY", "").strip()
+    key = os.getenv("GROQ_API_KEY", "").strip() or getattr(settings, "GROQ_API_KEY", "") or ""
     if not key:
         return None
     try:
@@ -112,7 +114,7 @@ async def _groq_whisper(audio_bytes: bytes, language: Optional[str] = None) -> O
         client = Groq(api_key=key)
         kwargs: Dict[str, Any] = {
             "file": ("audio.wav", io.BytesIO(audio_bytes)),
-            "model": "whisper-large-v3",
+            "model": "whisper-large-v3-turbo",
             "response_format": "verbose_json",
         }
         if language and language != "auto":
@@ -133,7 +135,7 @@ async def _groq_whisper(audio_bytes: bytes, language: Optional[str] = None) -> O
 # ─── Deepgram REST ────────────────────────────────────────────────────────────
 
 async def _deepgram_whisper(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
-    key = os.getenv("DEEPGRAM_API_KEY", "").strip()
+    key = os.getenv("DEEPGRAM_API_KEY", "").strip() or getattr(settings, "DEEPGRAM_API_KEY", "") or ""
     if not key:
         return None
     try:
@@ -162,7 +164,7 @@ async def _deepgram_whisper(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
 # ─── AssemblyAI REST ──────────────────────────────────────────────────────────
 
 async def _assemblyai_whisper(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
-    key = os.getenv("ASSEMBLYAI_API_KEY", "").strip()
+    key = os.getenv("ASSEMBLYAI_API_KEY", "").strip() or getattr(settings, "ASSEMBLYAI_API_KEY", "") or ""
     if not key:
         return None
     try:
