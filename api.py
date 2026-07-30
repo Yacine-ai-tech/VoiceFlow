@@ -176,10 +176,23 @@ async def health() -> Dict[str, Any]:
     return {"status": "ok", "service": "voiceflow", "version": "0.1.0"}
 
 
+class TranscribeJsonRequest(BaseModel):
+    audio_b64: str
+    provider: Optional[str] = None
+    language: Optional[str] = None
+    diarize: bool = False
+
+@app.post("/transcribe-json")
+async def transcribe_json_endpoint(req: TranscribeJsonRequest) -> Dict[str, Any]:
+    import base64
+    audio = base64.b64decode(req.audio_b64)
+    return await route_transcribe(audio, provider=req.provider, language=req.language, diarize=req.diarize)
+
+
 @app.post("/transcribe")
 async def transcribe_endpoint(
     file: UploadFile = File(...),
-    provider: str = Form("LOCAL_WHISPERX"),
+    provider: Optional[str] = Form(None),
     language: str = Form("auto"),
     diarize: bool = Form(False),
 ) -> Dict[str, Any]:
