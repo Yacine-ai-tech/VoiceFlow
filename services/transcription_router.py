@@ -14,6 +14,7 @@ Legacy env var TRANSCRIPTION_PROVIDER is still respected:
 from __future__ import annotations
 
 import os
+import importlib.util
 from typing import Any, Dict, Optional
 
 from core.config import settings
