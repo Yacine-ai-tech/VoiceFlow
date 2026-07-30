@@ -1,12 +1,18 @@
 """
-TranscriptionRouter — Route audio → provider (local whisperx | Groq | Deepgram | AssemblyAI).
+TranscriptionRouter — delegates to the new transcription_adapter.
 
-Provider is selected per-call OR via TRANSCRIPTION_PROVIDER env var.
-Falls back to local whisperx if no API keys are configured.
+This file is kept as a backward-compatible shim. All provider logic now lives
+in services/transcription_adapter.py. Set VOICEFLOW_TRANSCRIPTION_MODE and
+ASR_PROVIDER env vars to control behavior.
+
+Legacy env var TRANSCRIPTION_PROVIDER is still respected:
+  LOCAL_WHISPERX → VOICEFLOW_TRANSCRIPTION_MODE=local
+  GROQ_WHISPER   → ASR_PROVIDER=groq
+  DEEPGRAM       → ASR_PROVIDER=deepgram
+  ASSEMBLYAI     → ASR_PROVIDER=assemblyai
 """
 from __future__ import annotations
 
-import importlib.util
 import os
 from typing import Any, Dict, Optional
 
