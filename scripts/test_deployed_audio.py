@@ -10,7 +10,7 @@ import struct
 import random
 
 # Deployed service URL
-VOICEFLOW_URL = "https://voiceflow.ysiddo-ai-projects.app"
+VOICEFLOW_URL = "http://localhost:8000"
 
 def create_test_audio():
     """Create a simple test WAV file with some audio data"""

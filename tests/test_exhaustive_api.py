@@ -4,7 +4,7 @@ import os
 
 TOKEN = os.getenv('OMNIINTEL_INTERNAL_TOKEN', 'REDACTED_SECRET')
 HEADERS = {'X-OmniIntel-Internal-Token': TOKEN}
-BASE_URL = os.getenv('TEST_BASE_URL', 'https://gateway.ysiddo-ai-projects.app/voiceflow')
+BASE_URL = os.getenv('TEST_BASE_URL', 'http://localhost:8000/voiceflow')
 
 @pytest.mark.asyncio
 async def test_e2e_api_get___0():
