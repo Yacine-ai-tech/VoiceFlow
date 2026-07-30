@@ -130,63 +130,85 @@ async def _groq_whisper(audio_bytes: bytes, language: Optional[str] = None) -> O
         return None
 
 
-# ─── Deepgram ─────────────────────────────────────────────────────────────────
+# ─── Deepgram REST ────────────────────────────────────────────────────────────
 
 async def _deepgram_whisper(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
     key = os.getenv("DEEPGRAM_API_KEY", "").strip()
     if not key:
         return None
     try:
-        from deepgram import DeepgramClient, PrerecordedOptions  # type: ignore
-        dg = DeepgramClient(key)
-        options = PrerecordedOptions(model="nova-2", smart_format=True)
-        import asyncio
-        loop = asyncio.get_event_loop()
-        import io
-        resp = await loop.run_in_executor(
-            None,
-            lambda: dg.listen.prerecorded.v("1").transcribe_file(
-                {"buffer": io.BytesIO(audio_bytes), "mimetype": "audio/wav"}, options
-            ),
+        req = urllib.request.Request(
+            "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true",
+            data=audio_bytes,
+            headers={
+                "Authorization": f"Token {key}",
+                "Content-Type": "audio/wav"
+            }
         )
-        transcript = resp["results"]["channels"][0]["alternatives"][0]
+        resp = _json.loads(urllib.request.urlopen(req, timeout=30).read())
+        results = resp.get("results", {}).get("channels", [{}])[0].get("alternatives", [{}])[0]
         return {
-            "text": transcript.get("transcript", ""),
-            "language": "unknown",
-            "segments": [],
+            "text": results.get("transcript", ""),
+            "language": "en",
+            "segments": results.get("paragraphs", {}).get("paragraphs", []),
             "method": "deepgram-nova2",
             "diarized": False,
         }
     except Exception as e:
-        log.warning("deepgram whisper failed: %s", e)
+        log.warning("deepgram rest failed: %s", e)
         return None
 
 
-# ─── AssemblyAI ───────────────────────────────────────────────────────────────
+# ─── AssemblyAI REST ──────────────────────────────────────────────────────────
 
 async def _assemblyai_whisper(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
     key = os.getenv("ASSEMBLYAI_API_KEY", "").strip()
     if not key:
         return None
     try:
-        import assemblyai as aai  # type: ignore
-        aai.settings.api_key = key
-        config = aai.TranscriptionConfig(speaker_labels=True)
-        import asyncio, io
-        loop = asyncio.get_event_loop()
-        t = await loop.run_in_executor(
-            None,
-            lambda: aai.Transcriber().transcribe(io.BytesIO(audio_bytes), config=config),
+        # Step 1: Upload audio
+        up_req = urllib.request.Request(
+            "https://api.assemblyai.com/v2/upload",
+            data=audio_bytes,
+            headers={"Authorization": key}
         )
-        return {
-            "text": t.text or "",
-            "language": "unknown",
-            "segments": [],
-            "method": "assemblyai",
-            "diarized": False,
-        }
+        up_res = _json.loads(urllib.request.urlopen(up_req, timeout=30).read())
+        audio_url = up_res.get("upload_url")
+        if not audio_url:
+            return None
+
+        # Step 2: Request transcription
+        tx_req = urllib.request.Request(
+            "https://api.assemblyai.com/v2/transcript",
+            data=_json.dumps({"audio_url": audio_url, "speaker_labels": True}).encode(),
+            headers={"Authorization": key, "Content-Type": "application/json"}
+        )
+        tx_res = _json.loads(urllib.request.urlopen(tx_req, timeout=30).read())
+        tx_id = tx_res.get("id")
+
+        # Step 3: Poll for completion (max 15 sec)
+        for _ in range(15):
+            import time
+            time.sleep(1)
+            poll_req = urllib.request.Request(
+                f"https://api.assemblyai.com/v2/transcript/{tx_id}",
+                headers={"Authorization": key}
+            )
+            poll_res = _json.loads(urllib.request.urlopen(poll_req, timeout=10).read())
+            status = poll_res.get("status")
+            if status == "completed":
+                return {
+                    "text": poll_res.get("text", ""),
+                    "language": poll_res.get("language_code", "en"),
+                    "segments": poll_res.get("utterances", []),
+                    "method": "assemblyai",
+                    "diarized": True,
+                }
+            elif status == "error":
+                break
+        return None
     except Exception as e:
-        log.warning("assemblyai whisper failed: %s", e)
+        log.warning("assemblyai rest failed: %s", e)
         return None
 
 
