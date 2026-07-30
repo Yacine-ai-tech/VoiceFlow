@@ -23,13 +23,33 @@ class Settings:
     LLM_REASONING = os.getenv("LLM_REASONING", "anthropic/claude-sonnet-4-6")
     LLM_JUDGE = os.getenv("LLM_JUDGE", "anthropic/claude-haiku-4-5")
 
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-    HF_TOKEN = os.getenv("HF_TOKEN", "")
-    DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
-    ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
+    @property
+    def GROQ_API_KEY(self) -> str:
+        return os.getenv("GROQ_API_KEY", "").strip()
+
+    @property
+    def ANTHROPIC_API_KEY(self) -> str:
+        return os.getenv("ANTHROPIC_API_KEY", "").strip()
+
+    @property
+    def OPENAI_API_KEY(self) -> str:
+        return os.getenv("OPENAI_API_KEY", "").strip()
+
+    @property
+    def GEMINI_API_KEY(self) -> str:
+        return os.getenv("GEMINI_API_KEY", "").strip()
+
+    @property
+    def HF_TOKEN(self) -> str:
+        return os.getenv("HF_TOKEN", "").strip()
+
+    @property
+    def DEEPGRAM_API_KEY(self) -> str:
+        return os.getenv("DEEPGRAM_API_KEY", "").strip()
+
+    @property
+    def ASSEMBLYAI_API_KEY(self) -> str:
+        return os.getenv("ASSEMBLYAI_API_KEY", "").strip()
 
     TRANSCRIPTION_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "LOCAL_WHISPERX")
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
