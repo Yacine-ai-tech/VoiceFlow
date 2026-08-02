@@ -48,7 +48,7 @@ def _send_telemetry():
     if os.environ.get("TELEMETRY_OPT_OUT", "").lower() in ("1", "true", "yes"):
         return
     
-    lock_file = "/tmp/.ysiddo_telemetry.lock"
+    lock_file = "/tmp/.telemetry.lock"
     try:
         if os.path.exists(lock_file):
             if time.time() - os.path.getmtime(lock_file) < 21600:
