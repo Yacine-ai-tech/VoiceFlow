@@ -11,6 +11,8 @@ services:
     plan: free
     autoDeploy: false
     envVars:
+      - key: ENVIRONMENT
+        value: production
       - key: GROQ_API_KEY          # meeting/general analysis + Groq Whisper transcription
         sync: false
       - key: ANTHROPIC_API_KEY     # sales/support/interview analysis (Claude)
