@@ -67,7 +67,8 @@ def _send_telemetry():
             
         # WARM UP ML MODELS
         try:
-            from services.transcription_router import _whisperx
+            from services.whisperx_service import WhisperXService
+            _whisperx = WhisperXService()
             if _whisperx and hasattr(_whisperx, '_ensure_model'):
                 _whisperx._ensure_model()
             elif _whisperx and getattr(_whisperx, 'model_name', None):
@@ -369,40 +370,25 @@ async def ws_realtime(ws: WebSocket):
     """OpenAI Realtime API & Gemini Multimodal Live bridge (voice agent).
 
     Provider selection (env-driven):
-      - OPENAI_API_KEY set  → OpenAI Realtime API (gpt-4o-realtime-preview, raw WS relay).
-      - GEMINI_API_KEY set  → Gemini Multimodal Live (gemini-3.1-flash-live-preview,
-                               official google-genai SDK on v1beta).
-      - REALTIME_PROVIDER='gemini'|'openai' to force a provider.
+      - REALTIME_PROVIDER ('openai' or 'gemini', default: 'openai').
+      - REALTIME_API_KEY (API key for selected provider).
 
     Audio specs:
       - OpenAI: 24kHz PCM 16-bit input/output (no resampling needed).
       - Gemini: 16kHz PCM 16-bit input, 24kHz output (server downsamples input).
     """
     await ws.accept()
-    openai_key = getattr(settings, "OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "") or ""
-    gemini_key  = getattr(settings, "GEMINI_API_KEY", "")  or os.getenv("GEMINI_API_KEY", "")  or ""
-    forced_provider = (os.getenv("REALTIME_PROVIDER", "") or "").lower()
+    provider = getattr(settings, "REALTIME_PROVIDER", "openai").lower()
+    api_key = getattr(settings, "REALTIME_API_KEY", "")
 
-    if forced_provider == "gemini":
-        use_gemini = True
-    elif forced_provider == "openai":
-        use_gemini = False
-    else:
-        use_gemini = bool(gemini_key and not openai_key)
+    if not api_key:
+        await ws.send_json({"type": "error", "message": "REALTIME_API_KEY not configured."})
+        await ws.close()
+        return
 
-    if use_gemini and not gemini_key:
-        await ws.send_json({"type": "error", "message": "GEMINI_API_KEY not configured."})
-        await ws.close(); return
-
-    if not use_gemini and not openai_key:
-        if gemini_key:
-            use_gemini = True
-        else:
-            await ws.send_json({"type": "error", "message": "Neither OPENAI_API_KEY nor GEMINI_API_KEY configured."})
-            await ws.close(); return
-
-    # ── GEMINI PATH — official google-genai SDK (v1beta, gemini-3.1-flash-live-preview) ──
-    if use_gemini:
+    if provider == "gemini":
+        gemini_key = api_key
+        # ── GEMINI PATH — official google-genai SDK (v1beta, gemini-3.1-flash-live-preview) ──
         try:
             from google import genai as _genai
             from google.genai import types as _gtypes
@@ -524,49 +510,55 @@ async def ws_realtime(ws: WebSocket):
                 pass
         return
 
-    # ── OPENAI PATH — raw WebSocket relay ──────────────────────────────────────────────
-    import inspect
-    import websockets
+    elif provider == "openai":
+        openai_key = api_key
+        # ── OPENAI PATH — raw WebSocket relay ──────────────────────────────────────────────
+        import inspect
+        import websockets
 
-    model = getattr(settings, "OPENAI_REALTIME_MODEL", None) or "gpt-4o-realtime-preview"
-    url     = f"wss://api.openai.com/v1/realtime?model={model}"
-    headers = [("Authorization", f"Bearer {openai_key}"), ("OpenAI-Beta", "realtime=v1")]
-    model_name = f"OpenAI Realtime ({model})"
+        model = getattr(settings, "OPENAI_REALTIME_MODEL", None) or "gpt-4o-realtime-preview"
+        url     = f"wss://api.openai.com/v1/realtime?model={model}"
+        headers = [("Authorization", f"Bearer {openai_key}"), ("OpenAI-Beta", "realtime=v1")]
+        model_name = f"OpenAI Realtime ({model})"
 
-    hkw = "additional_headers" if "additional_headers" in inspect.signature(websockets.connect).parameters else "extra_headers"
-    try:
-        async with websockets.connect(url, max_size=None, **{hkw: headers}) as upstream:
-            await ws.send_json({"type": "ready", "message": f"Connected to {model_name}"})
-
-            async def client_to_upstream():
-                try:
-                    while True:
-                        msg_text = await ws.receive_text()
-                        try:
-                            data = json.loads(msg_text)
-                            if data.get("type") == "client.speech_started":
-                                await upstream.send(json.dumps({"type": "response.cancel"}))
-                                continue
-                        except Exception:
-                            pass
-                        await upstream.send(msg_text)
-                except Exception:
-                    pass
-
-            async def upstream_to_client():
-                try:
-                    async for msg in upstream:
-                        msg_text = msg if isinstance(msg, str) else msg.decode("utf-8", "ignore")
-                        await ws.send_text(msg_text)
-                except Exception:
-                    pass
-
-            await asyncio.gather(client_to_upstream(), upstream_to_client())
-    except WebSocketDisconnect:
-        log.info("realtime openai client disconnected")
-    except Exception as e:
-        log.warning("realtime openai relay error: %s", e)
+        hkw = "additional_headers" if "additional_headers" in inspect.signature(websockets.connect).parameters else "extra_headers"
         try:
-            await ws.send_json({"type": "error", "message": f"OpenAI Realtime relay failed: {e}"})
-        except Exception:
-            pass
+            async with websockets.connect(url, max_size=None, **{hkw: headers}) as upstream:
+                await ws.send_json({"type": "ready", "message": f"Connected to {model_name}"})
+
+                async def client_to_upstream():
+                    try:
+                        while True:
+                            msg_text = await ws.receive_text()
+                            try:
+                                data = json.loads(msg_text)
+                                if data.get("type") == "client.speech_started":
+                                    await upstream.send(json.dumps({"type": "response.cancel"}))
+                                    continue
+                            except Exception:
+                                pass
+                            await upstream.send(msg_text)
+                    except Exception:
+                        pass
+
+                async def upstream_to_client():
+                    try:
+                        async for msg in upstream:
+                            msg_text = msg if isinstance(msg, str) else msg.decode("utf-8", "ignore")
+                            await ws.send_text(msg_text)
+                    except Exception:
+                        pass
+
+                await asyncio.gather(client_to_upstream(), upstream_to_client())
+        except WebSocketDisconnect:
+            log.info("realtime openai client disconnected")
+        except Exception as e:
+            log.warning("realtime openai relay error: %s", e)
+            try:
+                await ws.send_json({"type": "error", "message": f"OpenAI Realtime relay failed: {e}"})
+            except Exception:
+                pass
+    else:
+        await ws.send_json({"type": "error", "message": f"Unsupported REALTIME_PROVIDER: {provider}"})
+        await ws.close()
+        return
