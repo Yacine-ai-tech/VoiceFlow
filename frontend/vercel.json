@@ -1,6 +1,18 @@
 {
   "rewrites": [
     {
+      "source": "/docs",
+      "destination": "https://gateway.ysiddo-ai-projects.app/voiceflow/docs"
+    },
+    {
+      "source": "/docs/(.*)",
+      "destination": "https://gateway.ysiddo-ai-projects.app/voiceflow/docs/$1"
+    },
+    {
+      "source": "/openapi.json",
+      "destination": "https://gateway.ysiddo-ai-projects.app/voiceflow/openapi.json"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
