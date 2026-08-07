@@ -30,6 +30,7 @@ class Settings:
     HF_TOKEN = os.getenv("HF_TOKEN", "")
     DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
     ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
+    ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 
     TRANSCRIPTION_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "LOCAL_WHISPERX")
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
