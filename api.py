@@ -156,7 +156,7 @@ async def tts_endpoint(req: TTSRequest) -> StreamingResponse:
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text required")
     try:
-        audio = await generate_speech(req.text, language=req.language, voice_gender=req.voice_gender)
+        audio = await generate_speech(req.text, language=req.language, voice_gender=req.voice_gender, provider=req.provider)
     except RuntimeError as e:  # edge-tts not installed
         raise HTTPException(status_code=501, detail=str(e))
     except Exception as e:
