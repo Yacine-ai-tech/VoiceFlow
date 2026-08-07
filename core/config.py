@@ -57,36 +57,42 @@ class Settings:
         return os.getenv("ASSEMBLYAI_API_KEY", "").strip()
 
     TRANSCRIPTION_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "LOCAL_WHISPERX")
+    TRANSCRIPTION_MODE = os.getenv("TRANSCRIPTION_MODE", "local")
+    TRANSCRIPTION_ENDPOINT = os.getenv("TRANSCRIPTION_ENDPOINT", "")
+    TRANSCRIPTION_TOKEN = os.getenv("TRANSCRIPTION_TOKEN", "")
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
     WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
+
+    @property
+    def REALTIME_PROVIDER(self) -> str:
+        return os.getenv("REALTIME_PROVIDER", "openai").strip()
+
+    @property
+    def REALTIME_API_KEY(self) -> str:
+        return os.getenv("REALTIME_API_KEY", "").strip()
 
     CORS_ALLOWED_ORIGINS = [
         o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "*").split(",")
         if o.strip()
     ]
 
+    # Dedicated Neon Postgres for VoiceFlow (session logs, transcription history)
+    POSTGRES_URL: str = os.getenv("POSTGRES_URL", "")
+
 
 settings = Settings()
 
 
-# Gemini model fallback — when OPENAI_API_KEY is absent but GEMINI_API_KEY is
-# present, any LLM model string referencing OpenAI/GPT is remapped to Gemini
-# Flash automatically, requiring no code changes when switching providers.
-def _apply_gemini_fallback():
-    openai_key = getattr(settings, "OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
-    gemini_key = getattr(settings, "GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
-    
-    if not openai_key and gemini_key:
-        def fallback(model_str):
-            if model_str and ("openai" in model_str.lower() or "gpt-" in model_str.lower()):
-                return "gemini/gemini-2.5-flash"
-            return model_str
-            
-        for attr in dir(settings):
-            if attr.startswith("LLM_") and isinstance(getattr(settings, attr), str):
-                setattr(settings, attr, fallback(getattr(settings, attr)))
-        
-        if hasattr(settings, "JUDGE_MODELS") and isinstance(settings.JUDGE_MODELS, list):
-            settings.JUDGE_MODELS = [fallback(m) for m in settings.JUDGE_MODELS]
+def _validate_keys():
+    keys = [
+        getattr(settings, "GROQ_API_KEY", ""),
+        getattr(settings, "ANTHROPIC_API_KEY", ""),
+        getattr(settings, "OPENAI_API_KEY", ""),
+        getattr(settings, "GEMINI_API_KEY", "")
+    ]
+    valid_keys = [k for k in keys if k]
+    if len(valid_keys) < 2:
+        import warnings
+        warnings.warn("VoiceFlow requires at least 2 LLM API keys (GROQ, ANTHROPIC, OPENAI, GEMINI) for robust routing.")
 
-_apply_gemini_fallback()
+_validate_keys()
