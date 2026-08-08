@@ -11,6 +11,8 @@ services:
     plan: free
     autoDeploy: false
     envVars:
+      - key: ENVIRONMENT
+        value: production
       - key: GROQ_API_KEY          # meeting/general analysis + Groq Whisper transcription
         sync: false
       - key: ANTHROPIC_API_KEY     # sales/support/interview analysis (Claude)
@@ -26,4 +28,6 @@ services:
       - key: OMNIINTEL_INTERNAL_TOKEN  # REQUIRED: must match gateway
         sync: false
       - key: REQUIRE_INTERNAL_TOKEN
-        value: "true"
+        value: "false"
+      - key: TELEMETRY_OPT_OUT
+        value: "false"
