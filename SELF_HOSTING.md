@@ -19,8 +19,6 @@ docker run --gpus all -p 8002:8002 --env-file .env voiceflow-api
 
 ## 3. External API Configurations
 If you opt for cloud-based providers instead of local execution, ensure the following keys are provided in your `.env` file:
-- **Groq Whisper**: `GROQ_API_KEY`
-- **Deepgram**: `DEEPGRAM_API_KEY`
-- **AssemblyAI**: `ASSEMBLYAI_API_KEY`
+- **Standard Remote API**: Configure `TRANSCRIPTION_ENDPOINT` (defaults to OpenAI-compatible /v1/audio/transcriptions).
 - **ElevenLabs (Premium TTS)**: `ELEVENLABS_API_KEY`
 - **OpenAI / Gemini (Realtime Bridge)**: `OPENAI_API_KEY` or `GEMINI_API_KEY`
