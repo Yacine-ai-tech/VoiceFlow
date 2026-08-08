@@ -18,7 +18,7 @@ VoiceFlow executes a deterministic pipeline mapping unstructured audio to domain
             └────┬─────┘
                  ▼
    ┌─────────────────────────┐
-   │  TranscriptionRouter    │ ← Provider: Local WhisperX (default), Groq, Deepgram, AssemblyAI
+   │  TranscriptionRouter    │ ← Provider: Local WhisperX (default), TRANSCRIPTION_ENDPOINT
    │  (+ Diarization Layer)  │ ← Fallback Chain: PyAnnote 3.x → NeMo → No-Diarization
    └────┬────────────────────┘
         ▼
@@ -32,7 +32,7 @@ VoiceFlow executes a deterministic pipeline mapping unstructured audio to domain
 
 ## Core Capabilities
 
-- **Abstracted Transcription Routing**: Dynamically routes requests between local `WhisperX` (forced alignment and batching), Groq Whisper, Deepgram, and AssemblyAI based on availability and latency constraints.
+- **Abstracted Transcription Routing**: Dynamically routes requests between local `WhisperX` (forced alignment and batching), and a standard `TRANSCRIPTION_ENDPOINT` based on availability and latency constraints.
 - **Robust Diarization Fallback**: Implements an enterprise-grade speaker diarization pipeline cascading from HuggingFace PyAnnote to NVIDIA NeMo, degrading gracefully to raw transcription if hardware constraints emerge.
 - **Text-to-Speech (TTS) Synthesis**: Supports synchronous and asynchronous TTS via `edge-tts` (Microsoft Edge neural voices) and premium high-fidelity generation via ElevenLabs.
 - **Real-Time Voice Agent Bridge**: Implements a bidirectional WebSocket relay for the OpenAI Realtime API (`/realtime`), natively supporting Gemini Multimodal Live translation layers.
@@ -42,10 +42,10 @@ VoiceFlow executes a deterministic pipeline mapping unstructured audio to domain
 
 | Analysis Type   | Target LLM Tier         | Output Schema |
 |-----------------|-------------------------|---------------|
-| Meeting Notes   | Groq Llama 3.3 70B      | `action_items`, `decisions`, `next_steps` |
-| Sales Call CRM  | Claude Sonnet 4.6       | `pain_points`, `objections`, `deal_stage` |
-| Support QA      | Claude Haiku 4.5        | `severity`, `escalation`, `follow_ups` |
-| Interview       | Claude Sonnet 4.6       | `strengths`, `gaps`, `recommendation` |
+| Meeting Notes   | Configured LLM          | `action_items`, `decisions`, `next_steps` |
+| Sales Call CRM  | Configured LLM          | `pain_points`, `objections`, `deal_stage` |
+| Support QA      | Configured LLM          | `severity`, `escalation`, `follow_ups` |
+| Interview       | Configured LLM          | `strengths`, `gaps`, `recommendation` |
 
 ## Benchmarks & Evaluation
 

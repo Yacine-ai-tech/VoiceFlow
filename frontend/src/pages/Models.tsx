@@ -18,7 +18,7 @@ export default function Models() {
           <AudioWaveform size={20} style={{ color: "var(--accent)" }} strokeWidth={1.6} />
           <div className="mt-3 text-[15px] font-semibold text-body">Speech recognition</div>
           <div className="mt-3 space-y-2 text-[13px] leading-6 text-dim">
-            <div><Chip tone="accent">GROQ_WHISPER</Chip> Whisper large on Groq — fast cloud STT (used when a Groq key is configured; the live deployment's default).</div>
+            <div><Chip tone="accent">TRANSCRIPTION_ENDPOINT</Chip> Standard remote API (e.g. OpenAI-compatible /v1/audio/transcriptions). The live deployment's default.</div>
             <div><Chip>DEEPGRAM</Chip> / <Chip>ASSEMBLYAI</Chip> alternate cloud providers, key-gated.</div>
             <div><Chip>LOCAL_WHISPERX</Chip> private on-host WhisperX; the API returns an explicit error when it is unavailable.</div>
           </div>
@@ -27,7 +27,7 @@ export default function Models() {
         <Card hover>
           <BrainCircuit size={20} style={{ color: "var(--accent)" }} strokeWidth={1.6} />
           <div className="mt-3 text-[15px] font-semibold text-body">Intelligence extraction</div>
-          <div className="num mt-0.5 font-mono text-[11.5px] text-muted">anthropic/claude-sonnet-4-6</div>
+          <div className="num mt-0.5 font-mono text-[11.5px] text-muted">Configured via LiteLLM (Gemini, Groq, or Anthropic)</div>
           <p className="mt-3 text-[13px] leading-6 text-dim">
             Claude reasoning turns transcripts into typed structures — five real schemas: meeting
             notes (action items with owners/deadlines), sales calls (deal stage, objections,
