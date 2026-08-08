@@ -10,10 +10,11 @@ import { test, expect, Page } from '@playwright/test';
 const BASE_URL = process.env.VOICEFLOW_URL    || process.env.TEST_BASE_URL || 'http://localhost:5175';
 const API_URL  = process.env.VOICEFLOW_API_URL || 'http://localhost:8002';
 const AUTH_URL = process.env.INTELAI_API_URL   || 'http://localhost:8000';
+const ADMIN_PASS = process.env.ADMIN_PASS || '';
 
 async function getAuthToken(request: any): Promise<string> {
   const resp = await request.post(`${AUTH_URL}/api/login`, {
-    data: { username: 'admin', password: '!omni-admin!ai!26' }
+    data: { username: 'admin', password: ADMIN_PASS }
   }).catch(() => null);
   if (resp && resp.ok()) {
     const body = await resp.json();
