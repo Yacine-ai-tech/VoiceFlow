@@ -1,3 +1,4 @@
-# Heavy ML deps — requires ctranslate2 and GPU for best performance.
+# Heavy ML deps — requires ctranslate2 and PyTorch / GPU.
 # pip install -r requirements-ml.txt
 whisperx>=3.1.0
+faster-whisper>=1.0.3
