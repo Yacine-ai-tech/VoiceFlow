@@ -26,8 +26,10 @@ export default function VoiceAgent() {
 
   const connect = () => {
     setState("connecting"); setEvents([]); setMsgs([]);
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/realtime`);
+    const base = import.meta.env.VITE_API_BASE_URL || "";
+    const proto = (base ? new URL(base).protocol : location.protocol) === "https:" ? "wss" : "ws";
+    const host = base ? base.replace(/^https?:\/\//, "") : location.host;
+    const ws = new WebSocket(`${proto}://${host}/realtime`);
     wsRef.current = ws;
     ws.onmessage = (m) => {
       let data: Record<string, unknown>;
@@ -47,6 +49,27 @@ export default function VoiceAgent() {
           const rest = old[old.length - 1]?.role === "assistant" ? old.slice(0, -1) : old;
           return [...rest, { role: "assistant", text: draft.current }];
         });
+      }
+      if (type === "response.audio.delta" && data.delta) {
+        if (!audioCtxRef.current) {
+          audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+        }
+        const ctx = audioCtxRef.current;
+        const binaryStr = atob(String(data.delta));
+        const len = binaryStr.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+        const int16 = new Int16Array(bytes.buffer);
+        const audioBuffer = ctx.createBuffer(1, int16.length, 24000);
+        const channelData = audioBuffer.getChannelData(0);
+        for (let i = 0; i < int16.length; i++) channelData[i] = int16[i] / 32768.0;
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+        const now = ctx.currentTime;
+        const playAt = (window as any)._nextPlayTime && (window as any)._nextPlayTime > now ? (window as any)._nextPlayTime : now;
+        source.start(playAt);
+        (window as any)._nextPlayTime = playAt + audioBuffer.duration;
       }
       if (type === "response.done") draft.current = "";
     };
