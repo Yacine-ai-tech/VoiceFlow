@@ -3,7 +3,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { LucideIcon, Menu, X } from "lucide-react";
 
-export type NavItem = { to: string; label: string; icon: LucideIcon };
+export type NavItem = { to: string; label: string; icon: LucideIcon; external?: boolean };
 
 export function AppShell({
   product,
@@ -32,32 +32,45 @@ export function AppShell({
         </div>
       </div>
       <nav className="mt-1 flex-1 space-y-0.5 px-3">
-        {nav.map(({ to, label, icon: Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={to === "/"}
-            className={({ isActive }) =>
-              `group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors ${
-                isActive ? "bg-surface-2 text-body" : "text-dim hover:bg-surface-2 hover:text-body"
-              }`
-            }
-          >
-            {({ isActive }) => (
-              <>
-                {isActive && (
-                  <motion.span
-                    layoutId="nav-rail"
-                    className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full"
-                    style={{ background: "var(--accent)" }}
-                  />
-                )}
-                <Icon size={17} strokeWidth={1.8} />
-                {label}
-              </>
-            )}
-          </NavLink>
-        ))}
+        {nav.map(({ to, label, icon: Icon, external }) => 
+          external ? (
+            <a
+              key={to}
+              href={to}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors text-dim hover:bg-surface-2 hover:text-body"
+            >
+              <Icon size={17} strokeWidth={1.8} />
+              {label}
+            </a>
+          ) : (
+            <NavLink
+              key={to}
+              to={to}
+              end={to === "/"}
+              className={({ isActive }) =>
+                `group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors ${
+                  isActive ? "bg-surface-2 text-body" : "text-dim hover:bg-surface-2 hover:text-body"
+                }`
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  {isActive && (
+                    <motion.span
+                      layoutId="nav-rail"
+                      className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full"
+                      style={{ background: "var(--accent)" }}
+                    />
+                  )}
+                  <Icon size={17} strokeWidth={1.8} />
+                  {label}
+                </>
+              )}
+            </NavLink>
+          )
+        )}
       </nav>
       <div className="flex items-center gap-2 border-t border-line px-5 py-4 text-xs text-muted">
         <span

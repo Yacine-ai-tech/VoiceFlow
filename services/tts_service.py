@@ -4,8 +4,7 @@ Text-to-Speech — Production-grade TTS using edge-tts.
 Replaces gTTS with Microsoft Edge neural voices:
 - Natural, human-like speech
 - Bilingual: English + French
-- Fast generation (streaming capable)
-- No API key required
+- Providers: edge-tts (default, no API key), elevenlabs (premium)
 - Multiple voice options per language
 
 Voices used:
@@ -16,9 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import tempfile
 from typing import Optional
 
+from core.config import settings
 from core.logger import get_logger
 
 log = get_logger(__name__)
@@ -44,9 +45,10 @@ async def generate_speech(
     voice_gender: str = "default",
     rate: str = "+0%",
     volume: str = "+0%",
+    provider: str = "edge",
 ) -> bytes:
     """
-    Generate speech audio from text using edge-tts.
+    Generate speech audio from text using edge-tts or elevenlabs.
     
     Args:
         text: Text to convert to speech
@@ -54,10 +56,40 @@ async def generate_speech(
         voice_gender: 'male', 'female', or 'default'
         rate: Speech rate adjustment (e.g. '+10%', '-10%')
         volume: Volume adjustment (e.g. '+10%', '-10%')
+        provider: 'edge' (default) or 'elevenlabs'
     
     Returns:
         MP3 audio bytes
     """
+    if provider == "elevenlabs" and settings.ELEVENLABS_API_KEY:
+        try:
+            import httpx
+            # simple voices map for elevenlabs (Rachel/Josh)
+            el_voice = "21m00Tcm4TlvDq8ikWAM" if voice_gender == "female" else "TxGEqnHWrfWFTfGW9XjX"
+            if language.startswith("fr"):
+                # just an example french voice or multilingual v2 handles it
+                pass 
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{el_voice}"
+            headers = {
+                "Accept": "audio/mpeg",
+                "Content-Type": "application/json",
+                "xi-api-key": settings.ELEVENLABS_API_KEY
+            }
+            data = {
+                "text": text,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {"stability": 0.5, "similarity_boost": 0.5}
+            }
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(url, json=data, headers=headers)
+                resp.raise_for_status()
+                audio_bytes = resp.content
+                log.info("TTS (ElevenLabs) generated: %d bytes", len(audio_bytes))
+                return audio_bytes
+        except Exception as e:
+            log.warning("ElevenLabs TTS failed, falling back to edge-tts: %s", e)
+
+    # fallback to edge-tts
     try:
         import edge_tts
 
