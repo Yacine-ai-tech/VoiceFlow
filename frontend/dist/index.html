@@ -3,13 +3,43 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    
     <meta name="description" content="VoiceFlow — spoken conversations become structured business intelligence" />
     <title>VoiceFlow — AI Speech Intelligence</title>
-    <script type="module" crossorigin src="/assets/index-D4TUkq-O.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-BSbNqfQ6.css">
+  
+    <!-- Low-Bandwidth / Sahel Optimizations -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, shrink-to-fit=no" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="dns-prefetch" href="https://fonts.googleapis.com" />
+    <link rel="dns-prefetch" href="https://fonts.gstatic.com" />
+    <script>
+      // Zero-Trust Fresh Code Guarantee: Unregister SW & clear CacheStorage on every mount
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for (var registration of registrations) {
+            registration.unregister();
+          }
+        }).catch(function() {});
+      }
+      if ('caches' in window) {
+        caches.keys().then(function(names) {
+          for (var name of names) {
+            caches.delete(name);
+          }
+        }).catch(function() {});
+      }
+    </script>
+
+    <script type="module" crossorigin src="/assets/index-Du9j74wN.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CIHhswfW.css">
   </head>
   <body>
     <div id="root"></div>
-  </body>
+  
+    
+
+  <!-- Cloudflare Analytics Pixel -->
+  <img src="https://gateway.ysiddo-ai-projects.app/pixel/voiceflow" width="1" height="1" style="display:none" alt="" aria-hidden="true">
+</body>
 </html>
