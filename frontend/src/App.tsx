@@ -25,7 +25,7 @@ const NAV = [
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/history", label: "History", icon: HistoryIcon },
   { to: "/models", label: "Models", icon: Cpu },
-  { to: "/api-docs", label: "API Docs", icon: Code2 },
+  { to: "/docs", label: "API Docs", icon: Code2, external: true },
 ];
 
 export default function App() {
