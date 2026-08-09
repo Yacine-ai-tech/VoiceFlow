@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Webhook, Slack, Send, Check, AlertTriangle, Boxes } from "lucide-react";
+import { Webhook, Slack, Send, Check, AlertTriangle, Boxes, KeyRound } from "lucide-react";
 import { PageHeader } from "../kit/AppShell";
 import { Button, Card, Chip } from "../kit/primitives";
 import { Label } from "../kit/misc";
@@ -8,13 +8,14 @@ import { JSONViewer } from "../kit/JSONViewer";
 import { api, readHistory } from "../lib/api";
 
 /* v1 "Integrations" — REAL: the server relays structured output to any webhook
-   (Slack incoming webhook, Zapier/n8n catch hook, custom endpoint). The browser can't
-   POST cross-origin, so /integrations/relay does it server-side. */
+   (Slack incoming webhook, Zapier/n8n catch hook, custom endpoint, or any receiver
+   that verifies an HMAC-SHA256 signature — e.g. StreamPulse's /webhook/{source}).
+   The browser can't POST cross-origin, so /integrations/relay does it server-side. */
 
 const TARGETS = [
   { icon: Slack, label: "Slack", hint: "Incoming Webhook URL — auto-formatted into a readable Slack message (Slack rejects raw JSON)" },
   { icon: Boxes, label: "n8n / Zapier", hint: "Catch-hook URL — accepts the payload as-is, map fields in their UI" },
-  { icon: Webhook, label: "Custom webhook", hint: "Any HTTPS endpoint that accepts a JSON POST" },
+  { icon: Webhook, label: "Custom / signed webhook", hint: "Any HTTPS endpoint that accepts a JSON POST — optionally HMAC-signed for receivers that verify requests" },
 ];
 
 const TARGET_OPTIONS: { value: string; label: string }[] = [
@@ -32,8 +33,11 @@ export default function Integrations() {
   const [source, setSource] = useState<"latest" | "custom">("latest");
   const [custom, setCustom] = useState('{\n  "event": "voiceflow.result",\n  "summary": "..."\n}');
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; status: number; response: string; target: string } | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; status: number; response: string; target: string; signed: boolean } | null>(null);
   const [err, setErr] = useState("");
+  const [showSigning, setShowSigning] = useState(false);
+  const [secret, setSecret] = useState("");
+  const [sigHeader, setSigHeader] = useState("");
 
   const latest = history[0];
 
@@ -43,7 +47,7 @@ export default function Integrations() {
       const payload = source === "latest"
         ? (latest ? { event: "voiceflow.result", kind: latest.kind, title: latest.title, ...latest.result } : {})
         : JSON.parse(custom);
-      setResult(await api.relay(url, payload, target || undefined));
+      setResult(await api.relay(url, payload, target || undefined, secret || undefined, sigHeader || undefined));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally { setBusy(false); }
@@ -99,6 +103,34 @@ export default function Integrations() {
               <div className="rounded-xl border border-line bg-surface-2 p-4 text-[13px] text-muted">Analyze a conversation first — its result becomes the payload.</div>
             )}
           </div>
+          <div>
+            <button
+              onClick={() => setShowSigning((s) => !s)}
+              className="flex items-center gap-1.5 text-[12.5px] font-medium text-dim hover:text-body"
+            >
+              <KeyRound size={13} /> {showSigning ? "Hide signing options" : "Sign this request (HMAC-SHA256)"}
+            </button>
+            {showSigning && (
+              <div className="mt-2 space-y-2 rounded-xl border border-dashed border-line-strong p-3">
+                <div>
+                  <Label>Shared secret</Label>
+                  <input value={secret} onChange={(e) => setSecret(e.target.value)} type="password" placeholder="only sent to your target URL, never stored"
+                    className="w-full rounded-input border border-line bg-bg px-3 py-2 text-[13px] text-body outline-none focus:border-[var(--accent)]" />
+                </div>
+                <div>
+                  <Label>Signature header name (optional)</Label>
+                  <input value={sigHeader} onChange={(e) => setSigHeader(e.target.value)} placeholder="X-Signature-256 (default)"
+                    className="w-full rounded-input border border-line bg-bg px-3 py-2 text-[13px] text-body outline-none focus:border-[var(--accent)]" />
+                </div>
+                <p className="text-[11.5px] leading-5 text-muted">
+                  When set, the exact JSON body sent is HMAC-SHA256-signed with this secret and attached as
+                  <code className="font-mono"> {sigHeader || "X-Signature-256"}: sha256=&lt;hex&gt;</code> — a generic
+                  convention, not tied to any specific receiver, but compatible out of the box with anything that
+                  verifies requests this way (e.g. a StreamPulse-style <code className="font-mono">/webhook/&#123;source&#125;</code> endpoint).
+                </p>
+              </div>
+            )}
+          </div>
           <Button onClick={send} disabled={busy || !url}>
             <Send size={14} /> {busy ? "Relaying…" : "Send"}
           </Button>
@@ -109,6 +141,7 @@ export default function Integrations() {
               {result.ok ? <Check size={15} className="text-ok" /> : <AlertTriangle size={15} className="text-bad" />}
               <Chip tone={result.ok ? "ok" : "bad"} className="num">HTTP {result.status}</Chip>
               <Chip tone="accent">{result.target}</Chip>
+              {result.signed && <Chip tone="ok"><KeyRound size={11} /> signed</Chip>}
               <span className="truncate text-dim">{result.response || "(empty response)"}</span>
             </motion.div>
           )}
