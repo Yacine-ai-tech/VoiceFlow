@@ -54,3 +54,5 @@ frontend/node_modules/
 .env.local
 .pytest_cache/
 .coverage
+frontend/playwright-report/
+frontend/test-results/

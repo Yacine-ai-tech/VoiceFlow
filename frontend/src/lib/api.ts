@@ -1,6 +1,6 @@
 export class ApiError extends Error { constructor(public status: number, message: string) { super(message); this.name = 'ApiError'; } }
 
-/** Typed client for the VoiceFlow API (shapes verified in GAP_REPORT.md §1). */
+/** Typed client for the VoiceFlow API. */
 
 export type Transcript = Record<string, unknown> & { text?: string; error?: string };
 export type Analysis = Record<string, unknown> & { error?: string };
@@ -64,11 +64,11 @@ export const api = {
       body: JSON.stringify({ text, fields, instructions }),
     }),
 
-  relay: (url: string, payload: unknown) =>
-    req<{ ok: boolean; status: number; response: string }>("/integrations/relay", {
+  relay: (url: string, payload: unknown, target?: string) =>
+    req<{ ok: boolean; status: number; response: string; target: string }>("/integrations/relay", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, payload }),
+      body: JSON.stringify({ url, payload, target }),
     }),
 
   analytics: () => req<{ counters: Record<string, number>; total_analyses: number; stream_sessions: number; relays: number; by_mode: Record<string, number> }>("/analytics"),

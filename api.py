@@ -10,7 +10,10 @@ Endpoints:
   POST /meeting/process
   POST /call/analyze
   WS   /stream           streaming transcription (optional)
-  WS   /realtime         OpenAI Realtime API bridge (voice agent)
+  WS   /realtime         OpenAI/Gemini realtime voice agent. If AGENT_TOOLS_URL
+                         is set, any tools that service exposes are available
+                         for the model to call mid-call — see
+                         services/agent_tools_bridge.py.
 """
 from __future__ import annotations
 
@@ -28,6 +31,7 @@ from pydantic import BaseModel
 
 from core.config import settings
 from core.logger import get_logger
+from services import agent_tools_bridge, relay_formatting, scenarios
 from services.meeting_analyzer import MeetingAnalyzer
 from services.transcription_router import transcribe as route_transcribe
 from services.tts_service import generate_speech
@@ -37,56 +41,52 @@ log = get_logger(__name__)
 app = FastAPI(title="VoiceFlow", version="0.1.0",
               description="Speech → structured intelligence.")
 
-# --- ETHICAL TELEMETRY ---
 import threading
-import requests
-import os
 import time
 import uuid
 
+
 def _send_telemetry():
+    """One anonymous startup ping per machine, at most every 6 hours.
+
+    A no-op unless TELEMETRY_ENDPOINT is set — nothing is sent anywhere by
+    default. Always skippable with TELEMETRY_OPT_OUT=true. See TELEMETRY.md
+    for exactly what the payload contains and why.
+    """
+    import os
+
     if os.environ.get("TELEMETRY_OPT_OUT", "").lower() in ("1", "true", "yes"):
         return
-    
-    lock_file = "/tmp/.telemetry.lock"
+    endpoint = settings.TELEMETRY_ENDPOINT
+    if not endpoint:
+        return
+
+    lock_file = "/tmp/.voiceflow_telemetry.lock"
     try:
-        if os.path.exists(lock_file):
-            if time.time() - os.path.getmtime(lock_file) < 21600:
-                return
+        if os.path.exists(lock_file) and time.time() - os.path.getmtime(lock_file) < 21600:
+            return
         with open(lock_file, "w") as f:
             f.write(str(time.time()))
     except Exception:
         pass
 
     try:
-        if "log" in globals():
-            globals()["log"].info("📡 Anonymous telemetry ENABLED (set TELEMETRY_OPT_OUT=true to disable).")
-        else:
-            import logging
-            logging.info("📡 Anonymous telemetry ENABLED (set TELEMETRY_OPT_OUT=true to disable).")
-            
-        # WARM UP ML MODELS
-        try:
-            from services.whisperx_service import WhisperXService
-            _whisperx = WhisperXService()
-            if _whisperx and hasattr(_whisperx, '_ensure_model'):
-                _whisperx._ensure_model()
-            elif _whisperx and getattr(_whisperx, 'model_name', None):
-                import whisperx
-                _whisperx._model = whisperx.load_model(_whisperx.model_name, device=_whisperx.device, compute_type="int8")
-        except Exception as e:
-            pass
-        
+        import requests
         requests.post(
-            "http://localhost:8000/telemetry", 
-            json={"service": "VoiceFlow", "event": "startup", "instance_id": str(uuid.getnode())[:8]},
-            timeout=2
+            endpoint,
+            json={
+                "service": "voiceflow",
+                "event": "startup",
+                "version": app.version,
+                "instance_id": str(uuid.getnode())[:8],
+            },
+            timeout=3,
         )
     except Exception:
         pass
 
+
 threading.Thread(target=_send_telemetry, daemon=True).start()
-# -------------------------
 
 
 from fastapi import Request
@@ -95,8 +95,14 @@ import os as _os
 
 @app.middleware("http")
 async def verify_internal_token(request: Request, call_next):
-    # Allow health checks, public auth routes, frontend static assets, and WebSocket endpoints
-    if request.method == "OPTIONS" or request.url.path in ["/", "/health", "/docs", "/openapi.json", "/api/redoc", "/realtime", "/stream", "/favicon.png", "/favicon.ico", "/mark.png", "/logo.png"] or request.url.path.startswith("/api/v1/auth/") or request.url.path.startswith("/assets/") or request.url.path.startswith("/static/"):
+    # Allow health checks, public auth routes, frontend static assets, and WebSocket endpoints.
+    # Any GET is also public — that's page navigation (the SPA shell + its static files), never
+    # a protected data-processing call; those are all POST/WS and stay gated below.
+    if (request.method == "OPTIONS" or request.method == "GET"
+            or request.url.path in ["/realtime", "/stream"]
+            or request.url.path.startswith("/api/v1/auth/")
+            or request.url.path.startswith("/assets/")
+            or request.url.path.startswith("/static/")):
         return await call_next(request)
         
     token = request.headers.get("X-OmniIntel-Internal-Token")
@@ -236,29 +242,49 @@ async def analyze_custom_endpoint(req: CustomAnalyzeRequest) -> Dict[str, Any]:
 class RelayRequest(BaseModel):
     url: str
     payload: Dict[str, Any]
+    target: Optional[str] = None  # "slack" | "zapier" | "n8n" | "generic" — auto-detected from url if omitted
 
 
 @app.post("/integrations/relay")
 async def integrations_relay(req: RelayRequest) -> Dict[str, Any]:
     """Post structured output to any webhook (Slack/Zapier/n8n/custom). This is the real
-    integration surface — the browser can't POST cross-origin, so the server relays it."""
+    integration surface — the browser can't POST cross-origin, so the server relays it.
+
+    n8n and Zapier catch-hooks accept arbitrary JSON, so their payload goes
+    through unchanged. Slack incoming webhooks don't — they need
+    {"text": ...} or Block Kit, so that payload is reformatted into a
+    readable Slack message first (see services/relay_formatting.py)."""
     if not req.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="invalid_url")
+    target = relay_formatting.resolve_target(req.url, req.target)
+    body = relay_formatting.format_for_target(target, req.payload)
     import httpx
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(req.url, json=req.payload)
+            resp = await client.post(req.url, json=body)
         _stats["relay"] += 1
         return {"ok": resp.status_code < 400, "status": resp.status_code,
-                "response": (resp.text or "")[:500]}
+                "response": (resp.text or "")[:500], "target": target}
     except Exception as e:
         detail = str(e) or type(e).__name__
         raise HTTPException(status_code=502, detail=f"relay_failed: {detail}")
 
 
 @app.get("/analytics")
-async def analytics() -> Dict[str, Any]:
-    """Real session usage counters."""
+async def analytics(request: Request):
+    """Real session usage counters.
+
+    /analytics is also the frontend's page route for the Analytics page, so a
+    plain browser navigation here (refresh, bookmark, typed URL) — as opposed
+    to the SPA's own fetch() call to this same path — should get the app, not
+    raw JSON. Sec-Fetch-Mode distinguishes the two: browsers send "navigate"
+    for top-level loads and "cors"/"same-origin" for fetch()/XHR.
+    """
+    if request.headers.get("sec-fetch-mode") == "navigate":
+        spa = _os.path.join(_os.path.dirname(__file__), "frontend", "dist", "index.html")
+        if _os.path.exists(spa):
+            return FileResponse(spa)
+
     total_analyses = sum(v for k, v in _stats.items() if k.startswith("analyze:"))
     return {
         "counters": dict(_stats),
@@ -275,12 +301,40 @@ async def pipeline_endpoint(
     analysis_type: str = Form("meeting"),
     provider: str = Form("LOCAL_WHISPERX"),
     language: str = Form("auto"),
+    scenario: Optional[str] = Form(None),
 ) -> Dict[str, Any]:
+    """scenario, if given, pins an exact provider+diarize+model combination
+    from services/scenarios.py — overrides `provider` and the analysis
+    model, with no fallback substitution, for reproducible comparisons.
+    See GET /scenarios for the catalog and eval/run_scenario_benchmark.py
+    for the comparison harness this feeds."""
     audio = await file.read()
-    trans = await route_transcribe(audio, provider=provider, language=language)
-    analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type)
+
+    spec = scenarios.resolve(scenario) if scenario else None
+    if scenario and not spec:
+        raise HTTPException(status_code=400, detail=f"unknown_scenario: {scenario}")
+
+    if spec:
+        trans = await route_transcribe(audio, provider=spec["transcription_provider"],
+                                       language=language, diarize=spec["diarize"], strict=True)
+        model = scenarios.resolve_analysis_model(settings, spec)
+        analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type, model=model)
+    else:
+        trans = await route_transcribe(audio, provider=provider, language=language)
+        analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type)
+
     _stats["pipeline"] += 1
-    return {"transcript": trans, "analysis": analysis, "analysis_type": analysis_type}
+    if scenario:
+        _stats[f"scenario:{scenario}"] += 1
+    return {"transcript": trans, "analysis": analysis, "analysis_type": analysis_type,
+            "scenario": scenario}
+
+
+@app.get("/scenarios")
+async def list_scenarios() -> Dict[str, Any]:
+    """Named, explicit provider/model combinations selectable via
+    POST /pipeline's `scenario` field — see services/scenarios.py."""
+    return scenarios.list_scenarios()
 
 
 @app.post("/meeting/process")
@@ -371,6 +425,14 @@ async def ws_realtime(ws: WebSocket):
     Audio specs:
       - OpenAI: 24kHz PCM 16-bit input/output (no resampling needed).
       - Gemini: 16kHz PCM 16-bit input, 24kHz output (server downsamples input).
+
+    External tools: if AGENT_TOOLS_URL is set, the model on either provider
+    is given whatever tools that service exposes (discovered at connect time
+    — see services/agent_tools_bridge.py for the contract) and can call them
+    mid-conversation. Tool calls and their results are also forwarded to the
+    browser as {"type": "tool_call" | "tool_result", ...} events. If the
+    service is unreachable, the model gets told that instead of the call
+    hanging; if AGENT_TOOLS_URL is unset, the session just runs without tools.
     """
     await ws.accept()
     provider = getattr(settings, "REALTIME_PROVIDER", "openai").lower()
@@ -397,8 +459,14 @@ async def ws_realtime(ws: WebSocket):
             http_options={"api_version": "v1beta"},
             api_key=gemini_key,
         )
+        try:
+            _external_tools = await agent_tools_bridge.gemini_tool_declarations()
+        except Exception as e:
+            log.warning("agent-tools declarations unavailable for Gemini Live: %s", e)
+            _external_tools = []
         _config = _gtypes.LiveConnectConfig(
             response_modalities=["AUDIO"],
+            **({"tools": _external_tools} if _external_tools else {}),
             speech_config=_gtypes.SpeechConfig(
                 voice_config=_gtypes.VoiceConfig(
                     prebuilt_voice_config=_gtypes.PrebuiltVoiceConfig(voice_name="Zephyr")
@@ -485,6 +553,20 @@ async def ws_realtime(ws: WebSocket):
 
                                 if response.tool_call:
                                     is_tool_active[0] = True
+                                    for fc in (getattr(response.tool_call, "function_calls", None) or []):
+                                        fc_args = dict(fc.args or {})
+                                        await ws.send_json({"type": "tool_call", "name": fc.name, "arguments": fc_args})
+                                        result = await agent_tools_bridge.call_tool(fc.name, fc_args)
+                                        await ws.send_json({"type": "tool_result", "name": fc.name, "result": result})
+                                        try:
+                                            await session.send_tool_response(
+                                                function_responses=[
+                                                    _gtypes.FunctionResponse(id=fc.id, name=fc.name, response=result)
+                                                ]
+                                            )
+                                        except Exception as e:
+                                            log.warning("Gemini send_tool_response failed: %s", e)
+                                    is_tool_active[0] = False
 
                                 if response.server_content and getattr(response.server_content, "turn_complete", False):
                                     is_tool_active[0] = False
@@ -519,6 +601,13 @@ async def ws_realtime(ws: WebSocket):
         hkw = "additional_headers" if "additional_headers" in inspect.signature(websockets.connect).parameters else "extra_headers"
         try:
             async with websockets.connect(url, max_size=None, **{hkw: headers}) as upstream:
+                await upstream.send(json.dumps({
+                    "type": "session.update",
+                    "session": {
+                        "tools": await agent_tools_bridge.openai_tools(),
+                        "tool_choice": "auto",
+                    },
+                }))
                 await ws.send_json({"type": "ready", "message": f"Connected to {model_name}"})
 
                 async def client_to_upstream():
@@ -541,6 +630,33 @@ async def ws_realtime(ws: WebSocket):
                         async for msg in upstream:
                             msg_text = msg if isinstance(msg, str) else msg.decode("utf-8", "ignore")
                             await ws.send_text(msg_text)
+
+                            try:
+                                data = json.loads(msg_text)
+                            except Exception:
+                                continue
+
+                            if data.get("type") == "response.function_call_arguments.done":
+                                call_id = data.get("call_id")
+                                name = data.get("name")
+                                try:
+                                    fc_args = json.loads(data.get("arguments") or "{}")
+                                except Exception:
+                                    fc_args = {}
+
+                                await ws.send_json({"type": "tool_call", "name": name, "arguments": fc_args})
+                                result = await agent_tools_bridge.call_tool(name, fc_args)
+                                await ws.send_json({"type": "tool_result", "name": name, "result": result})
+
+                                await upstream.send(json.dumps({
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "function_call_output",
+                                        "call_id": call_id,
+                                        "output": json.dumps(result),
+                                    },
+                                }))
+                                await upstream.send(json.dumps({"type": "response.create"}))
                     except Exception:
                         pass
 
@@ -557,3 +673,25 @@ async def ws_realtime(ws: WebSocket):
         await ws.send_json({"type": "error", "message": f"Unsupported REALTIME_PROVIDER: {provider}"})
         await ws.close()
         return
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str):
+    """Catch-all so direct navigation, refresh, or a bookmarked/shared link to
+    any frontend route (e.g. /agent, /history, /analyze) serves the SPA
+    instead of a raw 404 (or, for paths that collide with a POST-only API
+    route like /analyze, a 405) — React Router then resolves the route
+    client-side. Declared last so every real API/WS route above still wins.
+
+    Real static files in frontend/dist/ (favicon, logo, sw.js, ...) are
+    served directly rather than falling back to index.html for them.
+    """
+    root = _os.path.dirname(__file__)
+    dist = _os.path.realpath(_os.path.join(root, "frontend", "dist"))
+    candidate = _os.path.realpath(_os.path.join(dist, full_path))
+    if candidate.startswith(dist + _os.sep) and _os.path.isfile(candidate):
+        return FileResponse(candidate)
+    spa = _os.path.join(dist, "index.html")
+    if _os.path.exists(spa):
+        return FileResponse(spa)
+    raise HTTPException(status_code=404, detail="Not Found")
