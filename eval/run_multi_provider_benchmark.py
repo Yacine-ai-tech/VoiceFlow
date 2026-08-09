@@ -1,13 +1,46 @@
+"""
+Multi-provider ASR latency/availability benchmark.
+
+This measures what it can actually measure without ground-truth transcripts:
+real round-trip latency and success rate against each provider's live API,
+using a short generated audio clip. It does NOT compute WER/CER — that needs
+a reference transcript to compare against, which is what run_wer_benchmark.py
+does against real LibriSpeech data. See WER_BENCHMARK.md for that methodology.
+
+Any provider without an API key set is skipped, not scored as a failure.
+"""
 import asyncio
+import math
+import struct
 import time
 import os
-import json
+import wave
+import io
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
+
 import httpx
 
-# Mock audio data (would normally load from LibriSpeech)
-MOCK_AUDIO_DATA = b"mock_audio_data_for_testing" * 1000
+
+def _generate_test_audio(seconds: float = 2.0, freq_hz: float = 440.0, sample_rate: int = 16000) -> bytes:
+    """A short mono 16-bit PCM WAV tone — real, valid audio (not a ground-truth
+    transcript), enough for providers to accept and return a real response."""
+    n_samples = int(seconds * sample_rate)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        frames = bytearray()
+        for i in range(n_samples):
+            sample = int(3000 * math.sin(2 * math.pi * freq_hz * (i / sample_rate)))
+            frames += struct.pack("<h", sample)
+        wf.writeframes(bytes(frames))
+    return buf.getvalue()
+
+
+TEST_AUDIO = _generate_test_audio()
+
 
 class MultiProviderBenchmark:
     def __init__(self):
@@ -28,26 +61,19 @@ class MultiProviderBenchmark:
                 "model": "whisper-large-v3"
             }
         }
-    
+
     async def transcribe(self, provider: str, audio_data: bytes) -> Tuple[float, str]:
-        """Transcribe audio using specified provider and return (latency, transcription)"""
+        """Call the provider once and return (latency_seconds, result_or_error)."""
         config = self.providers[provider]
-        
+
         if not config["api_key"]:
             return 0.0, f"SKIPPED: No API key for {provider}"
-        
+
         start_time = time.time()
-        
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                if provider == "openai":
-                    response = await client.post(
-                        config["url"],
-                        headers={"Authorization": f"Bearer {config['api_key']}"},
-                        files={"file": ("audio.wav", audio_data, "audio/wav")},
-                        data={"model": config["model"]}
-                    )
-                elif provider == "groq":
+                if provider in ("openai", "groq"):
                     response = await client.post(
                         config["url"],
                         headers={"Authorization": f"Bearer {config['api_key']}"},
@@ -55,7 +81,6 @@ class MultiProviderBenchmark:
                         data={"model": config["model"]}
                     )
                 elif provider == "gemini":
-                    # Gemini uses different API structure
                     response = await client.post(
                         f"{config['url']}?key={config['api_key']}",
                         json={
@@ -64,143 +89,114 @@ class MultiProviderBenchmark:
                             }]
                         }
                     )
-                
+
                 latency = time.time() - start_time
-                
+
                 if response.status_code == 200:
                     result = response.json()
-                    if provider in ["openai", "groq"]:
+                    if provider in ("openai", "groq"):
                         transcription = result.get("text", "")
                     else:
                         transcription = str(result)  # Simplified for Gemini
                     return latency, transcription
                 else:
                     return latency, f"ERROR: {response.status_code} - {response.text[:100]}"
-                    
+
         except Exception as e:
             return time.time() - start_time, f"ERROR: {str(e)}"
-    
+
     async def run_benchmark(self, n_iterations: int = 10) -> Dict[str, Dict]:
-        """Run benchmark across all providers"""
+        """Run the latency/availability check across all configured providers."""
         results = {}
-        
+
         for provider in self.providers.keys():
             print(f"\n=== Testing {provider.upper()} ===")
             latencies = []
-            transcriptions = []
             errors = []
-            
+
             for i in range(n_iterations):
-                latency, result = await self.transcribe(provider, MOCK_AUDIO_DATA)
-                
+                latency, result = await self.transcribe(provider, TEST_AUDIO)
+
                 if result.startswith("ERROR") or result.startswith("SKIPPED"):
                     errors.append(result)
                     print(f"  Iteration {i+1}: {result}")
                 else:
                     latencies.append(latency)
-                    transcriptions.append(result)
                     print(f"  Iteration {i+1}: {latency:.3f}s - {len(result)} chars")
-            
+
+            success_rate = len(latencies) / n_iterations
+            results[provider] = {
+                "avg_latency": (sum(latencies) / len(latencies)) if latencies else 0.0,
+                "success_rate": success_rate,
+                "n_iterations": n_iterations,
+                "errors": errors,
+            }
             if latencies:
-                avg_latency = sum(latencies) / len(latencies)
-                success_rate = len(latencies) / n_iterations
-                results[provider] = {
-                    "avg_latency": avg_latency,
-                    "success_rate": success_rate,
-                    "avg_length": sum(len(t) for t in transcriptions) / len(transcriptions) if transcriptions else 0,
-                    "errors": errors
-                }
-                print(f"  Results: {avg_latency:.3f}s avg latency, {success_rate*100:.1f}% success")
+                print(f"  Results: {results[provider]['avg_latency']:.3f}s avg latency, {success_rate*100:.1f}% success")
             else:
-                results[provider] = {
-                    "avg_latency": 0,
-                    "success_rate": 0,
-                    "avg_length": 0,
-                    "errors": errors
-                }
-                print(f"  Results: All failed - {errors[0] if errors else 'Unknown error'}")
-        
+                print(f"  Results: All failed/skipped — {errors[0] if errors else 'no attempts'}")
+
         return results
 
-def calculate_mock_metrics(results: Dict) -> Dict[str, Dict]:
-    """Calculate mock WER/CER metrics based on transcription quality"""
-    # In a real implementation, this would compare against ground truth
-    for provider, data in results.items():
-        if data["success_rate"] > 0:
-            # Mock WER calculation based on success rate and transcription length
-            mock_wer = 2.5 + (1.0 - data["success_rate"]) * 2.0
-            mock_cer = mock_wer * 0.3
-            
-            # Mock cost calculation based on provider
-            cost_per_min = {
-                "openai": 0.006,
-                "gemini": 0.004,
-                "groq": 0.002
-            }.get(provider, 0.005)
-            
-            data["wer"] = mock_wer
-            data["cer"] = mock_cer
-            data["cost_per_min"] = cost_per_min
-    
-    return results
 
 async def main():
-    print("=== VoiceFlow Multi-Provider ASR Benchmark ===")
-    print("Testing across OpenAI, Gemini, and Groq providers")
-    
+    print("=== VoiceFlow Multi-Provider ASR Latency Benchmark ===")
+    print("Testing across OpenAI, Gemini, and Groq providers (whichever have API keys set)")
+
     benchmark = MultiProviderBenchmark()
     results = await benchmark.run_benchmark(n_iterations=5)
-    
-    # Add calculated metrics
-    results = calculate_mock_metrics(results)
-    
-    # Update benchmark markdown
-    md_path = Path(__file__).resolve().parent / "MULTI_PROVIDER_BENCHMARK.md"
-    
-    content = """# VoiceFlow — Multi-Provider ASR Benchmark
 
-A comparative benchmark of VoiceFlow's ASR performance across different providers (OpenAI Whisper, Google Gemini, Groq). Reproducible:
-`python eval/run_multi_provider_benchmark.py`
+    md_path = Path(__file__).resolve().parent / "MULTI_PROVIDER_BENCHMARK.md"
+
+    rows = []
+    for provider, data in results.items():
+        if data["success_rate"] > 0:
+            rows.append(
+                f"| {provider.title()} | {data['avg_latency']:.2f}s | "
+                f"{data['success_rate']*100:.0f}% ({int(data['success_rate']*data['n_iterations'])}/{data['n_iterations']}) |"
+            )
+        else:
+            status = "no API key" if any("SKIPPED" in e for e in data["errors"]) else "all requests failed"
+            rows.append(f"| {provider.title()} | — | 0% ({status}) |")
+
+    measured = [(p, d) for p, d in results.items() if d["success_rate"] > 0]
+    if measured:
+        fastest = min(measured, key=lambda pd: pd[1]["avg_latency"])
+        analysis = f"**{fastest[0].title()}** had the lowest measured round-trip latency this run ({fastest[1]['avg_latency']:.2f}s)."
+    else:
+        analysis = "No provider had an API key configured for this run — set at least one of `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `GROQ_API_KEY` and re-run."
+
+    content = f"""# VoiceFlow — Multi-Provider ASR Latency Benchmark
+
+Reproducible: `python eval/run_multi_provider_benchmark.py`
+
+## What this measures
+Real round-trip latency and success rate against each provider's live API,
+using a short generated tone (not a ground-truth transcript). It does **not**
+measure Word Error Rate — that requires a reference transcript to score
+against. For WER against real speech (LibriSpeech `test-clean`), see
+[`WER_BENCHMARK.md`](WER_BENCHMARK.md), which is scored with `jiwer` against
+actual reference text.
 
 ## Setup
-- Dataset: **LibriSpeech test-clean** (standard subset, N=50 for quick evaluation)
-- Models: 
-  - OpenAI Whisper (via API)
-  - Google Gemini Multimodal Live (via API)
-  - Groq Whisper (via API)
-- Metrics: WER, CER, Latency, Cost per minute
+- Audio: a generated 2s mono 16kHz sine-wave WAV (real, valid audio — not fake bytes)
+- Providers: OpenAI Whisper, Google Gemini, Groq Whisper — each tried {5} times
+- Metrics: average latency, success rate
 
-## Results (real run, 2026-07-28, N=50)
+## Results (this run)
 
-| Provider | WER | CER | Avg Latency (s) | Cost/min |
-|----------|-----|-----|----------------|----------|
+| Provider | Avg Latency | Success Rate |
+|----------|-------------|---------------|
+{chr(10).join(rows)}
+
+**Analysis:** {analysis}
 """
-    
-    for provider, data in results.items():
-        wer = data.get("wer", 0)
-        cer = data.get("cer", 0)
-        latency = data.get("avg_latency", 0)
-        cost = data.get("cost_per_min", 0)
-        
-        content += f"| {provider.title()} | {wer:.1f}% | {cer:.1f}% | {latency:.1f}s | ${cost:.003} |\n"
-    
-    content += """
-**Analysis:** 
-- **Groq Whisper** offers the best combination of accuracy (2.6% WER) and speed (0.4s latency) at the lowest cost
-- **Google Gemini** provides the fastest response time (0.8s) with slightly lower accuracy
-- **OpenAI Whisper** provides good accuracy but at higher latency and cost
-- All providers maintain WER below 3.2% on the test-clean subset
 
-**Recommendation:** Use Groq Whisper for production when cost and speed are priorities, OpenAI Whisper for highest accuracy requirements, and Gemini for fastest response time needs.
-"""
-    
     with open(md_path, "w") as f:
         f.write(content)
-    
+
     print(f"\nBenchmark complete! Results written to {md_path}")
-    print("\nSummary:")
-    for provider, data in results.items():
-        print(f"  {provider.title()}: {data.get('avg_latency', 0):.3f}s avg latency, {data.get('success_rate', 0)*100:.1f}% success")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

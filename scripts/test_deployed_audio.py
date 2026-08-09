@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-Test VoiceFlow deployed service with real audio transcription
-Tests the speech-to-text endpoint
+Manual smoke check against a running VoiceFlow instance — real audio through
+POST /transcribe. Not part of the pytest suite (see tests/ for that); this is
+for a quick manual check against local or deployed instance.
+
+Usage: VOICEFLOW_URL=https://your-instance python scripts/test_deployed_audio.py
 """
+import os
 import httpx
 import io
 import wave
 import struct
 import random
 
-# Deployed service URL
-VOICEFLOW_URL = "http://localhost:8000"
+VOICEFLOW_URL = os.getenv("VOICEFLOW_URL", "http://localhost:8002")
 
 def create_test_audio():
     """Create a simple test WAV file with some audio data"""

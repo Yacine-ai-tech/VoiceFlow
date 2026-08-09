@@ -75,11 +75,14 @@ def _strip_fences(text: str) -> str:
 class MeetingAnalyzer:
     """Multi-LLM analyzer for transcripts."""
 
-    async def analyze(self, transcript: str, analysis_type: str = "meeting") -> Dict[str, Any]:
+    async def analyze(self, transcript: str, analysis_type: str = "meeting",
+                      model: Optional[str] = None) -> Dict[str, Any]:
+        """`model` overrides the analysis_type's default tier — used by named
+        scenarios (services/scenarios.py) to pin an exact model for benchmarking."""
         if not _LITELLM:
             return {"error": "litellm_not_installed", "analysis_type": analysis_type}
         prompt = PROMPTS.get(analysis_type, PROMPTS["general"])
-        model = ANALYSIS_MODELS.get(analysis_type, settings.LLM_DEFAULT)
+        model = model or ANALYSIS_MODELS.get(analysis_type, settings.LLM_DEFAULT)
         try:
             resp = await acompletion(
                 model=model,
