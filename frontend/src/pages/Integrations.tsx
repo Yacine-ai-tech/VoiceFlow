@@ -12,18 +12,27 @@ import { api, readHistory } from "../lib/api";
    POST cross-origin, so /integrations/relay does it server-side. */
 
 const TARGETS = [
-  { icon: Slack, label: "Slack", hint: "Incoming Webhook URL — posts a JSON message to a channel" },
-  { icon: Boxes, label: "n8n / Zapier", hint: "Catch-hook URL — triggers a workflow with the payload" },
+  { icon: Slack, label: "Slack", hint: "Incoming Webhook URL — auto-formatted into a readable Slack message (Slack rejects raw JSON)" },
+  { icon: Boxes, label: "n8n / Zapier", hint: "Catch-hook URL — accepts the payload as-is, map fields in their UI" },
   { icon: Webhook, label: "Custom webhook", hint: "Any HTTPS endpoint that accepts a JSON POST" },
+];
+
+const TARGET_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "Auto-detect from URL" },
+  { value: "slack", label: "Slack (force formatting)" },
+  { value: "zapier", label: "Zapier" },
+  { value: "n8n", label: "n8n" },
+  { value: "generic", label: "Generic / custom (send as-is)" },
 ];
 
 export default function Integrations() {
   const history = readHistory();
   const [url, setUrl] = useState("");
+  const [target, setTarget] = useState("");
   const [source, setSource] = useState<"latest" | "custom">("latest");
   const [custom, setCustom] = useState('{\n  "event": "voiceflow.result",\n  "summary": "..."\n}');
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; status: number; response: string } | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; status: number; response: string; target: string } | null>(null);
   const [err, setErr] = useState("");
 
   const latest = history[0];
@@ -34,7 +43,7 @@ export default function Integrations() {
       const payload = source === "latest"
         ? (latest ? { event: "voiceflow.result", kind: latest.kind, title: latest.title, ...latest.result } : {})
         : JSON.parse(custom);
-      setResult(await api.relay(url, payload));
+      setResult(await api.relay(url, payload, target || undefined));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally { setBusy(false); }
@@ -65,6 +74,13 @@ export default function Integrations() {
               className="w-full rounded-input border border-line-strong bg-surface-2 px-3 py-2 text-sm text-body outline-none focus:border-[var(--accent)]" />
           </div>
           <div>
+            <Label>Target</Label>
+            <select value={target} onChange={(e) => setTarget(e.target.value)}
+              className="w-full rounded-input border border-line-strong bg-surface-2 px-3 py-2 text-sm text-body outline-none focus:border-[var(--accent)]">
+              {TARGET_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+          <div>
             <Label>Payload</Label>
             <div className="mb-2 flex gap-2">
               <button onClick={() => setSource("latest")} className={`rounded-lg border px-3 py-1.5 text-[12.5px] ${source === "latest" ? "border-[var(--accent)] text-body" : "border-line text-muted"}`} disabled={!latest}>
@@ -92,6 +108,7 @@ export default function Integrations() {
               className="flex items-center gap-2 rounded-xl border border-line bg-surface-2 px-4 py-3 text-[13px]">
               {result.ok ? <Check size={15} className="text-ok" /> : <AlertTriangle size={15} className="text-bad" />}
               <Chip tone={result.ok ? "ok" : "bad"} className="num">HTTP {result.status}</Chip>
+              <Chip tone="accent">{result.target}</Chip>
               <span className="truncate text-dim">{result.response || "(empty response)"}</span>
             </motion.div>
           )}

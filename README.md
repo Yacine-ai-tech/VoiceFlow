@@ -15,10 +15,12 @@
   - `support_call` → Claude Haiku 4.5
   - `interview` → Claude Sonnet 4.6
   - `general` → Groq Llama 3.3
-- **Diarization fallback chain**: pyannote 3.x → NeMo → no-diarization
-- **TTS**: `POST /tts` with configurable voice and provider
+- **Diarization**: pyannote 3.x when `HF_TOKEN` is set; otherwise the transcript comes back without speaker labels, honestly
+- **TTS**: `POST /tts` — edge-tts (default), ElevenLabs, OpenAI tts-1-hd, or Kokoro (self-hosted), each falling back to edge-tts on failure
+- **Integrations**: `POST /integrations/relay` pushes any result to Slack, n8n, Zapier, or a custom webhook. Slack URLs are auto-detected and reformatted into a real Slack message (Slack rejects raw JSON); n8n/Zapier catch-hooks get the payload untouched, since that's what they're built for.
 - **Full web dashboard** at `/`
-- **OpenAI Realtime API bridge** at `WS /realtime` (primary: OpenAI; fallback: Gemini Multimodal Live when only `GEMINI_API_KEY` is set)
+- **Realtime voice agent bridge** at `WS /realtime` — OpenAI Realtime API or Gemini Multimodal Live, chosen explicitly via `REALTIME_PROVIDER` (no auto-fallback between them)
+- **External tool-calling**: the realtime agent can call out to any service implementing the agent-tools discovery contract (see `services/agent_tools_bridge.py`) mid-conversation — set `AGENT_TOOLS_URL` and its tools are discovered and become callable automatically, no VoiceFlow code change needed. This project's own dev/demo target is [AgentKit](https://github.com/Yacine-ai-tech/AgentKit) ("talk to your business analyst" — ask about revenue, anomalies, or a forecast and it answers with real numbers), but the bridge has no AgentKit-specific code — any compliant service works.
 - **38 tests** across smoke, API, analyzer, voice, e2e, and realtime
 
 ## Quick Start

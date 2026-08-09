@@ -7,20 +7,8 @@ import { test, expect, Page } from '@playwright/test';
  * Phase 7: Deep Component Integration
  */
 
-const BASE_URL = process.env.VOICEFLOW_URL    || process.env.TEST_BASE_URL || '/';
+const BASE_URL = process.env.VOICEFLOW_URL     || process.env.TEST_BASE_URL || '/';
 const API_URL  = process.env.VOICEFLOW_API_URL || '/';
-const AUTH_URL = process.env.INTELAI_API_URL   || '/';
-
-async function getAuthToken(request: any): Promise<string> {
-  const resp = await request.post(`${AUTH_URL}/api/login`, {
-    data: { username: 'admin', password: process.env.E2E_ADMIN_PASSWORD || '' }
-  }).catch(() => null);
-  if (resp && resp.ok()) {
-    const body = await resp.json();
-    return body.access_token || body.token || '';
-  }
-  return '';
-}
 
 async function assertNoReactCrash(page: Page) {
   const crash = page.locator('text=/An unexpected error occurred|Something went wrong/i');
@@ -31,28 +19,6 @@ async function assertNoReactCrash(page: Page) {
 // Phase 4.2 — VoiceFlow UI Workflows
 // ─────────────────────────────────────────────────────────────────────────────
 test.describe('Phase 4.2 — VoiceFlow UI Workflows', () => {
-
-  test.beforeEach(async ({ page }) => {
-    await page.route('**/*', async route => {
-      const req = route.request();
-      const url = req.url();
-      if ((req.resourceType() === 'fetch' || req.resourceType() === 'xhr') && url.includes('vercel.app')) {
-        let backendUrl = process.env.STAGING_INTELAI_URL || 'https://intelai-bwhp.onrender.com';
-        if (url.includes('docintel-ui')) backendUrl = process.env.STAGING_DOCINTEL_URL || 'https://docintel-mm79.onrender.com';
-        else if (url.includes('agentkit-ui')) backendUrl = process.env.STAGING_AGENTKIT_URL || 'https://agentkit-sbz5.onrender.com';
-        else if (url.includes('rageval-ui')) backendUrl = process.env.STAGING_RAGEVAL_URL || 'https://rageval-4xh5.onrender.com';
-        else if (url.includes('voiceflow-ui')) backendUrl = process.env.STAGING_VOICEFLOW_URL || 'https://voiceflow-riao.onrender.com';
-        else if (url.includes('streampulse-ui')) backendUrl = process.env.STAGING_STREAMPULSE_URL || 'https://streampulse-gv4o.onrender.com';
-        
-        const pathPart = new URL(url).pathname;
-        const newUrl = backendUrl.replace(/\/$/, '') + pathPart;
-        await route.continue({ url: newUrl });
-      } else {
-        await route.continue();
-      }
-    });
-  });
-
 
   test('All main navigation pages render without crash', async ({ page }) => {
     await page.goto(`${BASE_URL}/`);
@@ -116,39 +82,25 @@ test.describe('Phase 4.2 — VoiceFlow API Validation', () => {
     if (resp) expect(resp.status()).toBeLessThan(500);
   });
 
-  test('POST /api/transcribe requires authentication', async ({ request }) => {
-    const audioBuffer = Buffer.alloc(1024, 0); // Minimal fake audio
-    const resp = await request.post(`${API_URL}/api/transcribe`, {
-      multipart: {
-        audio: { name: 'test.wav', mimeType: 'audio/wav', buffer: audioBuffer }
-      }
-    }).catch(() => null);
-    if (resp) expect([401, 403, 422, 404]).toContain(resp.status());
-  });
-
-  test('POST /api/transcribe with auth token returns non-500', async ({ request }) => {
-    const token = await getAuthToken(request);
-    if (!token) { test.skip(); return; }
-
+  test('POST /transcribe with a minimal audio file returns non-500', async ({ request }) => {
+    // VoiceFlow's /transcribe isn't login-gated — REQUIRE_INTERNAL_TOKEN
+    // defaults to false, so this exercises the real path, not an auth wall.
     const audioBuffer = Buffer.alloc(2048, 0);
-    const resp = await request.post(`${API_URL}/api/transcribe`, {
-      headers: { Authorization: `Bearer ${token}` },
+    const resp = await request.post(`${API_URL}/transcribe`, {
       multipart: {
-        audio: { name: 'test.wav', mimeType: 'audio/wav', buffer: audioBuffer }
+        file: { name: 'test.wav', mimeType: 'audio/wav', buffer: audioBuffer }
       },
       timeout: 30000,
     }).catch(() => null);
     if (resp) expect(resp.status()).not.toBe(500);
   });
 
-  test('GET /api/sessions returns list or auth error', async ({ request }) => {
-    const resp = await request.get(`${API_URL}/api/sessions`).catch(() => null);
-    if (resp) expect([200, 401, 403, 404]).toContain(resp.status());
-  });
+  // No /api/sessions route exists in VoiceFlow — /history is a client-side-only
+  // localStorage feature, not a backend endpoint. Nothing to test here.
 
-  test.skip('WebSocket /ws/voice endpoint is reachable (connection upgrade)', async ({ page }) => {
+  test.skip('WebSocket /stream endpoint is reachable (connection upgrade)', async ({ page }) => {
     // Attempt to establish WebSocket via browser page
-    const wsUrl = API_URL.replace('http', 'ws') + '/ws/voice';
+    const wsUrl = API_URL.replace('http', 'ws') + '/stream';
     const result = await page.evaluate(async (wsUrl: string) => {
       return new Promise<string>((resolve) => {
         try {
@@ -175,14 +127,10 @@ test.describe('Phase 4.2 — VoiceFlow API Validation', () => {
 test.describe('Phase 7 — VoiceFlow Edge Cases', () => {
 
   test('Upload zero-byte audio file: graceful error', async ({ request }) => {
-    const token = await getAuthToken(request);
-    if (!token) { test.skip(); return; }
-
     const emptyBuffer = Buffer.alloc(0);
-    const resp = await request.post(`${API_URL}/api/transcribe`, {
-      headers: { Authorization: `Bearer ${token}` },
+    const resp = await request.post(`${API_URL}/transcribe`, {
       multipart: {
-        audio: { name: 'empty.wav', mimeType: 'audio/wav', buffer: emptyBuffer }
+        file: { name: 'empty.wav', mimeType: 'audio/wav', buffer: emptyBuffer }
       }
     }).catch(() => null);
     if (resp) {
@@ -192,14 +140,10 @@ test.describe('Phase 7 — VoiceFlow Edge Cases', () => {
   });
 
   test('Upload non-audio file as audio: graceful rejection', async ({ request }) => {
-    const token = await getAuthToken(request);
-    if (!token) { test.skip(); return; }
-
     const pdfBuffer = Buffer.from('%PDF-1.4 fake content', 'utf-8');
-    const resp = await request.post(`${API_URL}/api/transcribe`, {
-      headers: { Authorization: `Bearer ${token}` },
+    const resp = await request.post(`${API_URL}/transcribe`, {
       multipart: {
-        audio: { name: 'evil.pdf', mimeType: 'application/pdf', buffer: pdfBuffer }
+        file: { name: 'evil.pdf', mimeType: 'application/pdf', buffer: pdfBuffer }
       }
     }).catch(() => null);
     if (resp) expect(resp.status()).not.toBe(500);
@@ -213,7 +157,7 @@ test.describe('Phase 4.2 — VoiceFlow Mocked Features', () => {
 
   test('Mock voice transcription via websocket/API', async ({ page }) => {
     // Intercept transcribe API to return fake transcription
-    await page.route('**/api/transcribe', async route => {
+    await page.route('**/transcribe', async route => {
       const json = { transcript: 'Hello world, this is VoiceFlow live!', duration: 2.5, confidence: 0.98 };
       await route.fulfill({ json, status: 200, contentType: 'application/json' });
     });
@@ -253,7 +197,7 @@ test.describe('Phase 4.2 — VoiceFlow Mocked Features', () => {
 test.describe('Phase 4.3 — Deep Interactivity', () => {
 
   test('Setting up third-party integrations (Twilio) mock', async ({ page }) => {
-    await page.route('**/api/integrations', async route => {
+    await page.route('**/integrations/relay', async route => {
       if (route.request().method() === 'POST') {
         await route.fulfill({ json: { success: true, id: 'twilio-1' }, status: 200 });
       } else {

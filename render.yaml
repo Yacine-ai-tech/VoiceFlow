@@ -23,11 +23,31 @@ services:
         sync: false
       - key: ASSEMBLYAI_API_KEY    # optional transcription provider
         sync: false
+      - key: VOICEFLOW_REMOTE_ENDPOINT  # optional: delegate heavy local ASR/diarization to a
+        sync: false                     # host you control, instead of loading it on this 512MB one
+      - key: VOICEFLOW_REMOTE_TOKEN
+        sync: false
+      - key: VOICEFLOW_TTS_REMOTE_ENDPOINT  # optional: same idea for provider=kokoro TTS
+        sync: false
+      - key: VOICEFLOW_TTS_REMOTE_TOKEN
+        sync: false
+      - key: REALTIME_PROVIDER     # "openai" or "gemini" — which one WS /realtime uses, no fallback
+        value: openai
+      - key: OPENAI_API_KEY        # required for /realtime when REALTIME_PROVIDER=openai
+        sync: false
+      - key: GEMINI_API_KEY        # required for /realtime when REALTIME_PROVIDER=gemini
+        sync: false
+      - key: ELEVENLABS_API_KEY    # optional: premium TTS provider for /tts
+        sync: false
+      - key: AGENT_TOOLS_URL       # optional: any service implementing the agent-tools discovery
+        sync: false                # contract (services/agent_tools_bridge.py) — not tied to a specific product
       - key: CORS_ALLOWED_ORIGINS
         sync: false
-      - key: OMNIINTEL_INTERNAL_TOKEN  # REQUIRED: must match gateway
-        sync: false
+      - key: OMNIINTEL_INTERNAL_TOKEN  # needed if REQUIRE_INTERNAL_TOKEN is true here, or to auth
+        sync: false                    # against the AGENT_TOOLS_URL service if it requires this token too
       - key: REQUIRE_INTERNAL_TOKEN
         value: "false"
+      - key: TELEMETRY_ENDPOINT    # optional: anonymous startup ping target, see TELEMETRY.md
+        sync: false
       - key: TELEMETRY_OPT_OUT
         value: "false"
