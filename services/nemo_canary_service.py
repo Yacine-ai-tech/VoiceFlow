@@ -1,6 +1,6 @@
 """
-NeMo Canary — NVIDIA's research-SOTA transcription model, documented in
-STRATEGY.md as an "advanced" local ASR option alongside WhisperX.
+NeMo Canary — NVIDIA's research-SOTA transcription model, an "advanced"
+local ASR option alongside WhisperX.
 
 Selected via LOCAL_ASR_ENGINE=nemo_canary (default is whisperx — see
 core/config.py). This only matters in local mode; remote mode delegates to
