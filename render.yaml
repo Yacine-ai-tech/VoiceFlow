@@ -47,7 +47,9 @@ services:
         sync: false                    # against the AGENT_TOOLS_URL service if it requires this token too
       - key: REQUIRE_INTERNAL_TOKEN
         value: "false"
-      - key: TELEMETRY_ENDPOINT    # optional: anonymous startup ping target, see TELEMETRY.md
+      - key: TELEMETRY_ENDPOINT    # optional: startup ping + usage-snapshot target, see TELEMETRY.md
         sync: false
       - key: TELEMETRY_OPT_OUT
         value: "false"
+      - key: TELEMETRY_USAGE_INTERVAL_SECONDS
+        value: "1800"

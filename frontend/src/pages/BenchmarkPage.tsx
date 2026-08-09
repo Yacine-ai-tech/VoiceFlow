@@ -1,57 +1,81 @@
-import React from 'react';
+import { useEffect, useState } from "react";
+import { BarChart3, RefreshCw } from "lucide-react";
+import { PageHeader } from "../kit/AppShell";
+import { Button, Card, EmptyState, Skeleton } from "../kit/primitives";
+import { api } from "../lib/api";
+
+type Doc = { title: string; filename: string; content: string | null };
+type Docs = Record<string, Doc>;
+
+const ORDER = ["wer", "multi_provider", "scenario", "realtime"];
+const SCRIPTS: Record<string, string> = {
+  wer: "eval/run_wer_benchmark.py",
+  multi_provider: "eval/run_multi_provider_benchmark.py",
+  scenario: "eval/run_scenario_benchmark.py",
+  realtime: "eval/run_realtime_benchmark.py",
+};
 
 export default function BenchmarkPage() {
-  const content = `# VoiceFlow — ASR WER Benchmark (LibriSpeech test-clean)
+  const [docs, setDocs] = useState<Docs | null>(null);
+  const [err, setErr] = useState("");
+  const [active, setActive] = useState("wer");
 
-Standard ASR evaluation of the local faster-whisper route. Reproducible:
-\`python eval/run_wer_benchmark.py --n 20 --model base\` (needs faster-whisper, jiwer, soundfile,
-datasets; GPU auto-used if present).
+  const load = () => {
+    setDocs(null); setErr("");
+    api.benchmarks().then((r) => setDocs(r.docs)).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  };
+  useEffect(load, []);
 
-## Setup
-- Dataset: **LibriSpeech test-clean** (Panayotov et al., 2015) — the standard ASR benchmark.
-- Model: faster-whisper \`base\`, beam_size=5. Standard text normalization (lowercase, strip
-  punctuation) before scoring with \`jiwer\`.
-
-## Results (real run, 2026-06-17, N=20, CPU)
-| Metric | Value |
-|--------|-------|
-| **WER** | **2.9%** |
-| **CER** | **0.9%** |
-
-**Honest caveat:** N=20 is a small clean subset — the published whisper-\`base\` WER on full
-test-clean is ~5–6%, so 2.9% here is optimistic. Raise \`--n\` (and try \`--model small/medium\`)
-for a tighter, more representative number; GPU makes large N fast.
-
-## Update — whisper-large-v3 on GPU (2026-06-17)
-| Model | Device | N | WER | CER |
-|-------|--------|---|-----|-----|
-| base | CPU | 20 | 2.9% | 0.9% |
-| **large-v3** | **T4 GPU** | **150** | **2.2%** | **0.8%** |
-
-Tuning to the larger model (base → large-v3) lowered WER to **2.2%** on a bigger, more credible
-N=150 sample — approaching the published large-v3 SOTA of ~1.8% on full test-clean.
-\\n\\n# Realtime WebSocket Benchmark
-
-This benchmark evaluates the latency and connection stability of the \`/realtime\` WebSockets endpoint when operating under the **Gemini Fallback Mode**.
-
-## Results
-
-| Metric | Result |
-|--------|--------|
-| Status | ✅ Passed (100%) |
-| WebSocket Conn. Latency | 0.117s |
-| Time to First Byte (TTFB)| 1.026s |
-| Provider Message | Connected to Gemini Multimodal Live |
-
-**Analysis:** The VoiceFlow \`/realtime\` endpoint successfully intercepts missing OpenAI keys and reroutes the bidi websocket connection directly to the \`Gemini Multimodal Live\` API without disruption.
-\\n\\n`;
+  const keys = docs ? ORDER.filter((k) => k in docs) : [];
+  const doc = docs?.[active];
 
   return (
-    <div className="p-8 max-w-5xl mx-auto overflow-auto h-full">
-      <h1 className="text-3xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-600">Evaluation Benchmark</h1>
-      <div className="bg-gray-800/50 backdrop-blur-md p-8 rounded-xl border border-gray-700 shadow-2xl text-gray-200">
-        <pre className="whitespace-pre-wrap font-sans leading-relaxed text-sm">{content}</pre>
-      </div>
+    <div>
+      <PageHeader
+        title="Evaluation benchmarks"
+        sub="Every eval/*.md report VoiceFlow's CLI harnesses have actually produced, fetched live from disk on every load — never a hardcoded snapshot baked into this page."
+        actions={<Button variant="ghost" onClick={load} aria-label="refresh"><RefreshCw size={14} /></Button>}
+      />
+
+      {!docs && !err && <Skeleton className="h-64 w-full" />}
+
+      {err && (
+        <Card className="mt-2">
+          <EmptyState title="Couldn't load benchmark reports" hint={err} />
+        </Card>
+      )}
+
+      {docs && (
+        <>
+          <div className="flex flex-wrap gap-2">
+            {keys.map((k) => (
+              <button
+                key={k}
+                onClick={() => setActive(k)}
+                className={`rounded-btn border px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
+                  active === k
+                    ? "border-[var(--accent)] bg-surface-2 text-body"
+                    : "border-line-strong text-dim hover:bg-surface-2"
+                }`}
+              >
+                {docs[k].title}
+              </button>
+            ))}
+          </div>
+
+          <Card title={doc?.title} actions={<span className="font-mono text-[11px] text-muted">eval/{doc?.filename}</span>} className="mt-4">
+            {doc?.content ? (
+              <pre className="whitespace-pre-wrap break-words font-mono text-[12.5px] leading-6 text-dim">{doc.content}</pre>
+            ) : (
+              <EmptyState
+                icon={BarChart3}
+                title="Not generated yet"
+                hint={`Run \`python ${SCRIPTS[active]}\` to produce this report, then reload this page.`}
+              />
+            )}
+          </Card>
+        </>
+      )}
     </div>
   );
 }

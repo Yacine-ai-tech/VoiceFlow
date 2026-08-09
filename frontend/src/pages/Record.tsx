@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Mic, Square, AlertTriangle, RotateCw, Radio } from "lucide-react";
+import { Mic, Square, AlertTriangle, RotateCw, Radio, Download } from "lucide-react";
 import { PageHeader } from "../kit/AppShell";
 import { Button, Card, Chip, EmptyState } from "../kit/primitives";
 import { ExecutionStages, Label, Segmented } from "../kit/misc";
 import { ResultView } from "../components/Results";
-import { ANALYSIS_TYPES, api, PipelineResult, saveHistory } from "../lib/api";
+import { ANALYSIS_TYPES, api, getSessionId, PipelineResult, saveHistory } from "../lib/api";
 
 type Phase = "idle" | "recording" | "processing" | "done" | "error";
 
@@ -19,6 +19,8 @@ export default function Record() {
   const [err, setErr] = useState("");
   const [result, setResult] = useState<PipelineResult | null>(null);
   const [blob, setBlob] = useState<Blob | null>(null);
+  const blobUrl = useMemo(() => (blob ? URL.createObjectURL(blob) : null), [blob]);
+  useEffect(() => () => { if (blobUrl) URL.revokeObjectURL(blobUrl); }, [blobUrl]);
   const [liveText, setLiveText] = useState("");
   const [wsState, setWsState] = useState<"off" | "connecting" | "live" | "error">("off");
   const [activeStage, setActiveStage] = useState(0);
@@ -52,6 +54,11 @@ export default function Record() {
         const proto = location.protocol === "https:" ? "wss" : "ws";
         wsUrl = `${proto}://${location.host}/stream`;
       }
+      // Browsers can't set custom headers on a WS handshake, so the session
+      // ID (same one every HTTP call sends via X-VoiceFlow-Session) travels
+      // as a query param here instead — keeps /analytics scoped to this
+      // browser either way.
+      wsUrl += `?session=${encodeURIComponent(getSessionId())}`;
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -211,6 +218,16 @@ export default function Record() {
 
           {phase === "processing" && (
             <ExecutionStages stages={["Uploading audio", "Transcribing speech", "AI reasoning", "Structuring intelligence"]} active={activeStage} />
+          )}
+
+          {blobUrl && phase !== "recording" && (
+            <a
+              href={blobUrl}
+              download={`voiceflow-recording-${Date.now()}.webm`}
+              className="inline-flex items-center gap-2 rounded-lg border border-line-strong px-3 py-1.5 text-[12.5px] text-body hover:bg-surface-2"
+            >
+              <Download size={14} /> Download recording
+            </a>
           )}
         </div>
       </Card>
