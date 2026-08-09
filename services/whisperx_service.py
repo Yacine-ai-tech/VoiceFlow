@@ -5,8 +5,8 @@ bundle. Falls back gracefully if its dependencies aren't installed.
 Diarization backend is chosen by LOCAL_DIARIZATION_ENGINE (core/config.py):
   pyannote (default) — needs HF_TOKEN (HuggingFace auth for the model
     download) and is GPU-recommended for reasonable speed.
-  nemo — NVIDIA NeMo's ClusteringDiarizer, the CPU-capable option per
-    STRATEGY.md. Needs `pip install nemo_toolkit[asr]` (heavy — see
+  nemo — NVIDIA NeMo's ClusteringDiarizer, the CPU-capable option.
+    Needs `pip install nemo_toolkit[asr]` (heavy — see
     requirements-ml.txt). Runs a real VAD + speaker-embedding + clustering
     pipeline and parses its RTTM output into word/segment speaker labels —
     this replaced an earlier version of this file that had a stub here
