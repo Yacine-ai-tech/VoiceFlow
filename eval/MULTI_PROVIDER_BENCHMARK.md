@@ -1,28 +1,24 @@
-# VoiceFlow — Multi-Provider ASR Benchmark
+# VoiceFlow — Multi-Provider ASR Latency Benchmark
 
-A comparative benchmark of VoiceFlow's ASR performance across different providers (OpenAI Whisper, Google Gemini, Groq). Reproducible:
-`python eval/run_multi_provider_benchmark.py`
+Reproducible: `python eval/run_multi_provider_benchmark.py`
 
-## Setup
-- Dataset: **LibriSpeech test-clean** (standard subset, N=50 for quick evaluation)
-- Models: 
-  - OpenAI Whisper (via API)
-  - Google Gemini Multimodal Live (via API)
-  - Groq Whisper (via API)
-- Metrics: WER, CER, Latency, Cost per minute
+## What this measures
+Real round-trip latency and success rate against each provider's live API,
+using a short generated tone (not a ground-truth transcript). It does **not**
+measure Word Error Rate — that requires a reference transcript to score
+against. For WER against real speech (LibriSpeech `test-clean`), see
+[`WER_BENCHMARK.md`](WER_BENCHMARK.md), which is scored with `jiwer` against
+actual reference text.
 
-## Results (real run, 2026-07-28, N=50)
+## Status
 
-| Provider | WER | CER | Avg Latency (s) | Cost/min |
-|----------|-----|-----|----------------|----------|
-| OpenAI Whisper | 2.8% | 0.9% | 1.2s | $0.006 |
-| Google Gemini | 3.1% | 1.1% | 0.8s | $0.004 |
-| Groq Whisper | 2.6% | 0.8% | 0.4s | $0.002 |
+The numbers previously committed here were not measurements — the script
+that generated them transcribed literal placeholder bytes and computed
+WER/CER from a synthetic formula rather than real accuracy, while claiming a
+LibriSpeech-based result. That has been fixed (see `run_multi_provider_benchmark.py`):
+the script now only reports what it actually measures — latency and success
+rate against real API calls — and no longer fabricates accuracy numbers.
 
-**Analysis:** 
-- **Groq Whisper** offers the best combination of accuracy (2.6% WER) and speed (0.4s latency) at the lowest cost
-- **Google Gemini** provides the fastest response time (0.8s) with slightly lower accuracy
-- **OpenAI Whisper** provides good accuracy but at higher latency and cost
-- All providers maintain WER below 3.2% on the test-clean subset
-
-**Recommendation:** Use Groq Whisper for production when cost and speed are priorities, OpenAI Whisper for highest accuracy requirements, and Gemini for fastest response time needs.
+No results are published here yet. Run the script yourself with
+`OPENAI_API_KEY` / `GEMINI_API_KEY` / `GROQ_API_KEY` set for whichever
+providers you want to compare — it writes real, dated results to this file.
