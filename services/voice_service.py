@@ -1,5 +1,5 @@
 """
-voice_service — convenience transcription helpers (per EXECUTION_PLAN Phase 4, Day 63).
+voice_service — convenience transcription helpers.
 
 Thin, **import-safe** wrappers over the transcription router (which lazy-loads the local
 WhisperX/faster-whisper model on first call and routes to Groq/Deepgram/AssemblyAI when keys

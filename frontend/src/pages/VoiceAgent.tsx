@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Plug, PlugZap, Mic, MicOff, Settings, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
-type Msg = { role: "user" | "assistant"; text: string; interim?: boolean };
+type Msg = { role: "user" | "assistant" | "tool"; text: string; interim?: boolean };
 
 export default function VoiceAgent() {
   const [state, setState] = useState<"connecting" | "ready" | "unconfigured" | "closed" | "error">("connecting");
@@ -63,6 +63,21 @@ export default function VoiceAgent() {
       }
       if (type === "response.done" || type === "response.audio.done") {
         draft.current = "";
+      }
+      if (type === "tool_call") {
+        const name = String(data.name ?? "tool");
+        setMsgs((old) => [...old, { role: "tool", text: `Calling a tool — ${name}…` }]);
+      }
+      if (type === "tool_result") {
+        const name = String(data.name ?? "tool");
+        setMsgs((old) => {
+          const idx = [...old].reverse().findIndex((m) => m.role === "tool" && m.text.includes(name));
+          if (idx === -1) return old;
+          const realIdx = old.length - 1 - idx;
+          const copy = old.slice();
+          copy[realIdx] = { role: "tool", text: `Tool responded — ${name}` };
+          return copy;
+        });
       }
     };
     ws.onclose = () => { setState((s) => (s === "unconfigured" ? s : "closed")); stopVoice(); };
@@ -329,16 +344,29 @@ registerProcessor('vad-processor', VADProcessor);
 
           <AnimatePresence>
             {msgs.map((m, i) => (
-              <motion.div 
-                key={i} 
-                initial={{ opacity: 0, y: 15 }} 
-                animate={{ opacity: 1, y: 0 }} 
-                className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
-              >
-                <div className={`max-w-[80%] text-[24px] font-medium leading-[1.3] tracking-tight ${m.role === "user" ? "text-white/70" : "text-white/95"}`}>
-                  {m.text}
-                </div>
-              </motion.div>
+              m.role === "tool" ? (
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="flex justify-center"
+                >
+                  <div className="text-[13px] font-medium tracking-wide text-white/40 uppercase bg-white/5 rounded-full px-3 py-1">
+                    {m.text}
+                  </div>
+                </motion.div>
+              ) : (
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, y: 15 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+                >
+                  <div className={`max-w-[80%] text-[24px] font-medium leading-[1.3] tracking-tight ${m.role === "user" ? "text-white/70" : "text-white/95"}`}>
+                    {m.text}
+                  </div>
+                </motion.div>
+              )
             ))}
             
             {userInterim && (
