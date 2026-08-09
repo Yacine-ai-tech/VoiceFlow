@@ -1,26 +1,37 @@
 """
 VoiceFlow Transcription Adapter
 ================================
-Unified adapter for speech-to-text that replaces the scattered provider checks
-in transcription_router.py.
+Unified adapter for speech-to-text. Two modes:
 
-Two modes:
-  local   — WhisperX on the local machine (needs ≥ 4GB RAM + ffmpeg).
+  local   — WhisperX on the machine running this process (needs >= 4GB RAM + ffmpeg).
   remote  — Forward to a remote ASR endpoint.
 
-Remote provider chain:
-  1. Orchestrator Studio /whisper     [VOICEFLOW_REMOTE_ENDPOINT] — WhisperX on Lightning AI
+Default fallback chain (tried in this order; `provider` moves one to the
+front; a failure falls through to the next):
+  1. Remote inference host  [VOICEFLOW_REMOTE_ENDPOINT] — a WhisperX+diarization
+     endpoint you point this at yourself (self-hosted GPU box, on-demand cloud
+     worker, whatever you run behind that URL). Optional — leave it unset to skip.
   2. Groq Whisper                      [GROQ_API_KEY]
-  3. Deepgram                          [DEEPGRAM_API_KEY]
-  4. AssemblyAI                        [ASSEMBLYAI_API_KEY]
-  5. None → empty transcript with error info
+  3. Deepgram nova-3                   [DEEPGRAM_API_KEY] — best diarization of the cloud options
+  4. AssemblyAI                        [ASSEMBLYAI_API_KEY] — native diarization, strong streaming
+  5. Local WhisperX, as a last resort, even in remote mode
+  6. None of the above worked → empty transcript with error info
+
+Set `strict=True` (what named scenarios in services/scenarios.py use) to
+turn off the fallback entirely: only the requested `provider` is tried, and
+a failure returns an honest error instead of a different provider's result.
+This matters for benchmarking — "accurate" silently running on whatever
+answered first isn't a comparable trial.
+
+`diarize=True` is honored by local WhisperX (needs HF_TOKEN), the remote
+endpoint, Deepgram, and AssemblyAI. Groq has no diarization support.
 
 Env vars:
   VOICEFLOW_TRANSCRIPTION_MODE=local|remote  (default: remote if VOICEFLOW_REMOTE_ENDPOINT set)
-  VOICEFLOW_REMOTE_ENDPOINT=                  (Orchestrator tunnel URL)
-  VOICEFLOW_REMOTE_TOKEN=                     (bearer token for Orchestrator /whisper)
-  ASR_PROVIDER=orchestrator|groq|deepgram|assemblyai  (remote mode priority)
-  WHISPER_MODEL=base                          (for local or orchestrator mode)
+  VOICEFLOW_REMOTE_ENDPOINT=                  (your remote inference endpoint URL)
+  VOICEFLOW_REMOTE_TOKEN=                     (bearer token for that endpoint's /whisper route)
+  ASR_PROVIDER=remote|groq|deepgram|assemblyai  (remote mode priority)
+  WHISPER_MODEL=base                          (for local or remote mode)
   WHISPER_DEVICE=cpu
   GROQ_API_KEY=
   DEEPGRAM_API_KEY=
@@ -37,14 +48,21 @@ import urllib.request
 from typing import Any, Dict, Optional
 
 from core.config import settings
+from services.nemo_canary_service import NeMoCanaryService
+from services.whisperx_service import WhisperXService
 
 log = logging.getLogger(__name__)
 
+# One shared instance of each local engine — construction is cheap (the
+# model itself loads lazily on first use), so this just avoids reloading
+# per request. Which one actually runs is picked at call time by
+# settings.LOCAL_ASR_ENGINE.
+_whisperx_service = WhisperXService()
+_nemo_canary_service = NeMoCanaryService()
+
 
 def _remote_endpoint() -> str:
-    return (os.getenv("VOICEFLOW_REMOTE_ENDPOINT", "")
-            or os.getenv("ORCHESTRATOR_URL", "")  # legacy
-            or "").strip().rstrip("/")
+    return os.getenv("VOICEFLOW_REMOTE_ENDPOINT", "").strip().rstrip("/")
 
 
 def _remote_token() -> str:
@@ -58,7 +76,7 @@ def _use_local() -> bool:
         return True
     if mode == "remote":
         return False
-    # Auto: local if whisperx is installed and no remote endpoint
+    # Auto: local if whisperx is installed and no remote endpoint is configured.
     try:
         import whisperx  # type: ignore  # noqa
         return not _remote_endpoint()
@@ -70,9 +88,28 @@ def _error_result(msg: str) -> Dict[str, Any]:
     return {"text": "", "language": "unknown", "segments": [], "method": "error", "error": msg}
 
 
-# ─── Orchestrator /whisper ────────────────────────────────────────────────────
+# Accepts the handful of spellings actually in use across the API and UI
+# ("GROQ_WHISPER", "groq", "LOCAL_WHISPERX", ...) and maps them to the
+# canonical provider name used by the routing chain below.
+_PROVIDER_ALIASES = {
+    "local": "local", "local_whisperx": "local", "whisperx": "local",
+    "groq": "groq", "groq_whisper": "groq",
+    "deepgram": "deepgram", "deepgram_nova2": "deepgram",
+    "assemblyai": "assemblyai",
+    "remote": "remote", "orchestrator": "remote",  # "orchestrator" kept as a compat alias
+}
 
-def _orchestrator_whisper(
+
+def _normalize_provider(name: Optional[str]) -> Optional[str]:
+    if not name:
+        return None
+    key = name.strip().lower()
+    return _PROVIDER_ALIASES.get(key, key)
+
+
+# ─── Remote /whisper ──────────────────────────────────────────────────────────
+
+def _remote_whisper(
     audio_bytes: bytes,
     language: Optional[str] = None,
     diarize: bool = False,
@@ -82,7 +119,7 @@ def _orchestrator_whisper(
         return None
     ep = url.lower()
     if "groq.com" in ep or "deepgram.com" in ep or "assemblyai.com" in ep:
-        return None  # not an orchestrator endpoint
+        return None  # not a compatible remote inference endpoint
     timeout = int(os.getenv("VOICEFLOW_ASR_TIMEOUT", "120"))
     try:
         audio_b64 = base64.b64encode(audio_bytes).decode()
@@ -95,10 +132,10 @@ def _orchestrator_whisper(
             h["Authorization"] = f"Bearer {tk}"
         req = urllib.request.Request(url + "/whisper", data=_json.dumps(payload).encode(), headers=h)
         resp = _json.loads(urllib.request.urlopen(req, timeout=timeout).read())
-        resp.setdefault("method", "orchestrator-whisperx")
+        resp.setdefault("method", "remote-whisperx")
         return resp
     except Exception as e:
-        log.warning("orchestrator /whisper failed: %s", e)
+        log.warning("remote /whisper failed: %s", e)
         return None
 
 
@@ -134,13 +171,16 @@ async def _groq_whisper(audio_bytes: bytes, language: Optional[str] = None) -> O
 
 # ─── Deepgram REST ────────────────────────────────────────────────────────────
 
-async def _deepgram_whisper(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
+async def _deepgram_whisper(audio_bytes: bytes, diarize: bool = False) -> Optional[Dict[str, Any]]:
     key = os.getenv("DEEPGRAM_API_KEY", "").strip() or getattr(settings, "DEEPGRAM_API_KEY", "") or ""
     if not key:
         return None
     try:
+        url = "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true"
+        if diarize:
+            url += "&diarize=true"
         req = urllib.request.Request(
-            "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true",
+            url,
             data=audio_bytes,
             headers={
                 "Authorization": f"Token {key}",
@@ -149,12 +189,14 @@ async def _deepgram_whisper(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
         )
         resp = _json.loads(urllib.request.urlopen(req, timeout=30).read())
         results = resp.get("results", {}).get("channels", [{}])[0].get("alternatives", [{}])[0]
+        words = results.get("words", [])
+        got_speakers = diarize and any("speaker" in w for w in words)
         return {
             "text": results.get("transcript", ""),
             "language": "en",
-            "segments": results.get("paragraphs", {}).get("paragraphs", []),
-            "method": "deepgram-nova2",
-            "diarized": False,
+            "segments": results.get("paragraphs", {}).get("paragraphs", []) or words,
+            "method": "deepgram-nova3",
+            "diarized": bool(got_speakers),
         }
     except Exception as e:
         log.warning("deepgram rest failed: %s", e)
@@ -221,53 +263,65 @@ def _local_whisper(
     language: Optional[str] = None,
     diarize: bool = False,
 ) -> Optional[Dict[str, Any]]:
+    """Transcribe on this host, via whichever engine LOCAL_ASR_ENGINE selects
+    (default: WhisperX — alignment + optional pyannote diarization in one
+    pass; "nemo_canary" for NVIDIA's research-SOTA model, GPU-recommended).
+    Returns None if the selected engine isn't installed or the attempt
+    fails, so the caller can fall through to remote providers."""
+    engine = settings.LOCAL_ASR_ENGINE
+    if engine == "nemo_canary":
+        result = _nemo_canary_service.transcribe(audio_bytes, language=language)
+        if diarize and result.get("method", "").startswith("nemo-canary"):
+            result = _apply_local_diarization(audio_bytes, result)
+    else:
+        result = _whisperx_service.transcribe(audio_bytes, language=language, diarize=diarize)
+    if result.get("method") in ("stub", "error"):
+        return None
+    return result
+
+
+def _apply_local_diarization(audio_bytes: bytes, transcription: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach speaker labels to an already-transcribed result — used by
+    engines (like Canary) that don't do diarization themselves. Delegates
+    to whisperx_service's diarization pipeline, which honors
+    LOCAL_DIARIZATION_ENGINE (pyannote default, or nemo)."""
     try:
-        import whisperx  # type: ignore
-        import tempfile, os as _os
-        model_size = _os.getenv("WHISPER_MODEL", "base")
-        device = _os.getenv("WHISPER_DEVICE", "cpu")
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(audio_bytes)
-            tmp = f.name
-        try:
-            model = whisperx.load_model(model_size, device=device, compute_type="int8")
-            audio = whisperx.load_audio(tmp)
-            result = model.transcribe(audio, language=language)
-            segments = result.get("segments", [])
-            text = " ".join(s.get("text", "").strip() for s in segments).strip()
-            return {
-                "text": text,
-                "language": result.get("language", "unknown"),
-                "segments": segments,
-                "method": f"local-whisperx-{model_size}",
-                "diarized": False,
-            }
-        finally:
-            try:
-                _os.remove(tmp)
-            except Exception:
-                pass
-    except ImportError:
-        return None
+        from services.whisperx_service import diarize_only
+        return diarize_only(audio_bytes, transcription)
     except Exception as e:
-        log.warning("local whisperx failed: %s", e)
-        return None
+        log.warning("post-hoc diarization failed: %s — returning transcript without speaker labels", e)
+        return transcription
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 async def transcribe(
     audio_bytes: bytes,
+    provider: Optional[str] = None,
     language: Optional[str] = None,
     diarize: bool = False,
+    strict: bool = False,
 ) -> Dict[str, Any]:
     """
     Transcribe audio using the configured mode and fallback chain.
 
     Args:
         audio_bytes: Raw audio (mp3, wav, m4a, ogg, etc.)
+        provider: Optional engine to try first — "local", "remote", "groq",
+            "deepgram", or "assemblyai". Leave unset to use the environment-
+            configured order (ASR_PROVIDER / VOICEFLOW_TRANSCRIPTION_MODE). If
+            the requested engine fails, the rest of that order still runs —
+            unless `strict` is set.
         language: 2-letter code ('en', 'fr') or None for auto-detect.
-        diarize: Speaker diarization (only supported by orchestrator mode).
+        diarize: Speaker diarization. Supported by local WhisperX (needs
+            HF_TOKEN for pyannote) and by remote/AssemblyAI.
+        strict: If True and `provider` is set, use *only* that provider —
+            no fallback to the rest of the chain, no local-as-last-resort.
+            A failure returns an honest error instead of a result from a
+            different provider than the one asked for. This is what named
+            scenarios (services/scenarios.py) use: a benchmark comparing
+            "accurate" vs "fast" is meaningless if "accurate" can silently
+            run on whatever provider actually answered.
 
     Returns:
         {text, language, segments, method, diarized}
@@ -276,32 +330,55 @@ async def transcribe(
     if lang == "auto":
         lang = None
 
-    if _use_local():
+    requested = _normalize_provider(provider)
+
+    if strict:
+        if not requested:
+            return _error_result("strict_requires_provider")
+        if requested == "local":
+            return _local_whisper(audio_bytes, lang, diarize) or _error_result("provider_failed:local")
+        if requested == "remote":
+            return _remote_whisper(audio_bytes, lang, diarize) or _error_result("provider_failed:remote")
+        if requested == "groq":
+            return await _groq_whisper(audio_bytes, lang) or _error_result("provider_failed:groq")
+        if requested == "deepgram":
+            return await _deepgram_whisper(audio_bytes, diarize) or _error_result("provider_failed:deepgram")
+        if requested == "assemblyai":
+            return await _assemblyai_whisper(audio_bytes) or _error_result("provider_failed:assemblyai")
+        return _error_result(f"unknown_provider:{requested}")
+
+    tried_local = False
+
+    if requested == "local" or (requested is None and _use_local()):
+        tried_local = True
         result = _local_whisper(audio_bytes, lang, diarize)
         if result:
             return result
-        # Fall through to remote if local fails
+        # Local unavailable or failed — fall through to the remote chain.
 
-    # Remote chain based on ASR_PROVIDER priority
-    priority = [p.strip() for p in
-                os.getenv("ASR_PROVIDER", "orchestrator,groq,deepgram,assemblyai").split(",")
-                if p.strip()]
+    default_priority = [p.strip() for p in
+                        os.getenv("ASR_PROVIDER", "remote,groq,deepgram,assemblyai").split(",")
+                        if p.strip()]
+    if requested and requested != "local":
+        priority = [requested] + [p for p in default_priority if p != requested]
+    else:
+        priority = default_priority
 
-    for provider in priority:
+    for name in priority:
         result = None
-        if provider == "orchestrator":
-            result = _orchestrator_whisper(audio_bytes, lang, diarize)
-        elif provider == "groq":
+        if name == "remote":
+            result = _remote_whisper(audio_bytes, lang, diarize)
+        elif name == "groq":
             result = await _groq_whisper(audio_bytes, lang)
-        elif provider == "deepgram":
-            result = await _deepgram_whisper(audio_bytes)
-        elif provider == "assemblyai":
+        elif name == "deepgram":
+            result = await _deepgram_whisper(audio_bytes, diarize)
+        elif name == "assemblyai":
             result = await _assemblyai_whisper(audio_bytes)
         if result and result.get("text") is not None:
             return result
 
-    # All remote providers failed — try local as last resort
-    if not _use_local():
+    # Every remote provider failed — try local as a last resort if it wasn't already tried.
+    if not tried_local:
         result = _local_whisper(audio_bytes, lang, diarize)
         if result:
             log.info("All remote ASR providers failed — used local WhisperX as last resort")
