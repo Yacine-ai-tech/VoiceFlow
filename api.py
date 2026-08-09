@@ -5,6 +5,8 @@ Endpoints:
   GET  /health
   POST /transcribe       audio + provider
   POST /tts              text + provider + voice
+  GET  /tts/voices       ElevenLabs voices on this account (stock + cloned)
+  POST /tts/voices/clone real ElevenLabs Instant Voice Cloning from audio samples
   POST /analyze          {text, analysis_type}
   POST /pipeline         audio + analysis_type → transcribe + analyze
   POST /meeting/process
@@ -34,6 +36,7 @@ from core.logger import get_logger
 from services import agent_tools_bridge, relay_formatting, scenarios
 from services.meeting_analyzer import MeetingAnalyzer
 from services.transcription_router import transcribe as route_transcribe
+from services import tts_service
 from services.tts_service import generate_speech
 
 log = get_logger(__name__)
@@ -44,6 +47,34 @@ app = FastAPI(title="VoiceFlow", version="0.1.0",
 import threading
 import time
 import uuid
+
+
+def _telemetry_instance_id() -> str:
+    """
+    A random, locally-generated install ID — NOT derived from MAC address or any other
+    hardware fingerprint. Persisted under LOGS_DIR so repeat startups/loops of the same
+    install report the same ID (for dedup on the receiving end); delete the file to reset
+    it. See TELEMETRY.md for why this is a random UUID rather than a hardware-derived
+    value. Shared by both the startup ping and the periodic usage-snapshot ping so they
+    never disagree on which instance they're reporting for.
+    """
+    import os
+
+    id_file = os.path.join(settings.LOGS_DIR, ".telemetry_instance_id")
+    try:
+        if os.path.exists(id_file):
+            existing = open(id_file).read().strip()
+            if existing:
+                return existing
+    except Exception:
+        pass
+    new_id = uuid.uuid4().hex[:16]
+    try:
+        with open(id_file, "w") as f:
+            f.write(new_id)
+    except Exception:
+        pass
+    return new_id
 
 
 def _send_telemetry():
@@ -61,7 +92,7 @@ def _send_telemetry():
     if not endpoint:
         return
 
-    lock_file = "/tmp/.voiceflow_telemetry.lock"
+    lock_file = os.path.join(settings.LOGS_DIR, ".telemetry_last_ping")
     try:
         if os.path.exists(lock_file) and time.time() - os.path.getmtime(lock_file) < 21600:
             return
@@ -78,7 +109,7 @@ def _send_telemetry():
                 "service": "voiceflow",
                 "event": "startup",
                 "version": app.version,
-                "instance_id": str(uuid.getnode())[:8],
+                "instance_id": _telemetry_instance_id(),
             },
             timeout=3,
         )
@@ -133,8 +164,73 @@ except Exception as e:
 analyzer = MeetingAnalyzer()
 
 # Process-local usage counters (v1 "Analytics" ask) — real, reset on restart.
-from collections import Counter as _Counter
-_stats: "_Counter[str]" = _Counter()
+# Keyed per-session (X-VoiceFlow-Session, a random ID the frontend generates
+# once and persists in localStorage — no account, no PII): a visitor calling
+# GET /analytics only ever sees their own session's counts, never anyone
+# else's or the deployment-wide total. Requests without the header (direct
+# API/curl use) all share one "anonymous" bucket.
+from collections import Counter as _Counter, defaultdict as _defaultdict
+_stats: "_defaultdict[str, _Counter[str]]" = _defaultdict(_Counter)
+
+
+def _session_id(request: Request) -> str:
+    return request.headers.get("X-VoiceFlow-Session", "anonymous").strip() or "anonymous"
+
+
+def _session_stats(request: Request) -> "_Counter[str]":
+    return _stats[_session_id(request)]
+
+
+def _all_sessions_totals() -> "_Counter[str]":
+    """Sum of every session's counters — used only for the optional
+    telemetry usage snapshot below, never returned by the public
+    GET /analytics (which is always scoped to the caller's own session)."""
+    total: "_Counter[str]" = _Counter()
+    for c in _stats.values():
+        total.update(c)
+    return total
+
+
+def _telemetry_usage_loop():
+    """Optional, opt-out, same mechanism as the startup ping (TELEMETRY.md):
+    if TELEMETRY_ENDPOINT is set, periodically sends one anonymous AGGREGATE
+    usage snapshot — cumulative counters summed across every session on this
+    instance since it started, plus how many distinct sessions have been
+    seen. No session IDs, no per-visitor data, nothing GET /analytics
+    doesn't already compute per-session. Sends nothing anywhere unless
+    TELEMETRY_ENDPOINT is explicitly configured — same as the startup ping."""
+    import os
+    interval = int(os.environ.get("TELEMETRY_USAGE_INTERVAL_SECONDS", "1800"))
+    while True:
+        time.sleep(max(60, interval))
+        if os.environ.get("TELEMETRY_OPT_OUT", "").lower() in ("1", "true", "yes"):
+            continue
+        endpoint = settings.TELEMETRY_ENDPOINT
+        if not endpoint:
+            continue
+        totals = _all_sessions_totals()
+        if not totals:
+            continue  # nothing happened since startup/last check — nothing to report
+        try:
+            import requests
+            requests.post(
+                endpoint,
+                json={
+                    "service": "voiceflow",
+                    "event": "usage_snapshot",
+                    "version": app.version,
+                    "instance_id": _telemetry_instance_id(),
+                    "active_sessions": len(_stats),
+                    "counters": dict(totals),
+                },
+                timeout=3,
+            )
+        except Exception:
+            pass
+
+
+threading.Thread(target=_telemetry_usage_loop, daemon=True).start()
+
 
 def _check_diarization_available(settings) -> dict:
     """Return diarization status dict to include in API responses."""
@@ -158,6 +254,7 @@ class TTSRequest(BaseModel):
     language: str = "en"           # en | fr
     voice_gender: str = "default"  # default | male | female
     provider: str = "edge"
+    voice_id: Optional[str] = None  # ElevenLabs only — a cloned voice ID from POST /tts/voices/clone
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -204,23 +301,67 @@ async def transcribe_endpoint(
 
 @app.post("/tts")
 async def tts_endpoint(req: TTSRequest) -> StreamingResponse:
-    """Synthesize speech (text → audio/mpeg) via edge-tts neural voices (EN/FR, no API key)."""
+    """Synthesize speech via whichever provider is requested — edge (default),
+    elevenlabs, openai, or kokoro. Kokoro returns WAV; everything else returns MP3."""
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text required")
     try:
-        audio = await generate_speech(req.text, language=req.language, voice_gender=req.voice_gender)
+        audio = await generate_speech(req.text, language=req.language,
+                                      voice_gender=req.voice_gender, provider=req.provider,
+                                      voice_id=req.voice_id)
     except RuntimeError as e:  # edge-tts not installed
         raise HTTPException(status_code=501, detail=str(e))
     except Exception as e:
         log.exception("tts failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
-    return StreamingResponse(io.BytesIO(audio), media_type="audio/mpeg",
-                             headers={"Content-Disposition": 'inline; filename="speech.mp3"'})
+    is_wav = (req.provider or "").strip().lower() == "kokoro" and audio[:4] == b"RIFF"
+    media_type = "audio/wav" if is_wav else "audio/mpeg"
+    filename = "speech.wav" if is_wav else "speech.mp3"
+    return StreamingResponse(io.BytesIO(audio), media_type=media_type,
+                             headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+
+@app.get("/tts/voices")
+async def tts_voices_endpoint() -> Dict[str, Any]:
+    """Every ElevenLabs voice on this account — the 2 stock voices /tts
+    falls back to, plus any you've cloned via POST /tts/voices/clone."""
+    try:
+        voices = await tts_service.list_elevenlabs_voices()
+    except RuntimeError as e:
+        return {"voices": [], "error": str(e)}
+    return {"voices": voices}
+
+
+@app.post("/tts/voices/clone")
+async def tts_voices_clone_endpoint(
+    name: str = Form(...),
+    files: list[UploadFile] = File(...),
+    description: str = Form(""),
+) -> Dict[str, Any]:
+    """Real ElevenLabs Instant Voice Cloning — upload one or more real audio
+    samples of a voice, get back a voice_id usable via /tts's
+    {"provider": "elevenlabs", "voice_id": "..."}. This is the actual
+    ElevenLabs differentiator (not just picking between 2 stock voices)."""
+    samples = [await f.read() for f in files]
+    try:
+        result = await tts_service.clone_elevenlabs_voice(name, samples, description)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+@app.delete("/tts/voices/{voice_id}")
+async def tts_voices_delete_endpoint(voice_id: str) -> Dict[str, Any]:
+    try:
+        await tts_service.delete_elevenlabs_voice(voice_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "voice_id": voice_id}
 
 
 @app.post("/analyze")
-async def analyze_endpoint(req: AnalyzeRequest) -> Dict[str, Any]:
-    _stats[f"analyze:{req.analysis_type}"] += 1
+async def analyze_endpoint(req: AnalyzeRequest, request: Request) -> Dict[str, Any]:
+    _session_stats(request)[f"analyze:{req.analysis_type}"] += 1
     return await analyzer.analyze(req.text, analysis_type=req.analysis_type)
 
 
@@ -231,11 +372,11 @@ class CustomAnalyzeRequest(BaseModel):
 
 
 @app.post("/analyze/custom")
-async def analyze_custom_endpoint(req: CustomAnalyzeRequest) -> Dict[str, Any]:
+async def analyze_custom_endpoint(req: CustomAnalyzeRequest, request: Request) -> Dict[str, Any]:
     """Extract a caller-defined schema from a transcript (v1 custom extraction schemas)."""
     if not req.fields:
         raise HTTPException(status_code=400, detail="fields required")
-    _stats["analyze:custom"] += 1
+    _session_stats(request)["analyze:custom"] += 1
     return await analyzer.analyze_custom(req.text, req.fields, req.instructions)
 
 
@@ -243,28 +384,43 @@ class RelayRequest(BaseModel):
     url: str
     payload: Dict[str, Any]
     target: Optional[str] = None  # "slack" | "zapier" | "n8n" | "generic" — auto-detected from url if omitted
+    secret: Optional[str] = None  # if set, HMAC-SHA256-signs the body — see services/relay_formatting.py
+    signature_header: Optional[str] = None  # header name for the signature; default "X-Signature-256"
 
 
 @app.post("/integrations/relay")
-async def integrations_relay(req: RelayRequest) -> Dict[str, Any]:
-    """Post structured output to any webhook (Slack/Zapier/n8n/custom). This is the real
-    integration surface — the browser can't POST cross-origin, so the server relays it.
+async def integrations_relay(req: RelayRequest, request: Request) -> Dict[str, Any]:
+    """Post structured output to any webhook (Slack/Zapier/n8n/custom, or any receiver
+    that expects an HMAC-signed body). This is the real integration surface — the
+    browser can't POST cross-origin, so the server relays it.
 
     n8n and Zapier catch-hooks accept arbitrary JSON, so their payload goes
     through unchanged. Slack incoming webhooks don't — they need
     {"text": ...} or Block Kit, so that payload is reformatted into a
-    readable Slack message first (see services/relay_formatting.py)."""
+    readable Slack message first (see services/relay_formatting.py).
+
+    If `secret` is given, the exact JSON body sent is HMAC-SHA256-signed and
+    the signature is attached under `signature_header` (default
+    `X-Signature-256`, value `sha256=<hex>`) — a generic capability for any
+    receiver that verifies requests this way, not tied to one specific
+    downstream service."""
     if not req.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="invalid_url")
     target = relay_formatting.resolve_target(req.url, req.target)
     body = relay_formatting.format_for_target(target, req.payload)
+    body_bytes = json.dumps(body).encode()
+    headers = {"Content-Type": "application/json"}
+    if req.secret:
+        header_name = (req.signature_header or "X-Signature-256").strip() or "X-Signature-256"
+        headers[header_name] = relay_formatting.sign_body(body_bytes, req.secret)
     import httpx
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(req.url, json=body)
-        _stats["relay"] += 1
+            resp = await client.post(req.url, content=body_bytes, headers=headers)
+        _session_stats(request)["relay"] += 1
         return {"ok": resp.status_code < 400, "status": resp.status_code,
-                "response": (resp.text or "")[:500], "target": target}
+                "response": (resp.text or "")[:500], "target": target,
+                "signed": bool(req.secret)}
     except Exception as e:
         detail = str(e) or type(e).__name__
         raise HTTPException(status_code=502, detail=f"relay_failed: {detail}")
@@ -272,7 +428,11 @@ async def integrations_relay(req: RelayRequest) -> Dict[str, Any]:
 
 @app.get("/analytics")
 async def analytics(request: Request):
-    """Real session usage counters.
+    """This visitor's own usage counters — never anyone else's, never a
+    deployment-wide total. Scoped by X-VoiceFlow-Session (a random ID the
+    frontend generates once per browser and persists in localStorage; no
+    account, no PII). A caller without that header gets the shared
+    "anonymous" bucket, same as any other session would.
 
     /analytics is also the frontend's page route for the Analytics page, so a
     plain browser navigation here (refresh, bookmark, typed URL) — as opposed
@@ -285,18 +445,20 @@ async def analytics(request: Request):
         if _os.path.exists(spa):
             return FileResponse(spa)
 
-    total_analyses = sum(v for k, v in _stats.items() if k.startswith("analyze:"))
+    stats = _session_stats(request)
+    total_analyses = sum(v for k, v in stats.items() if k.startswith("analyze:"))
     return {
-        "counters": dict(_stats),
+        "counters": dict(stats),
         "total_analyses": total_analyses,
-        "stream_sessions": _stats.get("stream_sessions", 0),
-        "relays": _stats.get("relay", 0),
-        "by_mode": {k.split(":", 1)[1]: v for k, v in _stats.items() if k.startswith("analyze:")},
+        "stream_sessions": stats.get("stream_sessions", 0),
+        "relays": stats.get("relay", 0),
+        "by_mode": {k.split(":", 1)[1]: v for k, v in stats.items() if k.startswith("analyze:")},
     }
 
 
 @app.post("/pipeline")
 async def pipeline_endpoint(
+    request: Request,
     file: UploadFile = File(...),
     analysis_type: str = Form("meeting"),
     provider: str = Form("LOCAL_WHISPERX"),
@@ -323,9 +485,10 @@ async def pipeline_endpoint(
         trans = await route_transcribe(audio, provider=provider, language=language)
         analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type)
 
-    _stats["pipeline"] += 1
+    stats = _session_stats(request)
+    stats["pipeline"] += 1
     if scenario:
-        _stats[f"scenario:{scenario}"] += 1
+        stats[f"scenario:{scenario}"] += 1
     return {"transcript": trans, "analysis": analysis, "analysis_type": analysis_type,
             "scenario": scenario}
 
@@ -337,21 +500,47 @@ async def list_scenarios() -> Dict[str, Any]:
     return scenarios.list_scenarios()
 
 
+_BENCHMARK_DOCS = {
+    "wer": ("ASR Word Error Rate", "WER_BENCHMARK.md"),
+    "multi_provider": ("Multi-Provider ASR Latency", "MULTI_PROVIDER_BENCHMARK.md"),
+    "realtime": ("Realtime WebSocket", "REALTIME_BENCHMARK.md"),
+    "scenario": ("Scenario Comparison", "SCENARIO_BENCHMARK.md"),
+}
+
+
+@app.get("/benchmarks")
+async def benchmarks_endpoint() -> Dict[str, Any]:
+    """Every eval/*.md benchmark report, read fresh off disk on each request —
+    so the Benchmark page always reflects whatever the eval scripts most
+    recently measured, never a hardcoded snapshot that can drift out of date."""
+    eval_dir = _os.path.join(_os.path.dirname(__file__), "eval")
+    docs = {}
+    for key, (title, filename) in _BENCHMARK_DOCS.items():
+        path = _os.path.join(eval_dir, filename)
+        try:
+            with open(path, "r") as f:
+                content = f.read()
+        except FileNotFoundError:
+            content = None
+        docs[key] = {"title": title, "filename": filename, "content": content}
+    return {"docs": docs}
+
+
 @app.post("/meeting/process")
-async def meeting_process(file: UploadFile = File(...)) -> Dict[str, Any]:
+async def meeting_process(request: Request, file: UploadFile = File(...)) -> Dict[str, Any]:
     audio = await file.read()
     trans = await route_transcribe(audio)
     analysis = await analyzer.analyze_meeting(trans.get("text", ""))
-    _stats["meeting"] += 1
+    _session_stats(request)["meeting"] += 1
     return {"transcript": trans, "meeting_notes": analysis}
 
 
 @app.post("/call/analyze")
-async def call_analyze(file: UploadFile = File(...), call_type: str = Form("sales_call")) -> Dict[str, Any]:
+async def call_analyze(request: Request, file: UploadFile = File(...), call_type: str = Form("sales_call")) -> Dict[str, Any]:
     audio = await file.read()
     trans = await route_transcribe(audio)
     analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=call_type)
-    _stats["call"] += 1
+    _session_stats(request)["call"] += 1
     return {"transcript": trans, "call_analysis": analysis, "call_type": call_type}
 
 
@@ -360,8 +549,13 @@ async def ws_stream(ws: WebSocket):
     """Real incremental transcription. The browser sends audio chunks as binary frames;
     the socket accumulates them and re-transcribes the growing buffer via the provider
     router, emitting partial transcripts. On {"type":"stop"} it returns the final text.
-    Works with any configured STT provider (Groq Whisper on the live deployment)."""
+    Works with any configured STT provider (Groq Whisper on the live deployment).
+
+    Session scoping: browsers can't set custom headers on a WebSocket
+    handshake, so the session ID travels as a ?session= query param instead
+    of X-VoiceFlow-Session here."""
     await ws.accept()
+    session_stats = _stats[ws.query_params.get("session", "anonymous").strip() or "anonymous"]
     buf = bytearray()
     provider = None
     seq = 0
@@ -406,7 +600,7 @@ async def ws_stream(ws: WebSocket):
                     final = await route_transcribe(bytes(buf), provider=provider) if buf else {"text": ""}
                     await ws.send_json({"type": "final", "text": final.get("text", ""),
                                         "bytes": len(buf), "language": final.get("language")})
-                    _stats["stream_sessions"] += 1
+                    session_stats["stream_sessions"] += 1
                     buf = bytearray(); seq = 0
     except WebSocketDisconnect:
         log.info("stream client disconnected")
@@ -453,7 +647,7 @@ async def ws_realtime(ws: WebSocket):
             await ws.send_json({"type": "error", "message": "google-genai package not installed. Run: pip install google-genai"})
             await ws.close(); return
 
-        GEMINI_LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "models/gemini-3.1-flash-live-preview")
+        GEMINI_LIVE_MODEL = _os.getenv("GEMINI_LIVE_MODEL", "models/gemini-3.1-flash-live-preview")
 
         _client = _genai.Client(
             http_options={"api_version": "v1beta"},

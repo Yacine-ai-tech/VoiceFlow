@@ -96,7 +96,13 @@ _PROVIDER_ALIASES = {
     "groq": "groq", "groq_whisper": "groq",
     "deepgram": "deepgram", "deepgram_nova2": "deepgram",
     "assemblyai": "assemblyai",
-    "remote": "remote", "orchestrator": "remote",  # "orchestrator" kept as a compat alias
+    # "orchestrator" historically meant "remote" here — no real central orchestrator
+    # call exists; it's just VoiceFlow's own direct-to-remote-GPU-host path
+    # (VOICEFLOW_REMOTE_ENDPOINT / VOICEFLOW_REMOTE_TOKEN, see _remote_endpoint() /
+    # _remote_token() / _remote_whisper() below). Kept only so an existing
+    # WHISPER_PROVIDER=orchestrator / TTS_PROVIDER=orchestrator env value someone
+    # already has set doesn't silently start failing.
+    "remote": "remote", "orchestrator": "remote",
 }
 
 

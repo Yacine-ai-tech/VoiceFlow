@@ -42,6 +42,11 @@ dist/
 # Week 0 working notes (not committed)
 STATUS.md
 
+# Internal dev-session architecture notes (not committed) — session-specific
+# commentary ("fixed this session", live-verification notes) that belongs in
+# a local reference doc, not the public repo history.
+ARCHITECTURE.md
+
 # Writing drafts (publish later, not in repo)
 drafts/
 steps.md

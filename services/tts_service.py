@@ -2,7 +2,10 @@
 Text-to-Speech — four providers, one interface.
 
   edge      Microsoft Edge neural voices — default, no API key, EN/FR.
-  elevenlabs Premium quality + voice cloning — ELEVENLABS_API_KEY.
+  elevenlabs Premium quality + real voice cloning — ELEVENLABS_API_KEY.
+             list_elevenlabs_voices() / clone_elevenlabs_voice() /
+             delete_elevenlabs_voice() manage cloned voices; pass the
+             resulting voice_id to generate_speech() to use one.
   openai    tts-1-hd — reliable HD voice — OPENAI_API_KEY.
   kokoro    Open-source, expressive, self-hosted — no API key, needs the
             `kokoro` package + model weights installed locally.
@@ -50,12 +53,19 @@ _KOKORO_VOICES = {"female": "af_heart", "male": "am_michael", "default": "af_hea
 _kokoro_pipeline = None  # lazy-loaded, cached across calls — the model is ~300MB
 
 
-async def _generate_elevenlabs(text: str, language: str, voice_gender: str) -> Optional[bytes]:
+async def _generate_elevenlabs(text: str, language: str, voice_gender: str, voice_id: Optional[str] = None) -> Optional[bytes]:
     if not settings.ELEVENLABS_API_KEY:
         return None
     try:
         import httpx
-        el_voice = "21m00Tcm4TlvDq8ikWAM" if voice_gender == "female" else "TxGEqnHWrfWFTfGW9XjX"
+        # Sarah / Daniel — current ElevenLabs premade voices, verified live
+        # against the real /v1/voices list (the old Rachel/Josh IDs some
+        # docs still reference no longer resolve on current accounts).
+        # Note: ElevenLabs requires a paid plan to use *any* premade/library
+        # voice via the API at all — on a free-tier account this call 402s
+        # regardless of which voice_id is used, and generate_speech() falls
+        # back to edge-tts, same as any other ElevenLabs failure.
+        el_voice = voice_id or ("EXAVITQu4vr4xnSDxMaL" if voice_gender == "female" else "onwK4e9ZLuTAKqWW03F9")
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{el_voice}"
         headers = {
             "Accept": "audio/mpeg",
@@ -76,6 +86,80 @@ async def _generate_elevenlabs(text: str, language: str, voice_gender: str) -> O
     except Exception as e:
         log.warning("ElevenLabs TTS failed, falling back to edge-tts: %s", e)
         return None
+
+
+async def list_elevenlabs_voices() -> list:
+    """Every voice on this ElevenLabs account — the 2 stock voices
+    /tts falls back to plus any cloned ones. Raises RuntimeError with the
+    real reason (no key, bad key, API error) rather than returning an
+    empty list that could be mistaken for "no voices exist"."""
+    if not settings.ELEVENLABS_API_KEY:
+        raise RuntimeError("ELEVENLABS_API_KEY not configured")
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            "https://api.elevenlabs.io/v1/voices",
+            headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    return [
+        {
+            "voice_id": v.get("voice_id"),
+            "name": v.get("name"),
+            "category": v.get("category"),  # "premade" | "cloned" | ...
+            "description": v.get("description"),
+        }
+        for v in data.get("voices", [])
+    ]
+
+
+async def clone_elevenlabs_voice(name: str, samples: list[bytes], description: str = "") -> dict:
+    """Instant Voice Cloning — upload one or more real audio samples of a
+    voice and get back a usable voice_id for /tts's provider=elevenlabs.
+    This is the actual ElevenLabs differentiator STRATEGY.md names, not
+    just picking between two stock voices. Raises RuntimeError (with
+    ElevenLabs' real error message) on failure — a plan that doesn't
+    support cloning, too few/short samples, etc. are never silently
+    swallowed into a fake success."""
+    if not settings.ELEVENLABS_API_KEY:
+        raise RuntimeError("ELEVENLABS_API_KEY not configured")
+    if not samples:
+        raise RuntimeError("at least one audio sample is required")
+    import httpx
+    files = [("files", (f"sample_{i}.wav", s, "audio/wav")) for i, s in enumerate(samples)]
+    data = {"name": name}
+    if description:
+        data["description"] = description
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            "https://api.elevenlabs.io/v1/voices/add",
+            headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
+            data=data,
+            files=files,
+        )
+        if resp.status_code >= 400:
+            detail = resp.text
+            try:
+                detail = resp.json().get("detail", detail)
+            except Exception:
+                pass
+            raise RuntimeError(f"ElevenLabs voice clone failed ({resp.status_code}): {detail}")
+        result = resp.json()
+    log.info("ElevenLabs voice cloned: %s -> %s", name, result.get("voice_id"))
+    return {"voice_id": result.get("voice_id"), "name": name}
+
+
+async def delete_elevenlabs_voice(voice_id: str) -> None:
+    if not settings.ELEVENLABS_API_KEY:
+        raise RuntimeError("ELEVENLABS_API_KEY not configured")
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.delete(
+            f"https://api.elevenlabs.io/v1/voices/{voice_id}",
+            headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
+        )
+        resp.raise_for_status()
 
 
 async def _generate_openai(text: str, voice_gender: str) -> Optional[bytes]:
@@ -175,6 +259,7 @@ async def generate_speech(
     rate: str = "+0%",
     volume: str = "+0%",
     provider: str = "edge",
+    voice_id: Optional[str] = None,
 ) -> bytes:
     """
     Generate speech audio from text via the selected provider, falling back
@@ -187,6 +272,10 @@ async def generate_speech(
         rate: Speech rate adjustment (e.g. '+10%', '-10%') — edge-tts only
         volume: Volume adjustment (e.g. '+10%', '-10%') — edge-tts only
         provider: 'edge' (default), 'elevenlabs', 'openai', or 'kokoro'
+        voice_id: ElevenLabs voice ID override — a cloned voice from
+            clone_elevenlabs_voice(), or any other voice ID on the account.
+            Ignored by every other provider. Falls back to the two stock
+            gender-mapped voices when not given.
 
     Returns:
         MP3 audio bytes (WAV for kokoro)
@@ -194,7 +283,7 @@ async def generate_speech(
     provider = (provider or "edge").strip().lower()
 
     if provider == "elevenlabs":
-        audio = await _generate_elevenlabs(text, language, voice_gender)
+        audio = await _generate_elevenlabs(text, language, voice_gender, voice_id)
         if audio:
             return audio
     elif provider == "openai":
