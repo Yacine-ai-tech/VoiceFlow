@@ -1,13 +1,15 @@
-# Lightweight dev compose for VoiceFlow — runs in the voiceflow Lightning Studio.
+# Lightweight dev compose for VoiceFlow — for local development or any remote
+# dev box/container you run this on.
 # ffmpeg is baked into the image (Dockerfile installs via apt).
 # Whisper model (~150MB for 'base') downloads on first run and caches in /root/.cache
 # inside the named volume — persists across container restarts.
 #
-# Usage inside the Studio:
+# Usage:
 #   docker compose -f docker-compose.dev.yml up --build
+#   Then: http://localhost:8002/health
 #
-# Reach it from the laptop: ssh -L 8002:localhost:8002 lightning-voiceflow
-# Then: http://localhost:8002/health
+# If this is running on a remote box, forward the port to reach it locally:
+#   ssh -L 8002:localhost:8002 <your-remote-host>
 
 services:
   app:

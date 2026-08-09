@@ -2,3 +2,22 @@
 # pip install -r requirements-ml.txt
 whisperx>=3.1.0
 faster-whisper>=1.0.3
+
+# Kokoro TTS (open-source, self-hosted, provider=kokoro on /tts) — pulls in
+# PyTorch + spaCy + a phonemizer; expect a large install and a first-call
+# model download (~300MB). Falls back to edge-tts automatically if this
+# isn't installed, so it's optional even with this file installed.
+kokoro>=0.9.4
+soundfile>=0.14.0
+
+# NeMo Canary (LOCAL_ASR_ENGINE=nemo_canary) and/or NeMo diarization
+# (LOCAL_DIARIZATION_ENGINE=nemo) — NVIDIA's toolkit. Considerably heavier
+# than everything else in this file: PyTorch Lightning, Hydra, datasets,
+# librosa, and NVIDIA's own telemetry packages come along with it. GPU
+# strongly recommended for either — CPU inference works but is slow enough
+# that it's a research/benchmarking tool, not a production path. If you
+# don't have GPU hardware for this on the host running VoiceFlow, don't
+# install this file's nemo line at all — set VOICEFLOW_TRANSCRIPTION_MODE
+# =remote and point VOICEFLOW_REMOTE_ENDPOINT at a GPU box that runs NeMo
+# instead, keeping this host lightweight. See docs/ASR_PROVIDERS.md.
+# nemo_toolkit[asr]>=2.0.0
