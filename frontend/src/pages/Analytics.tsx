@@ -30,7 +30,7 @@ export default function Analytics() {
     <div>
       <PageHeader
         title="Analytics"
-        sub="Usage across the platform. Server counters are process-wide; the per-mode chart also reflects this browser's session."
+        sub="Your usage only — server-side counters here are scoped to this browser's session and reset if you clear it. No one else's activity is included, and this page can't see it either."
         actions={<Button variant="ghost" onClick={load} aria-label="refresh"><RefreshCw size={14} /></Button>}
       />
       {!st ? (
@@ -38,7 +38,7 @@ export default function Analytics() {
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <StatTile label="Analyses run" value={st.total_analyses} icon={Activity} sub="server-wide this session" />
+            <StatTile label="Analyses run" value={st.total_analyses} icon={Activity} sub="this session only" />
             <StatTile label="Live recordings" value={st.stream_sessions} icon={Mic} sub="streamed to /stream" />
             <StatTile label="Integration relays" value={st.relays} icon={Send} sub="webhooks fired" />
             <StatTile label="This browser" value={history.length} icon={Layers} sub="conversations processed" />
