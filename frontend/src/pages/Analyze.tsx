@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FileAudio, Sparkles, AlertTriangle } from "lucide-react";
 import { PageHeader } from "../kit/AppShell";
 import { Button, Card, EmptyState } from "../kit/primitives";
 import { ExecutionStages, Label, Segmented } from "../kit/misc";
 import { ResultView } from "../components/Results";
-import { Analysis, ANALYSIS_TYPES, api, saveHistory, Transcript } from "../lib/api";
+import { Analysis, ANALYSIS_TYPES, api, saveHistory, Scenario, Transcript } from "../lib/api";
 import { X } from "lucide-react";
 
 const SAMPLE =
@@ -22,8 +22,12 @@ export default function Analyze() {
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [result, setResult] = useState<{ transcript?: Transcript | null; analysis: Analysis; type: string } | null>(null);
+  const [result, setResult] = useState<{ transcript?: Transcript | null; analysis: Analysis; type: string; usedScenario?: string | null } | null>(null);
   const [activeStage, setActiveStage] = useState(0);
+  const [scenarios, setScenarios] = useState<Record<string, Scenario>>({});
+  const [scenario, setScenario] = useState("");
+
+  useEffect(() => { api.scenarios().then(setScenarios).catch(() => {}); }, []);
 
   const run = async () => {
     setBusy(true); setErr(""); setResult(null); setActiveStage(0);
@@ -38,8 +42,8 @@ export default function Analyze() {
         saveHistory({ ts: Date.now(), kind: mode, title: text.slice(0, 60) + "…", result: { analysis, analysis_type: mode } });
       } else {
         if (!file) throw new Error("Choose an audio file first");
-        const res = await api.pipeline(file, file.name, mode);
-        setResult({ transcript: res.transcript, analysis: res.analysis, type: res.analysis_type });
+        const res = await api.pipeline(file, file.name, mode, undefined, scenario || undefined);
+        setResult({ transcript: res.transcript, analysis: res.analysis, type: res.analysis_type, usedScenario: res.scenario });
         saveHistory({ ts: Date.now(), kind: mode, title: file.name, result: res });
       }
     } catch (e) {
@@ -89,10 +93,24 @@ export default function Analyze() {
                 className="w-full rounded-input border border-line-strong bg-surface-2 px-3 py-2 text-[13px] leading-6 text-body outline-none focus:border-[var(--accent)]"
               />
             ) : (
-              <label className="flex cursor-pointer items-center gap-2 rounded-input border border-dashed border-line-strong px-3 py-4 text-sm text-dim hover:border-[var(--accent)]">
-                <FileAudio size={16} /> {file ? file.name : "Choose audio (wav, mp3, m4a, webm…)"}
-                <input type="file" accept="audio/*,video/webm" className="hidden" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-              </label>
+              <>
+                <label className="flex cursor-pointer items-center gap-2 rounded-input border border-dashed border-line-strong px-3 py-4 text-sm text-dim hover:border-[var(--accent)]">
+                  <FileAudio size={16} /> {file ? file.name : "Choose audio (wav, mp3, m4a, webm…)"}
+                  <input type="file" accept="audio/*,video/webm" className="hidden" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+                </label>
+                {Object.keys(scenarios).length > 0 && (
+                  <div>
+                    <Label>Scenario (optional — pins an exact provider, no fallback)</Label>
+                    <select value={scenario} onChange={(e) => setScenario(e.target.value)}
+                      className="w-full rounded-input border border-line-strong bg-surface-2 px-3 py-2 text-[13px] text-body outline-none focus:border-[var(--accent)]">
+                      <option value="">Default (env-configured provider + fallback chain)</option>
+                      {Object.entries(scenarios).filter(([, s]) => s.transcription_provider).map(([name, s]) => (
+                        <option key={name} value={name}>{name} — {s.description}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </>
             )}
             <Button onClick={run} disabled={busy}>
               <Sparkles size={14} /> {busy ? "Analyzing…" : "Extract intelligence"}
@@ -112,7 +130,14 @@ export default function Analyze() {
               />
             </Card>
           ) : result ? (
-            <ResultView transcript={result.transcript} analysis={result.analysis} analysisType={result.type} />
+            <>
+              {result.usedScenario && (
+                <div className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-line-strong px-2.5 py-1 text-[12px] text-dim">
+                  Scenario: <span className="font-medium text-body">{result.usedScenario}</span>
+                </div>
+              )}
+              <ResultView transcript={result.transcript} analysis={result.analysis} analysisType={result.type} />
+            </>
           ) : (
             <Card>
               <EmptyState
