@@ -1,12 +1,18 @@
 import { useState } from "react";
 import { Terminal, Copy, Check, Code2, Globe, Shield, Zap, BookOpen } from "lucide-react";
 
-// Real production gateway path for this service (frontend/.env.production).
-const BASE_URL = "https://gateway.ysiddo-ai-projects.app/voiceflow";
+// Same resolution order as lib/api.ts's request client: an explicit VITE_API_BASE_URL
+// (for split frontend/backend deployments) wins, otherwise fall back to the current
+// origin (same-origin deployments, e.g. the Docker single-container setup) — so the
+// copy-paste examples always match wherever this page is actually being served from,
+// author's deployment or any self-hoster's, instead of a hardcoded URL.
+const BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  (typeof window !== "undefined" ? window.location.origin : "");
 const WS_BASE = BASE_URL.replace(/^http/, "ws");
 
 type Endpoint = {
-  method: "GET" | "POST" | "WS";
+  method: "GET" | "POST" | "DELETE" | "WS";
   path: string;
   category: string;
   auth: "public" | "token";
@@ -32,8 +38,8 @@ const ENDPOINTS: Endpoint[] = [
     resBody: `{"status":"ok","service":"voiceflow","version":"0.1.0"}`,
   },
   {
-    method: "GET", path: "/analytics", category: "System", auth: "token",
-    desc: "Real, process-local usage counters (not a database) — how many times each analysis type, /pipeline call, relay, and stream session has run since the server process last started. Resets on every restart/redeploy.",
+    method: "GET", path: "/analytics", category: "System", auth: "public",
+    desc: "This visitor's own usage counters — never anyone else's, never a deployment-wide total. Scoped by the X-VoiceFlow-Session header (a random ID the frontend generates once per browser and keeps in localStorage; no account, no PII). Real, in-memory counters — not a database — reset on every server restart/redeploy.",
     resBody: `{
   "counters": {"analyze:meeting": 3, "pipeline": 1, "relay": 2},
   "total_analyses": 3,
@@ -41,6 +47,19 @@ const ENDPOINTS: Endpoint[] = [
   "relays": 2,
   "by_mode": {"meeting": 3}
 }`,
+    note: "A caller that sends no X-VoiceFlow-Session header (direct curl/API use) shares one \"anonymous\" bucket. This path doubles as the Analytics page's own route — a real browser navigation here (refresh, typed URL) gets the app shell back instead of JSON; only fetch()/XHR calls get this JSON response (disambiguated server-side via the Sec-Fetch-Mode header).",
+  },
+  {
+    method: "GET", path: "/scenarios", category: "System", auth: "public",
+    desc: "Lists the named scenarios selectable via POST /pipeline's scenario field — each one pins an exact transcription provider, diarize flag, and analysis model with no fallback substitution, for reproducible benchmarking.",
+    resBody: `{
+  "fast":       {"description": "...", "transcription_provider": "groq", "diarize": false, "analysis_model_setting": "LLM_DEFAULT", "est_cost_per_min_usd": 0.0, "notes": "..."},
+  "accurate":   {"description": "...", "transcription_provider": "deepgram", "diarize": true, "analysis_model_setting": "LLM_REASONING", "est_cost_per_min_usd": 0.0, "notes": "..."},
+  "cheap":      {"description": "...", "transcription_provider": "local", "diarize": true, "analysis_model_setting": "LLM_DEFAULT", "est_cost_per_min_usd": 0.0, "notes": "..."},
+  "streaming":  {"description": "...", "transcription_provider": "assemblyai", "diarize": true, "analysis_model_setting": "LLM_JUDGE", "est_cost_per_min_usd": 0.0, "notes": "..."},
+  "research-compare": {"description": "benchmark-only — no fixed provider", "transcription_provider": "", "diarize": false, "analysis_model_setting": "LLM_DEFAULT", "est_cost_per_min_usd": 0.0, "notes": "..."}
+}`,
+    note: "See services/scenarios.py for the source of truth and eval/run_scenario_benchmark.py for the CLI harness that compares them head-to-head on the same audio file.",
   },
 
   // ── Transcription ───────────────────────────────────────────────────────
@@ -49,11 +68,12 @@ const ENDPOINTS: Endpoint[] = [
     desc: "Transcribe an uploaded audio file (mp3, wav, webm, m4a, ...). Runs through the same provider router as every other transcription endpoint.",
     reqLabel: "multipart/form-data",
     reqBody: `file:      <audio binary>                 required
-provider:  local | orchestrator | groq |
+provider:  local | remote | groq |
            deepgram | assemblyai            optional
-           (aliases accepted, case-insensitive:
+           ("orchestrator" accepted as a
+            compat alias for "remote";
             LOCAL_WHISPERX, GROQ_WHISPER,
-            DEEPGRAM_NOVA2 ...)
+            DEEPGRAM_NOVA2 etc. also accepted)
 language:  "en" | "fr" | ... | "auto"        default "auto"
 diarize:   true | false                      default false`,
     resBody: `{
@@ -63,7 +83,7 @@ diarize:   true | false                      default false`,
   "method": "whisperx",
   "diarized": false
 }`,
-    note: "Provider chain: if `provider` is omitted, the router uses local WhisperX first when it's installed and no remote endpoint is configured (VOICEFLOW_TRANSCRIPTION_MODE / TRANSCRIPTION_PROVIDER default \"LOCAL_WHISPERX\"); otherwise it walks the remote chain in ASR_PROVIDER order — orchestrator → groq → deepgram → assemblyai. If every provider in the chosen path fails, local WhisperX is tried once more as a last resort before returning {\"method\":\"error\",\"error\":\"all_providers_failed\"}. `diarize` attaches pyannote speaker labels via local WhisperX only when HF_TOKEN/PYANNOTE_TOKEN is configured — the transcript always comes back either way, `diarized` in the response tells you the truth about whether labels were actually attached.",
+    note: "Provider chain: if `provider` is omitted, the router uses local mode first when VOICEFLOW_TRANSCRIPTION_MODE=local (or no remote endpoint is configured); otherwise it walks the remote chain in ASR_PROVIDER order — remote → groq → deepgram → assemblyai — where \"remote\" means your own VOICEFLOW_REMOTE_ENDPOINT, a black-box HTTP contract, not a specific engine. If every provider in the chosen path fails, local transcription is tried once more as a last resort before returning {\"method\":\"error\",\"error\":\"all_providers_failed\"}. Local mode itself is engine-selectable via LOCAL_ASR_ENGINE (whisperx, the default, or nemo_canary — nvidia/canary-180m-flash, a research-grade alternative). `diarize` attaches real speaker labels — pyannote or NeMo's clustering diarizer depending on LOCAL_DIARIZATION_ENGINE — only when the engine and its credentials (HF_TOKEN/PYANNOTE_TOKEN for pyannote) are available; the transcript always comes back either way, `diarized` in the response tells you the truth about whether labels were actually attached, never a fabricated true.",
   },
   {
     method: "POST", path: "/transcribe-json", category: "Transcription", auth: "token",
@@ -87,18 +107,49 @@ diarize:   true | false                      default false`,
   // ── Text-to-Speech ──────────────────────────────────────────────────────
   {
     method: "POST", path: "/tts", category: "Text-to-Speech", auth: "token",
-    desc: "Synthesize speech from text. Returns raw audio/mpeg (MP3) bytes, not JSON.",
+    desc: "Synthesize speech from text. Returns raw audio bytes, not JSON — Content-Type tells you the real format actually used.",
     reqLabel: "application/json",
     reqBody: `{
   "text": "Hello from VoiceFlow",
   "language": "en",
   "voice_gender": "female",
-  "provider": "edge"
+  "provider": "edge",   // edge | elevenlabs | openai | kokoro
+  "voice_id": null       // ElevenLabs only — a cloned voice_id from POST /tts/voices/clone
 }`,
-    resLabel: "audio/mpeg (binary)",
-    resBody: `<binary MP3 stream>
-Content-Disposition: inline; filename="speech.mp3"`,
-    note: "Only two TTS providers are actually wired up: edge-tts (Microsoft Edge neural voices — the default, no API key needed, EN + FR) and ElevenLabs (premium, requires ELEVENLABS_API_KEY; used only when provider=\"elevenlabs\" AND the key is set). ElevenLabs failures — or a missing key while provider=\"elevenlabs\" is requested — fall back to edge-tts automatically, never a hard error. There is no Kokoro or OpenAI TTS integration in this service. Voices: en-US-AriaNeural/GuyNeural (EN female/male), fr-FR-DeniseNeural/HenriNeural (FR female/male). 400 if text is blank, 501 if edge-tts isn't installed.",
+    resLabel: "audio/mpeg or audio/wav (binary)",
+    resBody: `<binary audio stream>
+Content-Type: audio/wav              (kokoro, when it actually ran)
+Content-Disposition: inline; filename="speech.wav"
+
+Content-Type: audio/mpeg             (edge / elevenlabs / openai,
+Content-Disposition: inline; filename="speech.mp3"    or any fallback)`,
+    note: "Four providers: edge-tts (Microsoft Edge neural voices — the default, no API key needed, EN + FR), ElevenLabs (premium + real voice cloning, needs ELEVENLABS_API_KEY), OpenAI tts-1-hd (needs OPENAI_API_KEY), and Kokoro (open-source, self-hosted — runs locally or delegates to VOICEFLOW_TTS_REMOTE_ENDPOINT, no API key). Any provider failure — missing key, model not installed, remote unreachable, insufficient ElevenLabs plan — falls back to edge-tts automatically, never a hard error. Only Kokoro returns WAV; the response's real Content-Type is always the source of truth, since a requested provider can silently fall back — never assume the format from what you asked for. Edge voices: en-US-AriaNeural/GuyNeural (EN female/male), fr-FR-DeniseNeural/HenriNeural (FR female/male). 400 if text is blank, 501 if edge-tts isn't installed.",
+  },
+  {
+    method: "GET", path: "/tts/voices", category: "Text-to-Speech", auth: "public",
+    desc: "Every ElevenLabs voice on this account — the 2 stock voices /tts falls back to, plus any you've cloned via POST /tts/voices/clone.",
+    resBody: `{
+  "voices": [
+    {"voice_id": "EXAVITQu4vr4xnSDxMaL", "name": "Sarah - Mature, Reassuring, Confident", "category": "premade", "description": "..."},
+    {"voice_id": "abc123...", "name": "My cloned voice", "category": "cloned", "description": ""}
+  ]
+}`,
+    note: "If ELEVENLABS_API_KEY isn't configured, returns {\"voices\": [], \"error\": \"ELEVENLABS_API_KEY not configured\"} — an empty list is never silently confused with \"this account has no voices\".",
+  },
+  {
+    method: "POST", path: "/tts/voices/clone", category: "Text-to-Speech", auth: "token",
+    desc: "Real ElevenLabs Instant Voice Cloning — upload one or more real audio samples of a voice, get back a voice_id usable via /tts's voice_id field. This is the actual ElevenLabs differentiator, not just picking between 2 stock voices.",
+    reqLabel: "multipart/form-data",
+    reqBody: `name:         "My cloned voice"           required
+files:        <one or more audio samples>  required
+description:  "..."                        optional`,
+    resBody: `{"voice_id": "abc123...", "name": "My cloned voice"}`,
+    note: "Requires an ElevenLabs plan that supports Instant Voice Cloning (account-level: can_use_instant_voice_cloning). On a plan that doesn't, ElevenLabs' own error is surfaced verbatim as a 400 — e.g. \"Your subscription does not include instant voice cloning. Please upgrade your plan.\" — never faked as a success.",
+  },
+  {
+    method: "DELETE", path: "/tts/voices/{voice_id}", category: "Text-to-Speech", auth: "token",
+    desc: "Deletes a cloned voice.",
+    resBody: `{"ok": true, "voice_id": "abc123..."}`,
   },
 
   // ── Analysis ────────────────────────────────────────────────────────────
@@ -151,12 +202,17 @@ analysis_type:   meeting | sales_call |
                  support_call | interview |
                  general                  default "meeting"
 provider:        local | groq | ...       default "LOCAL_WHISPERX"
-language:        "en" | ... | "auto"      default "auto"`,
+                 (ignored when scenario is set)
+language:        "en" | ... | "auto"      default "auto"
+scenario:        fast | accurate | cheap |
+                 streaming                optional — see GET /scenarios`,
     resBody: `{
   "transcript": {"text": "...", "language": "en", "segments": [...], "method": "whisperx"},
   "analysis": {"meeting_summary": "...", "action_items": [...]},
-  "analysis_type": "meeting"
+  "analysis_type": "meeting",
+  "scenario": null
 }`,
+    note: "When `scenario` is given, it overrides `provider` entirely and pins the exact transcription provider, diarize flag, and analysis model from services/scenarios.py, run in strict mode — a failure is reported honestly ({\"method\":\"error\",\"error\":\"provider_failed:...\"}) instead of silently substituting a different provider than the one the scenario promises. 400 unknown_scenario for an unrecognized name.",
   },
   {
     method: "POST", path: "/meeting/process", category: "Composite Pipelines", auth: "token",
@@ -185,14 +241,17 @@ call_type:  sales_call | support_call |
   // ── Integrations ────────────────────────────────────────────────────────
   {
     method: "POST", path: "/integrations/relay", category: "Integrations", auth: "token",
-    desc: "Posts structured VoiceFlow output (an analysis, a transcript, anything) to any external webhook — Slack, Zapier, n8n, or your own endpoint. Exists because a browser can't POST cross-origin to arbitrary third-party URLs; the server does it on the client's behalf.",
+    desc: "Posts structured VoiceFlow output (an analysis, a transcript, anything) to any external webhook — Slack, Zapier, n8n, a StreamPulse-style signed receiver, or your own endpoint. Exists because a browser can't POST cross-origin to arbitrary third-party URLs; the server does it on the client's behalf.",
     reqLabel: "application/json",
     reqBody: `{
   "url": "https://hooks.slack.com/services/T000/B000/XXXX",
-  "payload": {"text": "New meeting analyzed: 3 action items, ships Friday"}
+  "payload": {"text": "New meeting analyzed: 3 action items, ships Friday"},
+  "target": null,            // "slack" | "zapier" | "n8n" | "generic" — auto-detected from url if omitted
+  "secret": null,             // if set, HMAC-SHA256-signs the exact body sent
+  "signature_header": null    // header name for the signature; default "X-Signature-256"
 }`,
-    resBody: `{"ok": true, "status": 200, "response": "ok"}`,
-    note: "url must start with http:// or https:// (400 invalid_url otherwise). 502 relay_failed if the target endpoint errors or is unreachable. response is the target's response body, truncated to 500 characters.",
+    resBody: `{"ok": true, "status": 200, "response": "ok", "target": "slack", "signed": false}`,
+    note: "url must start with http:// or https:// (400 invalid_url otherwise). target is auto-detected from the URL's hostname when omitted (hooks.slack.com → slack, hooks.zapier.com → zapier), defaulting to generic. Only the slack target reformats the payload — into real Slack Block Kit JSON built from whatever shape you sent (see services/relay_formatting.py); n8n/zapier/generic payloads are posted through byte-for-byte unchanged, since those accept arbitrary JSON. If secret is set, the body is HMAC-SHA256-signed and attached under signature_header (default X-Signature-256, value sha256=<hex>) — a generic capability for any receiver that verifies requests this way; verified compatible with StreamPulse's real /webhook/{source} receiver. 502 relay_failed if the target endpoint errors or is unreachable. response is the target's response body, truncated to 500 characters.",
   },
 
   // ── Real-time ───────────────────────────────────────────────────────────
@@ -263,6 +322,7 @@ const CATEGORIES = [
 function methodColor(m: string) {
   if (m === "GET") return { bg: "rgba(56,189,248,0.15)", fg: "#38bdf8" };
   if (m === "WS") return { bg: "rgba(74,222,128,0.15)", fg: "#4ade80" };
+  if (m === "DELETE") return { bg: "rgba(248,113,113,0.15)", fg: "#f87171" };
   return { bg: "rgba(167,139,250,0.15)", fg: "#a78bfa" };
 }
 
@@ -271,7 +331,13 @@ function curlSnippet(ep: Endpoint): string {
     return `# WebSocket endpoint — use wscat, websocat, or a WS client library\nwscat -c "${WS_BASE}${ep.path}"`;
   }
   if (ep.method === "GET") {
-    return `curl "${BASE_URL}${ep.path}" \\\n  -H "X-OmniIntel-Internal-Token: $VOICEFLOW_TOKEN"`;
+    return `curl "${BASE_URL}${ep.path}"  # GET requests are always public, no token needed`;
+  }
+  if (ep.method === "DELETE") {
+    return `curl -X DELETE "${BASE_URL}${ep.path.replace("{voice_id}", "abc123")}" \\\n  -H "X-OmniIntel-Internal-Token: $VOICEFLOW_TOKEN"`;
+  }
+  if (ep.path === "/tts/voices/clone") {
+    return `curl -X POST "${BASE_URL}${ep.path}" \\\n  -H "X-OmniIntel-Internal-Token: $VOICEFLOW_TOKEN" \\\n  -F "name=My cloned voice" \\\n  -F "files=@voice_sample.wav"`;
   }
   if (ep.reqLabel === "multipart/form-data") {
     const fileField = ep.path === "/tts" ? "" : `  -F "file=@recording.wav" \\\n`;
@@ -286,7 +352,13 @@ function pythonSnippet(ep: Endpoint): string {
     return `import asyncio, websockets\n\nasync def main():\n    async with websockets.connect("${WS_BASE}${ep.path}") as ws:\n        print(await ws.recv())  # {"type":"ready", ...}\n        # send binary audio chunks / JSON control messages per the protocol above\n\nasyncio.run(main())`;
   }
   if (ep.method === "GET") {
-    return `import requests\n\nresp = requests.get(\n    "${BASE_URL}${ep.path}",\n    headers={"X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN},\n)\nprint(resp.json())`;
+    return `import requests\n\n# GET requests are always public, no token needed\nresp = requests.get("${BASE_URL}${ep.path}")\nprint(resp.json())`;
+  }
+  if (ep.method === "DELETE") {
+    return `import requests\n\nresp = requests.delete(\n    "${BASE_URL}${ep.path.replace("{voice_id}", "abc123")}",\n    headers={"X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN},\n)\nprint(resp.json())`;
+  }
+  if (ep.path === "/tts/voices/clone") {
+    return `import requests\n\nwith open("voice_sample.wav", "rb") as f:\n    resp = requests.post(\n        "${BASE_URL}${ep.path}",\n        files={"files": f},\n        data={"name": "My cloned voice"},\n        headers={"X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN},\n    )\nprint(resp.json())  # {"voice_id": "...", "name": "..."}`;
   }
   if (ep.reqLabel === "multipart/form-data") {
     const extra = ep.path === "/pipeline"
@@ -305,7 +377,13 @@ function nodeSnippet(ep: Endpoint): string {
     return `const ws = new WebSocket("${WS_BASE}${ep.path}");\nws.onmessage = (e) => console.log(JSON.parse(e.data));\n// ws.send(<ArrayBuffer of audio>) / ws.send(JSON.stringify({...}))`;
   }
   if (ep.method === "GET") {
-    return `const res = await fetch("${BASE_URL}${ep.path}", {\n  headers: { "X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN },\n});\nconst data = await res.json();`;
+    return `// GET requests are always public, no token needed\nconst res = await fetch("${BASE_URL}${ep.path}");\nconst data = await res.json();`;
+  }
+  if (ep.method === "DELETE") {
+    return `const res = await fetch("${BASE_URL}${ep.path.replace("{voice_id}", "abc123")}", {\n  method: "DELETE",\n  headers: { "X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN },\n});\nconst data = await res.json();`;
+  }
+  if (ep.path === "/tts/voices/clone") {
+    return `const fd = new FormData();\nfd.append("name", "My cloned voice");\nfd.append("files", audioBlob, "voice_sample.wav");\n\nconst res = await fetch("${BASE_URL}${ep.path}", {\n  method: "POST",\n  headers: { "X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN },\n  body: fd,\n});\nconst { voice_id } = await res.json();`;
   }
   if (ep.reqLabel === "multipart/form-data") {
     return `const fd = new FormData();\nfd.append("file", audioBlob, "recording.wav");\nfd.append("analysis_type", "meeting");\n\nconst res = await fetch("${BASE_URL}${ep.path}", {\n  method: "POST",\n  headers: { "X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN },\n  body: fd,\n});\nconst data = await res.json();`;
@@ -352,7 +430,7 @@ export default function ApiDocs() {
         <div>
           <h1 style={{ fontSize: "1.5rem", fontWeight: 700, margin: 0 }}>VoiceFlow API Reference</h1>
           <p style={{ margin: 0, fontSize: "0.85rem", color: "#94a3b8" }}>
-            Speech transcription, TTS, LLM-powered call/meeting analysis, webhook relay and real-time voice agent — 14 endpoints.
+            Speech transcription, TTS (with real voice cloning), LLM-powered call/meeting analysis, signed webhook relay, and real-time voice agent — 18 endpoints.
           </p>
         </div>
       </div>
@@ -372,7 +450,7 @@ export default function ApiDocs() {
       </div>
 
       <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "10px 16px", marginBottom: 20, fontSize: "0.78rem", color: "#94a3b8" }}>
-        The internal-token header is only enforced when the server sets <code>REQUIRE_INTERNAL_TOKEN=true</code> (off by default). <code>GET /</code>, <code>GET /health</code>, <code>WS /stream</code>, and <code>WS /realtime</code> are always public regardless of that setting.
+        Every GET request — page navigation, health checks, analytics, the scenario list — is always public, along with <code>WS /stream</code> and <code>WS /realtime</code>. Only POST endpoints ever check the internal-token header, and only when the server sets <code>REQUIRE_INTERNAL_TOKEN=true</code> (off by default).
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 20 }}>
