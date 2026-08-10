@@ -187,7 +187,14 @@ def _run_diarization(audio_path: str) -> Optional[List[Dict[str, Any]]]:
         except ImportError:
             DiarizationPipeline = whisperx.DiarizationPipeline
 
-        diarize_model = DiarizationPipeline(use_auth_token=settings.HF_TOKEN, device="cpu")
+        # The auth kwarg was renamed use_auth_token -> token (matching
+        # huggingface_hub's own rename). Passing the old name to a current whisperx
+        # raises TypeError, which the handler below swallowed — the same silent
+        # degradation as the import path above, one layer down.
+        try:
+            diarize_model = DiarizationPipeline(token=settings.HF_TOKEN, device="cpu")
+        except TypeError:
+            diarize_model = DiarizationPipeline(use_auth_token=settings.HF_TOKEN, device="cpu")
         raw = diarize_model(audio_path)
         # whisperx's DiarizationPipeline returns a pyannote-style DataFrame;
         # normalize to our {start, end, speaker} shape for the shared assigner.
