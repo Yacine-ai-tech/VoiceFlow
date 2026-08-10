@@ -175,7 +175,19 @@ def _run_diarization(audio_path: str) -> Optional[List[Dict[str, Any]]]:
     if not (_WHISPERX and settings.HF_TOKEN):
         return None
     try:
-        diarize_model = whisperx.DiarizationPipeline(use_auth_token=settings.HF_TOKEN, device="cpu")
+        # DiarizationPipeline is NOT a top-level whisperx export on current versions —
+        # it lives in whisperx.diarize. The old top-level spelling raises
+        # AttributeError, which the `except Exception` below then swallowed, so this
+        # returned None every time and diarization silently never happened. Confirmed
+        # against a real two-speaker recording: transcription was correct, speaker
+        # labels were absent. The old spelling is kept as a fallback so both API
+        # generations work.
+        try:
+            from whisperx.diarize import DiarizationPipeline
+        except ImportError:
+            DiarizationPipeline = whisperx.DiarizationPipeline
+
+        diarize_model = DiarizationPipeline(use_auth_token=settings.HF_TOKEN, device="cpu")
         raw = diarize_model(audio_path)
         # whisperx's DiarizationPipeline returns a pyannote-style DataFrame;
         # normalize to our {start, end, speaker} shape for the shared assigner.
