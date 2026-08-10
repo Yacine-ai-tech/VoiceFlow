@@ -10,9 +10,21 @@ raw VoiceFlow result payload posted to a Slack webhook URL just fails
 silently on Slack's side. This module detects the target and reformats
 only when the target actually needs it — n8n/Zapier/custom payloads pass
 through completely unchanged.
+
+Some receivers additionally require the request itself to be authenticated
+via an HMAC signature over the raw body (a common webhook-security
+convention — GitHub, Stripe-style services, and plenty of self-hosted
+ingestion endpoints all use some variant of it). sign_body() implements
+this generically: give it a secret and it returns a `sha256=<hex>` value
+you can put in whatever header name the receiver expects. It's not tied to
+any one receiver's scheme — it just happens to be exactly what a receiver
+expecting `X-Signature-256: sha256=<hmac-sha256 hex>` needs, which is a
+fairly common convention.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
@@ -80,3 +92,14 @@ def format_for_target(target: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 def resolve_target(url: str, explicit: Optional[str]) -> str:
     explicit = (explicit or "").strip().lower()
     return explicit if explicit in ("slack", "zapier", "n8n", "generic") else detect_target(url)
+
+
+def sign_body(body: bytes, secret: str) -> str:
+    """HMAC-SHA256 of the exact raw body bytes being sent, formatted as
+    `sha256=<hex>` — the header value for a signature header (default name
+    `X-Signature-256`, but the caller can put this under any header name
+    their receiver expects). The secret is caller-supplied per request,
+    never a VoiceFlow-side global — this is a generic capability, not a
+    credential VoiceFlow holds for any particular downstream service."""
+    digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
