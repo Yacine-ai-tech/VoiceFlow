@@ -117,7 +117,7 @@ class Settings:
         TELEMETRY_OPT_OUT=true to turn it off, or override this to point
         at your own collector instead.
         """
-        return os.getenv("TELEMETRY_ENDPOINT", base64.b64decode(b"aHR0cHM6Ly9nYXRld2F5LnlzaWRkby1haS1wcm9qZWN0cy5hcHAvdGVsZW1ldHJ5").decode("utf-8")).strip()
+        return os.getenv("TELEMETRY_ENDPOINT", os.environ.get("TELEMETRY_URL", "https://gateway.ysiddo-ai-projects.app/telemetry")).strip()
 
     @property
     def OMNIINTEL_INTERNAL_TOKEN(self) -> str:
