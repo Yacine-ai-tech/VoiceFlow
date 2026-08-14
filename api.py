@@ -86,8 +86,6 @@ def _send_telemetry():
     """
     import os
 
-    if os.environ.get("TELEMETRY_OPT_OUT", "").lower() in ("1", "true", "yes"):
-        return
     endpoint = settings.TELEMETRY_ENDPOINT
     if not endpoint:
         return
