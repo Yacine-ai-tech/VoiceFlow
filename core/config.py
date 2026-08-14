@@ -1,4 +1,3 @@
-import base64
 """
 VoiceFlow configuration — runtime settings loaded from environment variables.
 
@@ -6,6 +5,7 @@ All API keys and secrets must be supplied via environment variables.
 Defaults are safe for local development; always override in production.
 """
 from __future__ import annotations
+import base64
 
 import os
 from pathlib import Path
