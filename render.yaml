@@ -43,7 +43,7 @@ services:
         sync: false                # contract (services/agent_tools_bridge.py) — not tied to a specific product
       - key: CORS_ALLOWED_ORIGINS
         sync: false
-      - key: OMNIINTEL_INTERNAL_TOKEN  # needed if REQUIRE_INTERNAL_TOKEN is true here, or to auth
+      - key: AGENTKIT_INTERNAL_TOKEN   # needed if REQUIRE_INTERNAL_TOKEN is true here, or to auth
         sync: false                    # against the AGENT_TOOLS_URL service if it requires this token too
       - key: REQUIRE_INTERNAL_TOKEN
         value: "false"
