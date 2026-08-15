@@ -114,15 +114,22 @@ class Settings:
 
         Enabled by default (opt-out, not opt-in) — see TELEMETRY.md for
         exactly what the payload contains and how to disable it. Set
-        TELEMETRY_OPT_OUT=true to turn it off, or override this to point
-        at your own collector instead.
+        TELEMETRY_OPT_OUT=true to turn it off, or override TELEMETRY_ENDPOINT
+        to point at your own collector instead. Leave blank to disable.
         """
-        return os.getenv("TELEMETRY_ENDPOINT", os.environ.get("TELEMETRY_URL", "https://gateway.ysiddo-ai-projects.app/telemetry")).strip()
+        return os.getenv("TELEMETRY_ENDPOINT", os.environ.get("TELEMETRY_URL", "")).strip()
 
     @property
-    def OMNIINTEL_INTERNAL_TOKEN(self) -> str:
-        """Shared service-to-service auth token sent on X-OmniIntel-Internal-Token."""
-        return os.getenv("OMNIINTEL_INTERNAL_TOKEN", "").strip()
+    def INTERNAL_TOKEN(self) -> str:
+        """Optional shared service-to-service auth token for internal deployments.
+        Set AGENTKIT_INTERNAL_TOKEN (or INTERNAL_TOKEN) in the environment.
+        Only needed when AGENT_TOOLS_URL points at a deployment with
+        REQUIRE_INTERNAL_TOKEN=true.
+        """
+        return (
+            os.getenv("AGENTKIT_INTERNAL_TOKEN", "")
+            or os.getenv("INTERNAL_TOKEN", "")
+        ).strip()
 
     # Base URL of an external "agent tools" service — see
     # services/agent_tools_bridge.py for the discovery contract. Generic on
@@ -134,10 +141,11 @@ class Settings:
 
     @property
     def AGENT_TOOLS_TOKEN(self) -> str:
-        """Auth token for AGENT_TOOLS_URL. Falls back to
-        OMNIINTEL_INTERNAL_TOKEN so the common case (a same-platform sibling
-        service) needs no extra config; override for anything else."""
-        return os.getenv("AGENT_TOOLS_TOKEN", "").strip() or self.OMNIINTEL_INTERNAL_TOKEN
+        """Auth token for AGENT_TOOLS_URL — sent as X-AgentKit-Internal-Token
+        when REQUIRE_INTERNAL_TOKEN=true is set on the downstream service.
+        Falls back to INTERNAL_TOKEN so deployments that share a common secret
+        need no extra config; override AGENT_TOOLS_TOKEN for anything else."""
+        return os.getenv("AGENT_TOOLS_TOKEN", "").strip() or self.INTERNAL_TOKEN
 
     CORS_ALLOWED_ORIGINS = [
         o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "*").split(",")
