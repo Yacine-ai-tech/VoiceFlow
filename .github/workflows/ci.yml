@@ -13,7 +13,7 @@ env:
   PYTHON_VERSION: "3.12"
   NODE_VERSION:   "20"
   VOICEFLOW_URL:   ${{ secrets.VOICEFLOW_URL  || '' }}
-  OMNIINTEL_INTERNAL_TOKEN: ${{ secrets.OMNIINTEL_INTERNAL_TOKEN  }}
+  VOICEFLOW_INTERNAL_TOKEN: ${{ secrets.VOICEFLOW_INTERNAL_TOKEN  }}
   TELEMETRY_OPT_OUT: "false"
 
 jobs:
@@ -112,7 +112,7 @@ jobs:
         run: |
           python -c "
           import httpx
-          headers = {'X-OmniIntel-Internal-Token': '${{ env.OMNIINTEL_INTERNAL_TOKEN }}'}
+          headers = {'X-VoiceFlow-Internal-Token': '${{ env.VOICEFLOW_INTERNAL_TOKEN }}'}
           
           # Test health endpoint
           response = httpx.get('${{ env.VOICEFLOW_URL }}/health', timeout=10)
