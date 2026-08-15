@@ -334,17 +334,17 @@ function curlSnippet(ep: Endpoint): string {
     return `curl "${BASE_URL}${ep.path}"  # GET requests are always public, no token needed`;
   }
   if (ep.method === "DELETE") {
-    return `curl -X DELETE "${BASE_URL}${ep.path.replace("{voice_id}", "abc123")}" \\\n  -H "X-OmniIntel-Internal-Token: $VOICEFLOW_TOKEN"`;
+    return `curl -X DELETE "${BASE_URL}${ep.path.replace("{voice_id}", "abc123")}" \\\n  -H "X-VoiceFlow-Internal-Token: $VOICEFLOW_TOKEN"`;
   }
   if (ep.path === "/tts/voices/clone") {
-    return `curl -X POST "${BASE_URL}${ep.path}" \\\n  -H "X-OmniIntel-Internal-Token: $VOICEFLOW_TOKEN" \\\n  -F "name=My cloned voice" \\\n  -F "files=@voice_sample.wav"`;
+    return `curl -X POST "${BASE_URL}${ep.path}" \\\n  -H "X-VoiceFlow-Internal-Token: $VOICEFLOW_TOKEN" \\\n  -F "name=My cloned voice" \\\n  -F "files=@voice_sample.wav"`;
   }
   if (ep.reqLabel === "multipart/form-data") {
     const fileField = ep.path === "/tts" ? "" : `  -F "file=@recording.wav" \\\n`;
-    return `curl -X POST "${BASE_URL}${ep.path}" \\\n  -H "X-OmniIntel-Internal-Token: $VOICEFLOW_TOKEN" \\\n${fileField}  -F "analysis_type=meeting"`;
+    return `curl -X POST "${BASE_URL}${ep.path}" \\\n  -H "X-VoiceFlow-Internal-Token: $VOICEFLOW_TOKEN" \\\n${fileField}  -F "analysis_type=meeting"`;
   }
   const body = ep.reqBody?.trim().startsWith("{") ? ep.reqBody : "{}";
-  return `curl -X POST "${BASE_URL}${ep.path}" \\\n  -H "Content-Type: application/json" \\\n  -H "X-OmniIntel-Internal-Token: $VOICEFLOW_TOKEN" \\\n  -d '${body}'${ep.path === "/tts" ? " \\\n  --output speech.mp3" : ""}`;
+  return `curl -X POST "${BASE_URL}${ep.path}" \\\n  -H "Content-Type: application/json" \\\n  -H "X-VoiceFlow-Internal-Token: $VOICEFLOW_TOKEN" \\\n  -d '${body}'${ep.path === "/tts" ? " \\\n  --output speech.mp3" : ""}`;
 }
 
 function pythonSnippet(ep: Endpoint): string {
@@ -355,21 +355,21 @@ function pythonSnippet(ep: Endpoint): string {
     return `import requests\n\n# GET requests are always public, no token needed\nresp = requests.get("${BASE_URL}${ep.path}")\nprint(resp.json())`;
   }
   if (ep.method === "DELETE") {
-    return `import requests\n\nresp = requests.delete(\n    "${BASE_URL}${ep.path.replace("{voice_id}", "abc123")}",\n    headers={"X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN},\n)\nprint(resp.json())`;
+    return `import requests\n\nresp = requests.delete(\n    "${BASE_URL}${ep.path.replace("{voice_id}", "abc123")}",\n    headers={"X-VoiceFlow-Internal-Token": VOICEFLOW_TOKEN},\n)\nprint(resp.json())`;
   }
   if (ep.path === "/tts/voices/clone") {
-    return `import requests\n\nwith open("voice_sample.wav", "rb") as f:\n    resp = requests.post(\n        "${BASE_URL}${ep.path}",\n        files={"files": f},\n        data={"name": "My cloned voice"},\n        headers={"X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN},\n    )\nprint(resp.json())  # {"voice_id": "...", "name": "..."}`;
+    return `import requests\n\nwith open("voice_sample.wav", "rb") as f:\n    resp = requests.post(\n        "${BASE_URL}${ep.path}",\n        files={"files": f},\n        data={"name": "My cloned voice"},\n        headers={"X-VoiceFlow-Internal-Token": VOICEFLOW_TOKEN},\n    )\nprint(resp.json())  # {"voice_id": "...", "name": "..."}`;
   }
   if (ep.reqLabel === "multipart/form-data") {
     const extra = ep.path === "/pipeline"
       ? `, "analysis_type": "meeting", "provider": "groq"`
       : ep.path === "/call/analyze" ? `, "call_type": "sales_call"` : "";
-    return `import requests\n\nwith open("recording.wav", "rb") as f:\n    resp = requests.post(\n        "${BASE_URL}${ep.path}",\n        files={"file": f},\n        data={"language": "auto"${extra}},\n        headers={"X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN},\n    )\nprint(resp.json())`;
+    return `import requests\n\nwith open("recording.wav", "rb") as f:\n    resp = requests.post(\n        "${BASE_URL}${ep.path}",\n        files={"file": f},\n        data={"language": "auto"${extra}},\n        headers={"X-VoiceFlow-Internal-Token": VOICEFLOW_TOKEN},\n    )\nprint(resp.json())`;
   }
   const outputHandling = ep.path === "/tts"
     ? `with open("speech.mp3", "wb") as f:\n    f.write(resp.content)`
     : `print(resp.json())`;
-  return `import requests\n\nresp = requests.post(\n    "${BASE_URL}${ep.path}",\n    json=${ep.reqBody?.trim().startsWith("{") ? ep.reqBody : "{}"},\n    headers={"X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN},\n)\n${outputHandling}`;
+  return `import requests\n\nresp = requests.post(\n    "${BASE_URL}${ep.path}",\n    json=${ep.reqBody?.trim().startsWith("{") ? ep.reqBody : "{}"},\n    headers={"X-VoiceFlow-Internal-Token": VOICEFLOW_TOKEN},\n)\n${outputHandling}`;
 }
 
 function nodeSnippet(ep: Endpoint): string {
@@ -380,16 +380,16 @@ function nodeSnippet(ep: Endpoint): string {
     return `// GET requests are always public, no token needed\nconst res = await fetch("${BASE_URL}${ep.path}");\nconst data = await res.json();`;
   }
   if (ep.method === "DELETE") {
-    return `const res = await fetch("${BASE_URL}${ep.path.replace("{voice_id}", "abc123")}", {\n  method: "DELETE",\n  headers: { "X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN },\n});\nconst data = await res.json();`;
+    return `const res = await fetch("${BASE_URL}${ep.path.replace("{voice_id}", "abc123")}", {\n  method: "DELETE",\n  headers: { "X-VoiceFlow-Internal-Token": VOICEFLOW_TOKEN },\n});\nconst data = await res.json();`;
   }
   if (ep.path === "/tts/voices/clone") {
-    return `const fd = new FormData();\nfd.append("name", "My cloned voice");\nfd.append("files", audioBlob, "voice_sample.wav");\n\nconst res = await fetch("${BASE_URL}${ep.path}", {\n  method: "POST",\n  headers: { "X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN },\n  body: fd,\n});\nconst { voice_id } = await res.json();`;
+    return `const fd = new FormData();\nfd.append("name", "My cloned voice");\nfd.append("files", audioBlob, "voice_sample.wav");\n\nconst res = await fetch("${BASE_URL}${ep.path}", {\n  method: "POST",\n  headers: { "X-VoiceFlow-Internal-Token": VOICEFLOW_TOKEN },\n  body: fd,\n});\nconst { voice_id } = await res.json();`;
   }
   if (ep.reqLabel === "multipart/form-data") {
-    return `const fd = new FormData();\nfd.append("file", audioBlob, "recording.wav");\nfd.append("analysis_type", "meeting");\n\nconst res = await fetch("${BASE_URL}${ep.path}", {\n  method: "POST",\n  headers: { "X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN },\n  body: fd,\n});\nconst data = await res.json();`;
+    return `const fd = new FormData();\nfd.append("file", audioBlob, "recording.wav");\nfd.append("analysis_type", "meeting");\n\nconst res = await fetch("${BASE_URL}${ep.path}", {\n  method: "POST",\n  headers: { "X-VoiceFlow-Internal-Token": VOICEFLOW_TOKEN },\n  body: fd,\n});\nconst data = await res.json();`;
   }
   const body = ep.reqBody?.trim().startsWith("{") ? ep.reqBody : "{}";
-  return `const res = await fetch("${BASE_URL}${ep.path}", {\n  method: "POST",\n  headers: {\n    "Content-Type": "application/json",\n    "X-OmniIntel-Internal-Token": VOICEFLOW_TOKEN,\n  },\n  body: JSON.stringify(${body}),\n});\n${ep.path === "/tts" ? "const audioBlob = await res.blob();" : "const data = await res.json();"}`;
+  return `const res = await fetch("${BASE_URL}${ep.path}", {\n  method: "POST",\n  headers: {\n    "Content-Type": "application/json",\n    "X-VoiceFlow-Internal-Token": VOICEFLOW_TOKEN,\n  },\n  body: JSON.stringify(${body}),\n});\n${ep.path === "/tts" ? "const audioBlob = await res.blob();" : "const data = await res.json();"}`;
 }
 
 const SNIPPETS: Record<string, (ep: Endpoint) => string> = {
@@ -438,7 +438,7 @@ export default function ApiDocs() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, margin: "20px 0" }}>
         {[
           { icon: Globe, label: "Base URL", value: BASE_URL, color: "#38bdf8" },
-          { icon: Shield, label: "Auth", value: "X-OmniIntel-Internal-Token", color: "#4ade80" },
+          { icon: Shield, label: "Auth", value: "X-VoiceFlow-Internal-Token", color: "#4ade80" },
           { icon: Zap, label: "Format", value: "REST / JSON + 2 WebSockets", color: "#f59e0b" },
           { icon: BookOpen, label: "Docs", value: "OpenAPI at /docs", color: "#a78bfa" },
         ].map(({ icon: Icon, label, value, color }) => (
