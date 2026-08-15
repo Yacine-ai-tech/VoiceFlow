@@ -2,9 +2,16 @@ import pytest
 import httpx
 import os
 
-TOKEN = os.getenv('OMNIINTEL_INTERNAL_TOKEN', '')
-HEADERS = {'X-OmniIntel-Internal-Token': TOKEN}
-BASE_URL = os.getenv('TEST_BASE_URL', 'https://gateway.ysiddo-ai-projects.app/voiceflow')
+TOKEN = os.getenv('AGENTKIT_INTERNAL_TOKEN', '')
+HEADERS = {'X-AgentKit-Internal-Token': TOKEN}
+BASE_URL = os.getenv('TEST_BASE_URL', '')
+
+# These tests require a live VoiceFlow server. Skip automatically when TEST_BASE_URL is
+# not set (local dev without a running server). In CI, set TEST_BASE_URL to the deployed
+# service URL so these run as post-deploy smoke tests.
+if not BASE_URL:
+    pytest.skip("TEST_BASE_URL not set — skipping live E2E tests", allow_module_level=True)
+
 
 @pytest.mark.asyncio
 async def test_e2e_api_get___0():
