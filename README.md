@@ -91,6 +91,14 @@ python3 eval/run_benchmarks.py --seed 42
 This project is open-source under the **AGPL-3.0 License**. Free for researchers, students, and open-source projects.
 Commercial license: see [COMMERCIAL.md](COMMERCIAL.md).
 
+## Telemetry
 
+Running the app sends two anonymous pings if `TELEMETRY_ENDPOINT`/`TELEMETRY_URL` is
+configured: a startup ping (always, once `TELEMETRY_ENDPOINT` is set — not affected by
+`TELEMETRY_OPT_OUT`) and a periodic aggregate usage snapshot (skipped by
+`TELEMETRY_OPT_OUT=true`). Neither includes user data — see `.env.example` for the exact
+payload shape. This README also carries a tracking-pixel image below, which loads
+whenever this page is viewed with remote images enabled (e.g. on GitHub) — that one is
+independent of the app and isn't affected by any env var.
 
 ![telemetry](https://gateway.ysiddo-ai-projects.app/pixel.png)
