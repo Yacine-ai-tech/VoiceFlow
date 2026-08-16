@@ -22,7 +22,6 @@ from __future__ import annotations
 import tempfile
 from typing import Any, Dict, Optional
 
-from core.config import settings
 from core.logger import get_logger
 
 log = get_logger(__name__)
