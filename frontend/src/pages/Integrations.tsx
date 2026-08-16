@@ -9,7 +9,7 @@ import { api, readHistory } from "../lib/api";
 
 /* v1 "Integrations" — REAL: the server relays structured output to any webhook
    (Slack incoming webhook, Zapier/n8n catch hook, custom endpoint, or any receiver
-   that verifies an HMAC-SHA256 signature — e.g. StreamPulse's /webhook/{source}).
+   that verifies an HMAC-SHA256 signature).
    The browser can't POST cross-origin, so /integrations/relay does it server-side. */
 
 const TARGETS = [
@@ -125,8 +125,8 @@ export default function Integrations() {
                 <p className="text-[11.5px] leading-5 text-muted">
                   When set, the exact JSON body sent is HMAC-SHA256-signed with this secret and attached as
                   <code className="font-mono"> {sigHeader || "X-Signature-256"}: sha256=&lt;hex&gt;</code> — a generic
-                  convention, not tied to any specific receiver, but compatible out of the box with anything that
-                  verifies requests this way (e.g. a StreamPulse-style <code className="font-mono">/webhook/&#123;source&#125;</code> endpoint).
+                  convention, not tied to any specific receiver, but compatible out of the box with any endpoint
+                  that verifies requests this way.
                 </p>
               </div>
             )}
