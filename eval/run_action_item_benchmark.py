@@ -1,7 +1,7 @@
 """
-Real, end-to-end action-item extraction benchmark — STRATEGY.md §4.7
-("Speech-to-Intelligence: Evaluating LLM Post-Processing of Whisper
-Transcripts for Action Item Extraction").
+Real, end-to-end action-item extraction benchmark: "Speech-to-Intelligence —
+Evaluating LLM Post-Processing of Whisper Transcripts for Action Item
+Extraction."
 
 Pipeline per meeting, all real, no shortcuts:
   1. Real TTS (edge-tts) synthesizes the meeting script into actual audio.
@@ -11,9 +11,8 @@ Pipeline per meeting, all real, no shortcuts:
   3. Real LLM analysis (services/meeting_analyzer.py, analysis_type="meeting")
      extracts action items from that real transcript, once per model under
      comparison — LLM_DEFAULT (Groq Llama 3.3 70B) vs LLM_REASONING (Claude
-     Sonnet 4.6), the two tiers this project actually uses, standing in for
-     STRATEGY.md's "GPT-4o-mini vs LLaMA 3.1" (models that predate/differ
-     from what's actually configured here — see ACTION_ITEM_BENCHMARK.md).
+     Sonnet 4.6), the two tiers this project actually uses (see
+     ACTION_ITEM_BENCHMARK.md for the full model comparison rationale).
   4. Real scoring: each model's extracted action_items vs the corpus's
      ground-truth action_items, via greedy owner+action-similarity matching.
 

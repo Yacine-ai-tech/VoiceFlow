@@ -21,7 +21,7 @@
 - **Full web dashboard** at `/`
 - **Realtime voice agent bridge** at `WS /realtime` — OpenAI Realtime API or Gemini Multimodal Live, chosen explicitly via `REALTIME_PROVIDER` (no auto-fallback between them)
 - **External tool-calling**: the realtime agent can call out to any service implementing the agent-tools discovery contract (see `services/agent_tools_bridge.py`) mid-conversation — set `AGENT_TOOLS_URL` and its tools are discovered and become callable automatically, no VoiceFlow code change needed. This project's own dev/demo target is [AgentKit](https://github.com/Yacine-ai-tech/AgentKit) ("talk to your business analyst" — ask about revenue, anomalies, or a forecast and it answers with real numbers), but the bridge has no AgentKit-specific code — any compliant service works.
-- **38 tests** across smoke, API, analyzer, voice, e2e, and realtime
+- **32 tests** across smoke, API, analyzer, voice, e2e, WebSocket, and realtime
 
 ## Quick Start
 
@@ -64,27 +64,43 @@ Open http://localhost:8002/
 
 ## Tests
 
-38 test functions across smoke, API, analyzer, voice, e2e, WebSocket, and realtime:
+32 test functions across smoke, API, analyzer, voice, e2e, WebSocket, and realtime:
 
 ```bash
 pytest tests/ -q
 ```
 
-## Research Novelty & Scientific Contributions
+## Realtime Voice Agent — Design Notes
 
-VoiceFlow implements research-proof real-time speech intelligence:
-- **Audio Frame Gating**: Asynchronous dropping of input mic frames during tool activation to eliminate acoustic feedback loops.
-- **Adaptive Dual-Stream Resampling**: 24kHz to 16kHz linear downsampling reducing transport overhead by 33.3%.
-- **Gemini 3.1 Live API Architecture**: Model target `models/gemini-3.1-flash-live-preview` via `google-genai` Python SDK (`api_version="v1beta"`).
+The `WS /realtime` bridge (OpenAI Realtime API or Gemini Multimodal Live,
+chosen via `REALTIME_PROVIDER`) does two specific things worth knowing
+about: server-side 24kHz→16kHz PCM downsampling for the Gemini path, and
+gating microphone input while a tool call is in flight (so speaker output
+bleeding into the mic doesn't get misread as a user interruption). See
+[RESEARCH.md](RESEARCH.md) for how and why, and the math behind the
+downsampling ratio.
 
-For mathematical formulations and benchmark analysis, see [RESEARCH.md](RESEARCH.md).
+## Benchmark Suite
 
-## Benchmark Reproduction Suite
+Real, reproducible benchmarks — each script measures exactly what its
+matching `.md` report describes, against live provider APIs where
+applicable, with no synthetic or fabricated numbers:
 
-Run the empirical benchmark evaluation:
 ```bash
-python3 eval/run_benchmarks.py --seed 42
+python3 eval/run_wer_benchmark.py --n 20 --model base    # ASR word error rate (LibriSpeech)
+python3 eval/run_multi_provider_benchmark.py             # cross-provider ASR latency/success
+python3 eval/run_scenario_benchmark.py                   # named-scenario latency/success
+python3 eval/run_realtime_benchmark.py                   # realtime WS connection/latency
+python3 eval/run_action_item_benchmark.py                # full TTS→ASR→LLM action-item extraction
+python3 eval/run_benchmarks.py                           # realtime audio downsampling latency
 ```
+
+Results land in `eval/*.md` and are served live by `GET /benchmarks` — see
+[SCENARIO_BENCHMARK.md](eval/SCENARIO_BENCHMARK.md),
+[REALTIME_BENCHMARK.md](eval/REALTIME_BENCHMARK.md),
+[WER_BENCHMARK.md](eval/WER_BENCHMARK.md),
+[MULTI_PROVIDER_BENCHMARK.md](eval/MULTI_PROVIDER_BENCHMARK.md), and
+[ACTION_ITEM_BENCHMARK.md](eval/ACTION_ITEM_BENCHMARK.md).
 
 ## License & Enterprise Use (Dual-License)
 
