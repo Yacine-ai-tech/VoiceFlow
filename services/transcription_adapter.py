@@ -11,6 +11,10 @@ front; a failure falls through to the next):
   1. Remote inference host  [VOICEFLOW_REMOTE_ENDPOINT] — a WhisperX+diarization
      endpoint you point this at yourself (self-hosted GPU box, on-demand cloud
      worker, whatever you run behind that URL). Optional — leave it unset to skip.
+     Routes to {endpoint}/nemo instead of {endpoint}/whisper when
+     LOCAL_ASR_ENGINE=nemo_canary — the engine choice applies whether it runs
+     on this host or a remote one, so NeMo Canary is usable via a remote
+     endpoint without installing nemo_toolkit locally.
   2. Groq Whisper                      [GROQ_API_KEY]
   3. Deepgram nova-3                   [DEEPGRAM_API_KEY] — best diarization of the cloud options
   4. AssemblyAI                        [ASSEMBLYAI_API_KEY] — native diarization, strong streaming
@@ -143,6 +147,69 @@ def _remote_whisper(
     except Exception as e:
         log.warning("remote /whisper failed: %s", e)
         return None
+
+
+def _remote_nemo(
+    audio_bytes: bytes,
+    language: Optional[str] = None,
+    diarize: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Same black-box remote contract as _remote_whisper, at {endpoint}/nemo
+    instead of {endpoint}/whisper — for hosts running NeMo Canary rather
+    than (or in addition to) WhisperX. Selected automatically when
+    LOCAL_ASR_ENGINE=nemo_canary, so the remote engine choice mirrors what
+    you'd get running the same setting locally, without needing
+    nemo_toolkit installed on this host."""
+    url = _remote_endpoint()
+    if not url:
+        return None
+    ep = url.lower()
+    if "groq.com" in ep or "deepgram.com" in ep or "assemblyai.com" in ep:
+        return None
+    timeout = int(os.getenv("VOICEFLOW_ASR_TIMEOUT", "120"))
+    try:
+        audio_b64 = base64.b64encode(audio_bytes).decode()
+        payload: Dict[str, Any] = {"audio_b64": audio_b64, "diarize": diarize}
+        if language:
+            payload["language"] = language
+        h = {"Content-Type": "application/json"}
+        tk = _remote_token()
+        if tk:
+            h["Authorization"] = f"Bearer {tk}"
+        req = urllib.request.Request(url + "/nemo", data=_json.dumps(payload).encode(), headers=h)
+        resp = _json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+        resp.setdefault("method", "remote-nemo")
+        return resp
+    except Exception as e:
+        log.warning("remote /nemo failed: %s", e)
+        return None
+
+
+def _remote_transcribe(
+    audio_bytes: bytes,
+    language: Optional[str] = None,
+    diarize: bool = False,
+    strict: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Dispatches to whichever remote route matches LOCAL_ASR_ENGINE — the
+    same engine-selection principle _local_whisper already applies for
+    on-host execution, just delegated instead of run in-process, so
+    LOCAL_ASR_ENGINE=nemo_canary picks nemo whether it runs here or on a
+    remote host you point at.
+
+    Non-strict: a /nemo failure falls through to /whisper (the
+    better-established route) rather than failing the whole request — same
+    graceful-degradation spirit as the rest of non-strict mode.
+
+    Strict (services/scenarios.py's "remote" provider): no such fallback —
+    if LOCAL_ASR_ENGINE says nemo, only /nemo is tried, and a failure is
+    reported honestly rather than silently handing back whisper's output
+    for what was asked to be a nemo run."""
+    if settings.LOCAL_ASR_ENGINE == "nemo_canary":
+        result = _remote_nemo(audio_bytes, language, diarize)
+        if result or strict:
+            return result
+    return _remote_whisper(audio_bytes, language, diarize)
 
 
 # ─── Groq Whisper ─────────────────────────────────────────────────────────────
@@ -344,7 +411,7 @@ async def transcribe(
         if requested == "local":
             return _local_whisper(audio_bytes, lang, diarize) or _error_result("provider_failed:local")
         if requested == "remote":
-            return _remote_whisper(audio_bytes, lang, diarize) or _error_result("provider_failed:remote")
+            return _remote_transcribe(audio_bytes, lang, diarize, strict=True) or _error_result("provider_failed:remote")
         if requested == "groq":
             return await _groq_whisper(audio_bytes, lang) or _error_result("provider_failed:groq")
         if requested == "deepgram":
@@ -373,7 +440,7 @@ async def transcribe(
     for name in priority:
         result = None
         if name == "remote":
-            result = _remote_whisper(audio_bytes, lang, diarize)
+            result = _remote_transcribe(audio_bytes, lang, diarize)
         elif name == "groq":
             result = await _groq_whisper(audio_bytes, lang)
         elif name == "deepgram":
