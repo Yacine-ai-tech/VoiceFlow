@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import io
 import json
 import os as _os
 import threading
@@ -34,7 +33,7 @@ from fastapi import (
     FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -320,13 +319,39 @@ async def transcribe_endpoint(
 
 
 @app.post("/tts")
-async def tts_endpoint(req: TTSRequest) -> StreamingResponse:
+async def tts_endpoint(req: TTSRequest):
     """Synthesize speech via whichever provider is requested — edge (default),
     elevenlabs, openai, or kokoro. Kokoro returns WAV; everything else returns MP3."""
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text required")
+
+    # On-the-fly translation (simple heuristic: if target language is 'fr', translate first using configured LLM)
+    text_to_speak = req.text
+    if req.language == "fr":
+        try:
+            from litellm import acompletion
+            # settings.LLM_REASONING/LLM_DEFAULT already resolve to this project's real
+            # configured tiers (e.g. anthropic/claude-sonnet-4-6) even when the matching
+            # env var isn't literally set — os.getenv() against the raw env would miss
+            # that code-level default and silently fall through to an unconfigured
+            # "gpt-4o-mini" (no OPENAI_API_KEY here), making translation a silent no-op.
+            model = settings.LLM_REASONING or settings.LLM_DEFAULT
+            resp = await acompletion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are a professional translator. Translate the given text to French. Only return the translated text without any quotes or explanations."},
+                    {"role": "user", "content": text_to_speak}
+                ],
+                max_tokens=1024,
+                temperature=0.3
+            )
+            if resp.choices and resp.choices[0].message.content:
+                text_to_speak = resp.choices[0].message.content.strip()
+        except Exception as e:
+            log.warning("On-the-fly translation to French failed, proceeding with original text: %s", e)
+
     try:
-        audio = await generate_speech(req.text, language=req.language,
+        audio = await generate_speech(text_to_speak, language=req.language,
                                       voice_gender=req.voice_gender, provider=req.provider,
                                       voice_id=req.voice_id)
     except RuntimeError as e:  # edge-tts not installed
@@ -334,11 +359,14 @@ async def tts_endpoint(req: TTSRequest) -> StreamingResponse:
     except Exception as e:
         log.exception("tts failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
     is_wav = (req.provider or "").strip().lower() == "kokoro" and audio[:4] == b"RIFF"
     media_type = "audio/wav" if is_wav else "audio/mpeg"
-    filename = "speech.wav" if is_wav else "speech.mp3"
-    return StreamingResponse(io.BytesIO(audio), media_type=media_type,
-                             headers={"Content-Disposition": f'inline; filename="{filename}"'})
+    return Response(
+        content=audio,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="speech.{"wav" if is_wav else "mp3"}"'}
+    )
 
 
 @app.get("/tts/voices")
