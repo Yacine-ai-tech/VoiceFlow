@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 from api import app
 
 client = TestClient(app)
-TOKEN = os.getenv("OMNIINTEL_INTERNAL_TOKEN", "")
-HEADERS = {"X-OmniIntel-Internal-Token": TOKEN}
+TOKEN = os.getenv("VOICEFLOW_INTERNAL_TOKEN", "")
+HEADERS = {"X-VoiceFlow-Internal-Token": TOKEN}
 
 @pytest.mark.asyncio
 async def test_e2e_tts_provider():
