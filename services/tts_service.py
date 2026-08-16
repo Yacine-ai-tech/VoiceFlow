@@ -212,12 +212,34 @@ def _generate_kokoro_sync(text: str, voice_gender: str) -> Optional[bytes]:
         return None
 
 
+async def _post_with_retries(client, url: str, json_body: dict, headers: dict, attempts: int = 3):
+    """The orchestrator this project actually points at has real, observed
+    transient failures (HTTP 530 across all its studios, seconds apart from
+    a successful call) — cold-start/scale-to-zero flakiness on a free-tier
+    host, not a permanent outage. A single attempt treats "temporarily
+    down" the same as "gone", which isn't true here; a couple of quick
+    retries rides out exactly this kind of blip instead of giving up to
+    edge-tts on the first bad roll."""
+    last_exc = None
+    for i in range(attempts):
+        try:
+            resp = await client.post(url, json=json_body, headers=headers)
+            resp.raise_for_status()
+            return resp
+        except Exception as e:
+            last_exc = e
+            if i < attempts - 1:
+                await asyncio.sleep(1.5 * (i + 1))
+    raise last_exc
+
+
 async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[bytes]:
     """Delegate Kokoro synthesis to a remote host instead of running it here
     — same principle as VOICEFLOW_REMOTE_ENDPOINT for ASR: run the heavy
     model on a host you choose, keep this app's own host lightweight.
 
-    Two contracts are tried, since real Kokoro-serving hosts speak either:
+    Two contracts are tried, each with a few quick retries (see
+    _post_with_retries), since real Kokoro-serving hosts speak either:
       1. {endpoint}/tts/kokoro — {"text","voice_gender"} in, raw audio bytes
          back. The originally-documented contract; tried first for anyone
          who built a remote exactly to that spec.
@@ -225,8 +247,7 @@ async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[byte
          voice IDs, not a gender string), {"audio_b64","voice","sample_rate"}
          JSON back. Same /api/inference/* convention as the /whisper and
          /nemo ASR routes. This is what this project's own orchestrator
-         actually implements — /tts/kokoro 404s/503s there, so without this
-         fallback every remote Kokoro request silently degraded to edge-tts.
+         actually implements.
     """
     if not settings.TTS_REMOTE_ENDPOINT:
         return None
@@ -237,34 +258,32 @@ async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[byte
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{settings.TTS_REMOTE_ENDPOINT}/tts/kokoro",
-                json={"text": text, "voice_gender": voice_gender},
-                headers=headers,
+            resp = await _post_with_retries(
+                client, f"{settings.TTS_REMOTE_ENDPOINT}/tts/kokoro",
+                {"text": text, "voice_gender": voice_gender}, headers,
             )
-            resp.raise_for_status()
             audio_bytes = resp.content
             log.info("TTS (Kokoro, remote /tts/kokoro) generated: %d bytes", len(audio_bytes))
             return audio_bytes
     except Exception as e:
-        log.info("Remote /tts/kokoro not available (%s), trying /api/inference/tts", e)
+        log.info("Remote /tts/kokoro not available after retries (%s), trying /api/inference/tts", e)
 
     try:
         import base64
         voice = _KOKORO_VOICES.get(voice_gender, _KOKORO_VOICES["default"])
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{settings.TTS_REMOTE_ENDPOINT}/api/inference/tts",
-                json={"text": text, "voice": voice},
-                headers=headers,
+            resp = await _post_with_retries(
+                client, f"{settings.TTS_REMOTE_ENDPOINT}/api/inference/tts",
+                {"text": text, "voice": voice}, headers,
             )
-            resp.raise_for_status()
             data = resp.json()
+            if "audio_b64" not in data:
+                raise RuntimeError(f"no audio_b64 in response: {data}")
             audio_bytes = base64.b64decode(data["audio_b64"])
             log.info("TTS (Kokoro, remote /api/inference/tts, voice=%s) generated: %d bytes", data.get("voice"), len(audio_bytes))
             return audio_bytes
     except Exception as e:
-        log.warning("Remote Kokoro TTS failed on both contracts, falling back to local/edge-tts: %s", e)
+        log.warning("Remote Kokoro TTS failed on both contracts after retries, falling back to local/edge-tts: %s", e)
         return None
 
 
