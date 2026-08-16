@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b --noCheck 2>/dev/null || true && vite build",
+    "typecheck": "tsc -b --noEmit",
+    "build": "tsc -b --noEmit && vite build",
     "preview": "vite preview",
     "test:e2e": "playwright test",
     "test": "vitest run"

@@ -5,6 +5,7 @@ ANALYSIS_MODELS dict routes per analysis type to a specific LLM tier.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -20,6 +21,30 @@ try:
     _LITELLM = True
 except ImportError:
     _LITELLM = False
+
+# Ceiling on a single LLM call. Without this, a rate-limited or slow
+# upstream provider (litellm retries 429s internally with its own backoff,
+# not bounded by anything the caller can see) can hold a request open
+# indefinitely — confirmed directly in this project's own benchmark work
+# (eval/run_action_item_benchmark.py), where an identical unbounded call
+# genuinely hung. asyncio.wait_for guarantees an upper bound regardless of
+# how long litellm's own retry loop would otherwise run; it does not change
+# litellm's retry behavior itself (num_retries stays at litellm's default
+# here — a deliberate choice for production, unlike the benchmark script,
+# which disables retries entirely for its own reproducibility needs).
+ANALYSIS_TIMEOUT_SECONDS = int(os.getenv("LLM_ANALYSIS_TIMEOUT_SECONDS", "60"))
+
+# Transcripts longer than this are truncated before being sent to the model
+# (see _truncate below) — kept as a module constant so the truncation flag
+# added to every response and the actual slicing can never drift apart.
+MAX_TRANSCRIPT_CHARS = 12000
+
+
+def _truncate(transcript: str) -> tuple[str, bool, int]:
+    original_length = len(transcript)
+    if original_length <= MAX_TRANSCRIPT_CHARS:
+        return transcript, False, original_length
+    return transcript[:MAX_TRANSCRIPT_CHARS], True, original_length
 
 
 ANALYSIS_MODELS: Dict[str, str] = {
@@ -83,22 +108,32 @@ class MeetingAnalyzer:
             return {"error": "litellm_not_installed", "analysis_type": analysis_type}
         prompt = PROMPTS.get(analysis_type, PROMPTS["general"])
         model = model or ANALYSIS_MODELS.get(analysis_type, settings.LLM_DEFAULT)
+        sent_transcript, truncated, original_length = _truncate(transcript)
         try:
-            resp = await acompletion(
-                model=model,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": transcript[:12000]},
-                ],
-                temperature=0.2,
+            resp = await asyncio.wait_for(
+                acompletion(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": sent_transcript},
+                    ],
+                    temperature=0.2,
+                ),
+                timeout=ANALYSIS_TIMEOUT_SECONDS,
             )
             content = resp.choices[0].message.content or "{}"
-            return json.loads(_strip_fences(content))
-        except json.JSONDecodeError as e:
+            result = json.loads(_strip_fences(content))
+        except asyncio.TimeoutError:
+            return {"error": f"analysis_timed_out_after_{ANALYSIS_TIMEOUT_SECONDS}s", "analysis_type": analysis_type}
+        except json.JSONDecodeError:
             return {"error": "non_json_response", "raw": content[:500] if 'content' in dir() else ""}
         except Exception as e:
             log.exception("analyze (%s) failed: %s", analysis_type, e)
             return {"error": str(e)}
+        if truncated and isinstance(result, dict):
+            result["truncated"] = True
+            result["original_length"] = original_length
+        return result
 
     async def analyze_custom(self, transcript: str, fields: List[str],
                              instructions: str = "") -> Dict[str, Any]:
@@ -112,22 +147,32 @@ class MeetingAnalyzer:
             + (f"Additional instructions: {instructions}. " if instructions.strip() else "")
             + "Return ONLY valid JSON with exactly these keys; use null for anything absent."
         )
+        sent_transcript, truncated, original_length = _truncate(transcript)
         try:
-            resp = await acompletion(
-                model=settings.LLM_REASONING,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": transcript[:12000]},
-                ],
-                temperature=0.1,
+            resp = await asyncio.wait_for(
+                acompletion(
+                    model=settings.LLM_REASONING,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": sent_transcript},
+                    ],
+                    temperature=0.1,
+                ),
+                timeout=ANALYSIS_TIMEOUT_SECONDS,
             )
             content = resp.choices[0].message.content or "{}"
-            return json.loads(_strip_fences(content))
+            result = json.loads(_strip_fences(content))
+        except asyncio.TimeoutError:
+            return {"error": f"analysis_timed_out_after_{ANALYSIS_TIMEOUT_SECONDS}s"}
         except json.JSONDecodeError:
             return {"error": "non_json_response", "raw": (content[:500] if "content" in dir() else "")}
         except Exception as e:
             log.exception("analyze_custom failed: %s", e)
             return {"error": str(e)}
+        if truncated and isinstance(result, dict):
+            result["truncated"] = True
+            result["original_length"] = original_length
+        return result
 
     async def analyze_meeting(self, transcript: str) -> Dict[str, Any]:
         return await self.analyze(transcript, "meeting")

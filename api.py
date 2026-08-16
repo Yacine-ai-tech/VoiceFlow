@@ -20,19 +20,27 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import hmac
+import io
 import json
+import os as _os
+import threading
+import time
+import uuid
+from collections import Counter as _Counter, defaultdict as _defaultdict
 from typing import Any, Dict, Optional
 
-import io
-
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from core.config import settings
 from core.logger import get_logger
+from core.security import RateLimiter, client_ip, is_safe_public_url
 from services import agent_tools_bridge, relay_formatting, scenarios
 from services.meeting_analyzer import MeetingAnalyzer
 from services.transcription_router import transcribe as route_transcribe
@@ -44,9 +52,14 @@ log = get_logger(__name__)
 app = FastAPI(title="VoiceFlow", version="0.1.0",
               description="Speech → structured intelligence.")
 
-import threading
-import time
-import uuid
+# Per-IP sliding-window limits. This product has no user accounts and every
+# endpoint below is reachable by anyone (see ARCHITECTURE.md) — a per-IP cap
+# is the realistic abuse mitigation for unbounded use of paid upstream APIs
+# (LLM/ASR/TTS/realtime) without requiring a login system that doesn't exist.
+# Not distributed/persistent (resets on restart) — same tradeoff as the
+# existing in-memory /analytics counters.
+_http_limiter = RateLimiter(limit=int(_os.getenv("RATE_LIMIT_HTTP_PER_MIN", "30")), window_seconds=60)
+_ws_connect_limiter = RateLimiter(limit=int(_os.getenv("RATE_LIMIT_WS_CONNECTS_PER_MIN", "10")), window_seconds=60)
 
 
 def _telemetry_instance_id() -> str:
@@ -120,28 +133,36 @@ def _send_telemetry():
 threading.Thread(target=_send_telemetry, daemon=True).start()
 
 
-from fastapi import Request
-from fastapi.responses import JSONResponse
-import os as _os
-
 @app.middleware("http")
 async def verify_internal_token(request: Request, call_next):
-    # Allow health checks, public auth routes, frontend static assets, and WebSocket endpoints.
-    # Any GET is also public — that's page navigation (the SPA shell + its static files), never
-    # a protected data-processing call; those are all POST/WS and stay gated below.
-    if (request.method == "OPTIONS" or request.method == "GET"
-            or request.url.path in ["/realtime", "/stream"]
+    # Allow health checks, public auth routes, frontend static assets. Any GET is
+    # also public — that's page navigation (the SPA shell + its static files) —
+    # except GET routes that trigger a real paid upstream call (e.g. /tts/voices),
+    # which the rate limiter below still applies to. /realtime and /stream are
+    # WebSocket routes and never actually reach this HTTP-only middleware
+    # regardless of this list (ASGI "websocket" scope bypasses @app.middleware
+    # ("http") entirely) — their own auth/rate-limit gating lives in the WS
+    # handlers themselves (see ws_realtime / ws_stream), not here.
+    if (request.method == "OPTIONS"
+            or request.url.path == "/health"
             or request.url.path.startswith("/api/v1/auth/")
             or request.url.path.startswith("/assets/")
             or request.url.path.startswith("/static/")):
         return await call_next(request)
-        
-    token = request.headers.get("X-VoiceFlow-Internal-Token")
+
+    ip = client_ip(request.headers, request.client.host if request.client else "")
+    if not _http_limiter.allow(ip):
+        return JSONResponse(status_code=429, content={"detail": "rate_limited: too many requests, try again shortly"})
+
+    if request.method == "GET":
+        return await call_next(request)
+
+    token = request.headers.get("X-VoiceFlow-Internal-Token") or ""
     expected_token = _os.environ.get("VOICEFLOW_INTERNAL_TOKEN", "")
 
-    if token != expected_token and _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true":
+    if not hmac.compare_digest(token, expected_token) and _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true":
         return JSONResponse(status_code=403, content={"detail": "Missing or invalid X-VoiceFlow-Internal-Token"})
-        
+
     return await call_next(request)
 
 
@@ -151,7 +172,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 
 try:
@@ -169,7 +189,6 @@ analyzer = MeetingAnalyzer()
 # GET /analytics only ever sees their own session's counts, never anyone
 # else's or the deployment-wide total. Requests without the header (direct
 # API/curl use) all share one "anonymous" bucket.
-from collections import Counter as _Counter, defaultdict as _defaultdict
 _stats: "_defaultdict[str, _Counter[str]]" = _defaultdict(_Counter)
 
 
@@ -244,7 +263,6 @@ def _check_diarization_available(settings) -> dict:
     return {"diarization_available": True, "diarization_warning": None}
 
 
-
 class AnalyzeRequest(BaseModel):
     text: str
     analysis_type: str = "meeting"
@@ -281,6 +299,7 @@ class TranscribeJsonRequest(BaseModel):
     provider: Optional[str] = None
     language: Optional[str] = None
     diarize: bool = False
+
 
 @app.post("/transcribe-json")
 async def transcribe_json_endpoint(req: TranscribeJsonRequest) -> Dict[str, Any]:
@@ -407,6 +426,12 @@ async def integrations_relay(req: RelayRequest, request: Request) -> Dict[str, A
     downstream service."""
     if not req.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="invalid_url")
+    if not is_safe_public_url(req.url):
+        # Blocks loopback/private/link-local/reserved/multicast destinations —
+        # this server fetches whatever URL the caller supplies on their behalf,
+        # which makes an unrestricted destination a server-side-request-forgery
+        # vector (internal network probing, cloud metadata endpoints, etc.).
+        raise HTTPException(status_code=400, detail="url_not_allowed: destination resolves to a non-public address")
     target = relay_formatting.resolve_target(req.url, req.target)
     body = relay_formatting.format_for_target(target, req.payload)
     body_bytes = json.dumps(body).encode()
@@ -545,6 +570,29 @@ async def call_analyze(request: Request, file: UploadFile = File(...), call_type
     return {"transcript": trans, "call_analysis": analysis, "call_type": call_type}
 
 
+def _ws_reject_reason(ws: WebSocket) -> Optional[str]:
+    """Checked before ws.accept() on every WS connection. WebSocket traffic
+    never passes through @app.middleware("http") (ASGI "websocket" scope
+    bypasses it entirely) — verify_internal_token's checks silently do not
+    apply here, so /realtime and /stream need their own gate, not a
+    borrowed one. Returns a rejection reason, or None if the connection may
+    proceed. A rejection here means the socket is closed cleanly and never
+    accepted — no half-open connection, no upstream (Gemini/OpenAI/Groq)
+    call is ever made for a rejected attempt."""
+    ip = client_ip(ws.headers, ws.client.host if ws.client else "")
+    if not _ws_connect_limiter.allow(ip):
+        return "rate_limited"
+    if _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true":
+        # Browsers can't set custom headers on a WS handshake, so the token
+        # travels as a query param here — same convention already used for
+        # ?session= on this same endpoint.
+        token = ws.query_params.get("token", "")
+        expected = _os.environ.get("VOICEFLOW_INTERNAL_TOKEN", "")
+        if not hmac.compare_digest(token, expected):
+            return "unauthorized"
+    return None
+
+
 @app.websocket("/stream")
 async def ws_stream(ws: WebSocket):
     """Real incremental transcription. The browser sends audio chunks as binary frames;
@@ -555,6 +603,10 @@ async def ws_stream(ws: WebSocket):
     Session scoping: browsers can't set custom headers on a WebSocket
     handshake, so the session ID travels as a ?session= query param instead
     of X-VoiceFlow-Session here."""
+    reason = _ws_reject_reason(ws)
+    if reason:
+        await ws.close(code=4429 if reason == "rate_limited" else 4403, reason=reason)
+        return
     await ws.accept()
     session_stats = _stats[ws.query_params.get("session", "anonymous").strip() or "anonymous"]
     buf = bytearray()
@@ -602,7 +654,8 @@ async def ws_stream(ws: WebSocket):
                     await ws.send_json({"type": "final", "text": final.get("text", ""),
                                         "bytes": len(buf), "language": final.get("language")})
                     session_stats["stream_sessions"] += 1
-                    buf = bytearray(); seq = 0
+                    buf = bytearray()
+                    seq = 0
     except WebSocketDisconnect:
         log.info("stream client disconnected")
     except Exception as e:
@@ -629,6 +682,10 @@ async def ws_realtime(ws: WebSocket):
     service is unreachable, the model gets told that instead of the call
     hanging; if AGENT_TOOLS_URL is unset, the session just runs without tools.
     """
+    reason = _ws_reject_reason(ws)
+    if reason:
+        await ws.close(code=4429 if reason == "rate_limited" else 4403, reason=reason)
+        return
     await ws.accept()
     provider = getattr(settings, "REALTIME_PROVIDER", "openai").lower()
     api_key = getattr(settings, "REALTIME_API_KEY", "")
@@ -646,7 +703,8 @@ async def ws_realtime(ws: WebSocket):
             from google.genai import types as _gtypes
         except ImportError:
             await ws.send_json({"type": "error", "message": "google-genai package not installed. Run: pip install google-genai"})
-            await ws.close(); return
+            await ws.close()
+            return
 
         GEMINI_LIVE_MODEL = _os.getenv("GEMINI_LIVE_MODEL", "models/gemini-3.1-flash-live-preview")
 
@@ -679,7 +737,6 @@ async def ws_realtime(ws: WebSocket):
 
                 is_tool_active = [False]
                 cancel_flag = [False]
-                audio_out_queue: asyncio.Queue = asyncio.Queue()
 
                 async def _client_to_gemini():
                     """Forward browser audio/text frames to Gemini session."""
@@ -695,7 +752,8 @@ async def ws_realtime(ws: WebSocket):
                                 if evt == "input_audio_buffer.append":
                                     b64 = data.get("audio")
                                     if b64:
-                                        import base64, audioop
+                                        import audioop
+                                        import base64
                                         pcm_24k = base64.b64decode(b64)
                                         pcm_16k, _ = audioop.ratecv(pcm_24k, 2, 1, 24000, 16000, None)
                                         await session.send(input={
@@ -789,7 +847,7 @@ async def ws_realtime(ws: WebSocket):
         import websockets
 
         model = getattr(settings, "OPENAI_REALTIME_MODEL", None) or "gpt-4o-realtime-preview"
-        url     = f"wss://api.openai.com/v1/realtime?model={model}"
+        url = f"wss://api.openai.com/v1/realtime?model={model}"
         headers = [("Authorization", f"Bearer {openai_key}"), ("OpenAI-Beta", "realtime=v1")]
         model_name = f"OpenAI Realtime ({model})"
 

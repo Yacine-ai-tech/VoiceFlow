@@ -22,8 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import os
-import tempfile
 from typing import Optional
 
 from core.config import settings

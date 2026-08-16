@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import time
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
 
 import httpx
 
@@ -274,7 +273,19 @@ async def call_tool(
 
     effect = spec.get("effect", "read")
     url    = f"{base}{endpoint}"
-    args   = {k: v for k, v in (arguments or {}).items() if v is not None}
+    # Strip the two control fields out of whatever the model supplied, rather
+    # than trusting the discovery contract to never expose them as ordinary
+    # params. approval_token in particular is documented (module docstring)
+    # to come only from a human/supervising system, never the model — if a
+    # downstream tool's own JSON schema ever declared a same-named param,
+    # a manipulated/prompt-injected model could otherwise "supply" a fake
+    # approval_token as a regular argument and have it ride through to
+    # `body` unfiltered, silently bypassing the human-approval gate this
+    # function's own explicit `approval_token=` keyword is meant to enforce.
+    args = {
+        k: v for k, v in (arguments or {}).items()
+        if v is not None and k not in ("approval_token", "dry_run")
+    }
 
     log.debug("agent-tool call: %r  effect=%s  dry_run=%s", name, effect, dry_run)
 
@@ -325,11 +336,10 @@ async def fetch_resource(uri: str) -> Dict[str, Any]:
         return {"error": "agent_tools_url_not_configured"}
 
     try:
-        encoded = quote(uri, safe="")
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 f"{base}/api/resources",
-                params={"uri": uri},
+                params={"uri": uri},  # httpx URL-encodes query params itself
                 headers=_auth_headers(),
             )
         if resp.status_code >= 400:
