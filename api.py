@@ -54,8 +54,7 @@ def _telemetry_instance_id() -> str:
     A random, locally-generated install ID — NOT derived from MAC address or any other
     hardware fingerprint. Persisted under LOGS_DIR so repeat startups/loops of the same
     install report the same ID (for dedup on the receiving end); delete the file to reset
-    it. See TELEMETRY.md for why this is a random UUID rather than a hardware-derived
-    value. Shared by both the startup ping and the periodic usage-snapshot ping so they
+    it. Shared by both the startup ping and the periodic usage-snapshot ping so they
     never disagree on which instance they're reporting for.
     """
     import os
@@ -81,8 +80,11 @@ def _send_telemetry():
     """One anonymous startup ping per machine, at most every 6 hours.
 
     A no-op unless TELEMETRY_ENDPOINT is set — nothing is sent anywhere by
-    default. Always skippable with TELEMETRY_OPT_OUT=true. See TELEMETRY.md
-    for exactly what the payload contains and why.
+    default, and self-hosters who set their own TELEMETRY_ENDPOINT control
+    exactly where this goes. Unlike the periodic usage snapshot below,
+    this specific ping is NOT gated by TELEMETRY_OPT_OUT — it always fires
+    once TELEMETRY_ENDPOINT is set. Payload: {service, event:"startup",
+    version, instance_id} — no user data, no per-session detail.
     """
     import os
 
@@ -134,11 +136,11 @@ async def verify_internal_token(request: Request, call_next):
             or request.url.path.startswith("/static/")):
         return await call_next(request)
         
-    token = request.headers.get("X-OmniIntel-Internal-Token")
-    expected_token = _os.environ.get("OMNIINTEL_INTERNAL_TOKEN", "")
+    token = request.headers.get("X-VoiceFlow-Internal-Token")
+    expected_token = _os.environ.get("VOICEFLOW_INTERNAL_TOKEN", "")
 
     if token != expected_token and _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true":
-        return JSONResponse(status_code=403, content={"detail": "Missing or invalid X-OmniIntel-Internal-Token"})
+        return JSONResponse(status_code=403, content={"detail": "Missing or invalid X-VoiceFlow-Internal-Token"})
         
     return await call_next(request)
 
@@ -190,13 +192,14 @@ def _all_sessions_totals() -> "_Counter[str]":
 
 
 def _telemetry_usage_loop():
-    """Optional, opt-out, same mechanism as the startup ping (TELEMETRY.md):
-    if TELEMETRY_ENDPOINT is set, periodically sends one anonymous AGGREGATE
-    usage snapshot — cumulative counters summed across every session on this
-    instance since it started, plus how many distinct sessions have been
-    seen. No session IDs, no per-visitor data, nothing GET /analytics
-    doesn't already compute per-session. Sends nothing anywhere unless
-    TELEMETRY_ENDPOINT is explicitly configured — same as the startup ping."""
+    """Opt-outable via TELEMETRY_OPT_OUT=true (unlike the startup ping above,
+    which always fires once TELEMETRY_ENDPOINT is set): if TELEMETRY_ENDPOINT
+    is set, periodically sends one anonymous AGGREGATE usage snapshot —
+    cumulative counters summed across every session on this instance since
+    it started, plus how many distinct sessions have been seen. No session
+    IDs, no per-visitor data, nothing GET /analytics doesn't already compute
+    per-session. Sends nothing anywhere unless TELEMETRY_ENDPOINT is
+    explicitly configured."""
     import os
     interval = int(os.environ.get("TELEMETRY_USAGE_INTERVAL_SECONDS", "1800"))
     while True:
