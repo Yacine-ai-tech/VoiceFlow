@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Plug, PlugZap, Mic, MicOff, Settings, Loader2 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { Mic, MicOff, Settings, AlertTriangle } from "lucide-react";
+import { PageHeader } from "../kit/AppShell";
+import { Button, Card, Chip } from "../kit/primitives";
 
 type Msg = { role: "user" | "assistant" | "tool"; text: string; interim?: boolean };
 
@@ -66,7 +67,7 @@ export default function VoiceAgent() {
       }
       if (type === "tool_call") {
         const name = String(data.name ?? "tool");
-        setMsgs((old) => [...old, { role: "tool", text: `Calling a tool — ${name}…` }]);
+        setMsgs((old) => [...old, { role: "tool", text: `Calling tool: ${name}…` }]);
       }
       if (type === "tool_result") {
         const name = String(data.name ?? "tool");
@@ -75,7 +76,7 @@ export default function VoiceAgent() {
           if (idx === -1) return old;
           const realIdx = old.length - 1 - idx;
           const copy = old.slice();
-          copy[realIdx] = { role: "tool", text: `Tool responded — ${name}` };
+          copy[realIdx] = { role: "tool", text: `Tool completed: ${name}` };
           return copy;
         });
       }
@@ -87,7 +88,6 @@ export default function VoiceAgent() {
   useEffect(() => { connect(); return () => { wsRef.current?.close(); stopVoice(); }; }, []);
   useEffect(() => { msgsEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, userInterim, agentSpeaking]);
 
-  // Audio Playback Engine
   const queueAudioPlayback = (base64: string) => {
     if (!audioCtxRef.current) return;
     try {
@@ -135,7 +135,6 @@ export default function VoiceAgent() {
       nextPlayTimeRef.current = startTime + audioBuffer.duration;
       
       source.onended = () => {
-        // Remove from active sources
         activeSourcesRef.current = activeSourcesRef.current.filter(s => s !== source);
         setTimeout(() => {
           if (playbackQueueRef.current.length === 0 && audioCtxRef.current && audioCtxRef.current.currentTime >= nextPlayTimeRef.current - 0.1) {
@@ -194,7 +193,6 @@ class VADProcessor extends AudioWorkletProcessor {
       }
       
       if (!this.isSilent) {
-        // Send audio chunks ONLY when actively speaking (VAD gating)
         this.port.postMessage({ type: 'audio', buffer: pcm16.buffer }, [pcm16.buffer]);
       }
     }
@@ -206,11 +204,14 @@ registerProcessor('vad-processor', VADProcessor);
 
   const startVoice = async () => {
     try {
+      // FIX FOR IOS/SAFARI: Create AudioContext synchronously inside the user gesture handler
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioCtx({ sampleRate: 24000 });
+      audioCtxRef.current = audioCtx;
+      
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      audioCtxRef.current = audioCtx;
       nextPlayTimeRef.current = audioCtx.currentTime;
       
       const blob = new Blob([workletCode], { type: 'application/javascript' });
@@ -273,7 +274,7 @@ registerProcessor('vad-processor', VADProcessor);
       }
     } catch (err) {
       console.error(err);
-      alert("Microphone access denied.");
+      alert("Microphone access denied or unsupported.");
     }
   };
 
@@ -294,128 +295,92 @@ registerProcessor('vad-processor', VADProcessor);
     stopAudioPlayback();
   };
 
-  const orbScale = isRecording && !agentSpeaking ? 1 + volume * 5 : agentSpeaking ? 1.1 + Math.random() * 0.1 : 1;
-  const orbColor = agentSpeaking ? "rgba(124, 58, 237, 0.8)" : isRecording ? "rgba(16, 185, 129, 0.8)" : "rgba(255, 255, 255, 0.1)";
-  const bgGradient = agentSpeaking 
-    ? "radial-gradient(circle at center, rgba(124, 58, 237, 0.15) 0%, rgba(9,9,11,1) 60%)" 
-    : isRecording 
-    ? "radial-gradient(circle at center, rgba(16, 185, 129, 0.1) 0%, rgba(9,9,11,1) 60%)" 
-    : "radial-gradient(circle at center, rgba(255,255,255,0.02) 0%, rgba(9,9,11,1) 50%)";
-
-  if (state === "unconfigured") {
-    return (
-      <div className="flex h-[calc(100vh-64px)] items-center justify-center p-8 bg-[#09090b] text-white">
-        <div className="max-w-md rounded-3xl border border-white/10 bg-white/5 p-8 text-center shadow-2xl backdrop-blur-md">
-          <Settings size={32} className="mx-auto mb-4 text-rose-400" />
-          <h2 className="mb-2 text-xl font-bold">Not Configured</h2>
-          <p className="text-sm text-white/50">Set OPENAI_API_KEY or GEMINI_API_KEY in your environment to enable the real-time agent.</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="relative flex h-[calc(100vh-64px)] w-full flex-col overflow-hidden bg-[#09090b] text-white">
-      <motion.div 
-        className="absolute inset-0 z-0 pointer-events-none"
-        animate={{ background: bgGradient }}
-        transition={{ duration: 0.8 }}
+    <div className="flex h-full flex-col">
+      <PageHeader
+        title="Live Agent"
+        sub="Talk to the real-time AI agent. The agent supports tool calls and low-latency audio processing."
       />
-
-      <header className="relative z-10 flex items-center justify-between p-6">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/5 backdrop-blur-xl border border-white/10 shadow-lg">
-            {state === "ready" ? <PlugZap size={18} className="text-emerald-400" /> : <Loader2 size={18} className="text-white/50 animate-spin" />}
+      
+      {state === "unconfigured" ? (
+        <Card>
+          <div className="flex items-center gap-3 text-bad py-4">
+            <AlertTriangle size={24} />
+            <div>
+              <div className="font-semibold text-[15px]">API Key Not Configured</div>
+              <div className="text-[13px] opacity-80">
+                Please set OPENAI_API_KEY or GEMINI_API_KEY in your environment to enable the real-time agent.
+              </div>
+            </div>
           </div>
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight text-white/90">OmniVoice</h1>
-            <p className="text-[12px] text-white/40">{state === "ready" ? "Secure WebSocket connected" : "Connecting to relay..."}</p>
-          </div>
-        </div>
-      </header>
-
-      <main className="relative z-10 flex flex-1 flex-col overflow-y-auto px-6 pb-32 pt-10">
-        <div className="mx-auto flex w-full max-w-3xl flex-col justify-end space-y-8">
-          {msgs.length === 0 && !userInterim && state === "ready" && (
-            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="text-center mt-32">
-              <p className="text-2xl font-light tracking-wide text-white/40">Tap the microphone and leave it open. Start speaking.</p>
-            </motion.div>
-          )}
-
-          <AnimatePresence>
-            {msgs.map((m, i) => (
-              m.role === "tool" ? (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="flex justify-center"
-                >
-                  <div className="text-[13px] font-medium tracking-wide text-white/40 uppercase bg-white/5 rounded-full px-3 py-1">
-                    {m.text}
-                  </div>
-                </motion.div>
-              ) : (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0, y: 15 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
-                >
-                  <div className={`max-w-[80%] text-[24px] font-medium leading-[1.3] tracking-tight ${m.role === "user" ? "text-white/70" : "text-white/95"}`}>
-                    {m.text}
-                  </div>
-                </motion.div>
-              )
-            ))}
+        </Card>
+      ) : (
+        <div className="flex flex-1 gap-4 overflow-hidden min-h-0">
+          <Card className="flex flex-1 flex-col p-0 overflow-hidden">
+            <div className="flex items-center justify-between border-b border-line px-5 py-3">
+              <div className="flex items-center gap-2">
+                <div className={`h-2.5 w-2.5 rounded-full ${state === "ready" ? "bg-ok" : state === "error" || state === "closed" ? "bg-bad" : "bg-warn animate-pulse"}`} />
+                <span className="text-[13px] font-medium text-body">
+                  {state === "ready" ? "Agent Ready" : state === "error" || state === "closed" ? "Disconnected" : "Connecting..."}
+                </span>
+              </div>
+              <Button variant="secondary" onClick={isRecording ? stopVoice : startVoice} disabled={state !== "ready"}>
+                {isRecording ? <MicOff size={14} className="text-bad" /> : <Mic size={14} />}
+                {isRecording ? "Stop Session" : "Start Session"}
+              </Button>
+            </div>
             
-            {userInterim && (
-              <motion.div 
-                key="interim"
-                initial={{ opacity: 0 }} 
-                animate={{ opacity: 1 }} 
-                className="flex justify-end"
-              >
-                <div className="max-w-[80%] text-[24px] font-medium leading-[1.3] tracking-tight text-white/40 italic">
-                  {userInterim} <span className="animate-pulse">_</span>
+            <div className="flex-1 overflow-y-auto p-5 space-y-4 relative">
+              {msgs.length === 0 && !userInterim && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-muted">
+                  <Mic size={32} className="mb-2 opacity-50" />
+                  <p className="text-[14px]">Click Start Session and begin speaking.</p>
                 </div>
-              </motion.div>
+              )}
+              {msgs.map((m, i) => (
+                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-[80%] rounded-xl px-4 py-2 text-[14px] leading-relaxed shadow-sm ${
+                    m.role === "user" 
+                      ? "bg-[var(--accent)] text-white rounded-br-sm" 
+                      : m.role === "tool"
+                      ? "bg-surface-2 text-dim border border-line rounded-bl-sm text-[12px] italic"
+                      : "bg-surface-2 text-body border border-line rounded-bl-sm"
+                  }`}>
+                    {m.text}
+                  </div>
+                </div>
+              ))}
+              {userInterim && (
+                <div className="flex justify-end">
+                  <div className="max-w-[80%] rounded-xl px-4 py-2 text-[14px] leading-relaxed bg-[var(--accent)]/50 text-white/70 italic rounded-br-sm">
+                    {userInterim}...
+                  </div>
+                </div>
+              )}
+              <div ref={msgsEndRef} className="h-2" />
+            </div>
+            
+            {isRecording && (
+              <div className="border-t border-line bg-surface-2 px-5 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex gap-1 h-3 items-end">
+                    {[...Array(5)].map((_, i) => (
+                      <div 
+                        key={i} 
+                        className="w-1 bg-[var(--accent)] rounded-t-sm transition-all duration-75"
+                        style={{ height: `${Math.max(20, (agentSpeaking ? Math.random() : volume) * 100)}%`, opacity: agentSpeaking || volume > 0.05 ? 1 : 0.3 }}
+                      />
+                    ))}
+                  </div>
+                  <span className="text-[12px] text-muted font-medium">
+                    {agentSpeaking ? "Agent is speaking..." : volume > 0.03 ? "You are speaking..." : "Listening..."}
+                  </span>
+                </div>
+              </div>
             )}
-          </AnimatePresence>
-          <div ref={msgsEndRef} className="h-10" />
+          </Card>
         </div>
-      </main>
-
-      <div className="absolute bottom-0 left-0 right-0 z-20 flex flex-col items-center pb-12 pt-24 bg-gradient-to-t from-[#09090b] via-[#09090b]/90 to-transparent pointer-events-none">
-        <div className="relative flex items-center justify-center pointer-events-auto">
-          <motion.div 
-            className="absolute -z-10 rounded-full blur-3xl"
-            animate={{ scale: orbScale, backgroundColor: orbColor, opacity: isRecording || agentSpeaking ? 0.5 : 0.15 }}
-            transition={{ type: "spring", stiffness: 100, damping: 10 }}
-            style={{ width: '160px', height: '160px' }}
-          />
-          
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={isRecording ? stopVoice : startVoice}
-            disabled={state !== "ready"}
-            className={`flex h-[72px] w-[72px] items-center justify-center rounded-full shadow-[0_8px_32px_rgba(0,0,0,0.4)] backdrop-blur-2xl border transition-all duration-300 ${
-              isRecording 
-                ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-400" 
-                : "bg-white/10 border-white/20 text-white hover:bg-white/15"
-            } disabled:opacity-30`}
-          >
-            {isRecording ? <MicOff size={28} /> : <Mic size={28} />}
-          </motion.button>
-        </div>
-
-        <div className="mt-8 flex h-7 items-center rounded-full bg-white/5 px-4 backdrop-blur-xl border border-white/10 pointer-events-auto">
-          <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/50">
-            {state !== "ready" ? "Initializing..." : agentSpeaking ? "Speaking" : isRecording ? "Listening" : "Ready"}
-          </span>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
