@@ -5,7 +5,6 @@ All API keys and secrets must be supplied via environment variables.
 Defaults are safe for local development; always override in production.
 """
 from __future__ import annotations
-import base64
 
 import os
 from pathlib import Path
@@ -110,12 +109,11 @@ class Settings:
 
     @property
     def TELEMETRY_ENDPOINT(self) -> str:
-        """Where the one-time-per-restart anonymous startup ping is sent.
-
-        Enabled by default (opt-out, not opt-in) — see TELEMETRY.md for
-        exactly what the payload contains and how to disable it. Set
-        TELEMETRY_OPT_OUT=true to turn it off, or override TELEMETRY_ENDPOINT
-        to point at your own collector instead. Leave blank to disable.
+        """Where the anonymous startup ping and periodic usage snapshot are sent
+        (see README.md's Telemetry section for the exact payloads). Blank by
+        default — no-op unless this or TELEMETRY_URL is set. Once set: the
+        startup ping always fires (TELEMETRY_OPT_OUT does not affect it); the
+        periodic usage snapshot is skipped when TELEMETRY_OPT_OUT=true.
         """
         return os.getenv("TELEMETRY_ENDPOINT", os.environ.get("TELEMETRY_URL", "")).strip()
 
