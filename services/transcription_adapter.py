@@ -44,6 +44,7 @@ Env vars:
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json as _json
 import logging
@@ -185,7 +186,7 @@ def _remote_nemo(
         return None
 
 
-def _remote_transcribe(
+async def _remote_transcribe(
     audio_bytes: bytes,
     language: Optional[str] = None,
     diarize: bool = False,
@@ -204,17 +205,23 @@ def _remote_transcribe(
     Strict (services/scenarios.py's "remote" provider): no such fallback —
     if LOCAL_ASR_ENGINE says nemo, only /nemo is tried, and a failure is
     reported honestly rather than silently handing back whisper's output
-    for what was asked to be a nemo run."""
+    for what was asked to be a nemo run.
+
+    _remote_whisper/_remote_nemo are synchronous (urllib) and can block for
+    up to VOICEFLOW_ASR_TIMEOUT (120s default) — run off the event loop via
+    asyncio.to_thread so one slow/cold remote call can't stall every other
+    concurrent request this process is handling (single-worker deployment;
+    see Dockerfile)."""
     if settings.LOCAL_ASR_ENGINE == "nemo_canary":
-        result = _remote_nemo(audio_bytes, language, diarize)
+        result = await asyncio.to_thread(_remote_nemo, audio_bytes, language, diarize)
         if result or strict:
             return result
-    return _remote_whisper(audio_bytes, language, diarize)
+    return await asyncio.to_thread(_remote_whisper, audio_bytes, language, diarize)
 
 
 # ─── Groq Whisper ─────────────────────────────────────────────────────────────
 
-async def _groq_whisper(audio_bytes: bytes, language: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _groq_whisper_sync(audio_bytes: bytes, language: Optional[str] = None) -> Optional[Dict[str, Any]]:
     key = os.getenv("GROQ_API_KEY", "").strip() or getattr(settings, "GROQ_API_KEY", "") or ""
     if not key:
         return None
@@ -242,9 +249,16 @@ async def _groq_whisper(audio_bytes: bytes, language: Optional[str] = None) -> O
         return None
 
 
+async def _groq_whisper(audio_bytes: bytes, language: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """The Groq SDK call is synchronous network I/O — offloaded to a thread
+    so it can't block this process's single event loop (see Dockerfile:
+    --workers 1) for the duration of a real transcription call."""
+    return await asyncio.to_thread(_groq_whisper_sync, audio_bytes, language)
+
+
 # ─── Deepgram REST ────────────────────────────────────────────────────────────
 
-async def _deepgram_whisper(audio_bytes: bytes, diarize: bool = False) -> Optional[Dict[str, Any]]:
+def _deepgram_whisper_sync(audio_bytes: bytes, diarize: bool = False) -> Optional[Dict[str, Any]]:
     key = os.getenv("DEEPGRAM_API_KEY", "").strip() or getattr(settings, "DEEPGRAM_API_KEY", "") or ""
     if not key:
         return None
@@ -276,9 +290,15 @@ async def _deepgram_whisper(audio_bytes: bytes, diarize: bool = False) -> Option
         return None
 
 
+async def _deepgram_whisper(audio_bytes: bytes, diarize: bool = False) -> Optional[Dict[str, Any]]:
+    """urllib.request.urlopen is blocking — offloaded to a thread; see
+    _groq_whisper's docstring for why this matters on a single worker."""
+    return await asyncio.to_thread(_deepgram_whisper_sync, audio_bytes, diarize)
+
+
 # ─── AssemblyAI REST ──────────────────────────────────────────────────────────
 
-async def _assemblyai_whisper(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
+def _assemblyai_whisper_sync(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
     key = os.getenv("ASSEMBLYAI_API_KEY", "").strip() or getattr(settings, "ASSEMBLYAI_API_KEY", "") or ""
     if not key:
         return None
@@ -303,7 +323,9 @@ async def _assemblyai_whisper(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
         tx_res = _json.loads(urllib.request.urlopen(tx_req, timeout=30).read())
         tx_id = tx_res.get("id")
 
-        # Step 3: Poll for completion (max 15 sec)
+        # Step 3: Poll for completion (max 15 sec). This function runs inside
+        # a worker thread (see _assemblyai_whisper below) — time.sleep here
+        # blocks only that thread, not the event loop.
         for _ in range(15):
             import time
             time.sleep(1)
@@ -327,6 +349,13 @@ async def _assemblyai_whisper(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
     except Exception as e:
         log.warning("assemblyai rest failed: %s", e)
         return None
+
+
+async def _assemblyai_whisper(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
+    """Offloaded to a thread — see _groq_whisper's docstring. This one
+    matters most: the sync body includes a blocking time.sleep(1) polling
+    loop (up to 15s) that would otherwise stall the event loop outright."""
+    return await asyncio.to_thread(_assemblyai_whisper_sync, audio_bytes)
 
 
 # ─── Local WhisperX ───────────────────────────────────────────────────────────
@@ -409,9 +438,9 @@ async def transcribe(
         if not requested:
             return _error_result("strict_requires_provider")
         if requested == "local":
-            return _local_whisper(audio_bytes, lang, diarize) or _error_result("provider_failed:local")
+            return await asyncio.to_thread(_local_whisper, audio_bytes, lang, diarize) or _error_result("provider_failed:local")
         if requested == "remote":
-            return _remote_transcribe(audio_bytes, lang, diarize, strict=True) or _error_result("provider_failed:remote")
+            return await _remote_transcribe(audio_bytes, lang, diarize, strict=True) or _error_result("provider_failed:remote")
         if requested == "groq":
             return await _groq_whisper(audio_bytes, lang) or _error_result("provider_failed:groq")
         if requested == "deepgram":
@@ -424,7 +453,7 @@ async def transcribe(
 
     if requested == "local" or (requested is None and _use_local()):
         tried_local = True
-        result = _local_whisper(audio_bytes, lang, diarize)
+        result = await asyncio.to_thread(_local_whisper, audio_bytes, lang, diarize)
         if result:
             return result
         # Local unavailable or failed — fall through to the remote chain.
@@ -440,7 +469,7 @@ async def transcribe(
     for name in priority:
         result = None
         if name == "remote":
-            result = _remote_transcribe(audio_bytes, lang, diarize)
+            result = await _remote_transcribe(audio_bytes, lang, diarize)
         elif name == "groq":
             result = await _groq_whisper(audio_bytes, lang)
         elif name == "deepgram":
@@ -452,7 +481,7 @@ async def transcribe(
 
     # Every remote provider failed — try local as a last resort if it wasn't already tried.
     if not tried_local:
-        result = _local_whisper(audio_bytes, lang, diarize)
+        result = await asyncio.to_thread(_local_whisper, audio_bytes, lang, diarize)
         if result:
             log.info("All remote ASR providers failed — used local WhisperX as last resort")
             return result

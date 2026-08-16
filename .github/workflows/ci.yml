@@ -47,7 +47,15 @@ jobs:
       - name: Check code style
         run: |
           pip install flake8
-          flake8 api.py pipeline/ core/ --max-line-length=100 --ignore=E501
+          # E501 (line length): not enforced project-wide. W503 (line break before
+          # binary operator): contradicts current PEP8 guidance and how this code
+          # is actually formatted. E221/E241/E272/E128/E131: this codebase
+          # deliberately column-aligns dict/list literals by ':'/'=' for readability
+          # (see services/agent_tools_bridge.py, services/scenarios.py) — flake8's
+          # default treats that alignment as an error; ignored here rather than
+          # reformatted away.
+          flake8 api.py services/ core/ --max-line-length=100 \
+            --ignore=E501,W503,E221,E241,E272,E128,E131
 
   # ═══════════════════════════════════════════════════════════════════════════
   # PHASE 2 — Frontend Tests
