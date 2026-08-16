@@ -215,14 +215,27 @@ def _generate_kokoro_sync(text: str, voice_gender: str) -> Optional[bytes]:
 async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[bytes]:
     """Delegate Kokoro synthesis to a remote host instead of running it here
     — same principle as VOICEFLOW_REMOTE_ENDPOINT for ASR: run the heavy
-    model on a host you choose, keep this app's own host lightweight."""
+    model on a host you choose, keep this app's own host lightweight.
+
+    Two contracts are tried, since real Kokoro-serving hosts speak either:
+      1. {endpoint}/tts/kokoro — {"text","voice_gender"} in, raw audio bytes
+         back. The originally-documented contract; tried first for anyone
+         who built a remote exactly to that spec.
+      2. {endpoint}/api/inference/tts — {"text","voice"} in (Kokoro's own
+         voice IDs, not a gender string), {"audio_b64","voice","sample_rate"}
+         JSON back. Same /api/inference/* convention as the /whisper and
+         /nemo ASR routes. This is what this project's own orchestrator
+         actually implements — /tts/kokoro 404s/503s there, so without this
+         fallback every remote Kokoro request silently degraded to edge-tts.
+    """
     if not settings.TTS_REMOTE_ENDPOINT:
         return None
+    import httpx
+    headers = {}
+    if settings.TTS_REMOTE_TOKEN:
+        headers["Authorization"] = f"Bearer {settings.TTS_REMOTE_TOKEN}"
+
     try:
-        import httpx
-        headers = {}
-        if settings.TTS_REMOTE_TOKEN:
-            headers["Authorization"] = f"Bearer {settings.TTS_REMOTE_TOKEN}"
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{settings.TTS_REMOTE_ENDPOINT}/tts/kokoro",
@@ -231,10 +244,27 @@ async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[byte
             )
             resp.raise_for_status()
             audio_bytes = resp.content
-            log.info("TTS (Kokoro, remote) generated: %d bytes", len(audio_bytes))
+            log.info("TTS (Kokoro, remote /tts/kokoro) generated: %d bytes", len(audio_bytes))
             return audio_bytes
     except Exception as e:
-        log.warning("Remote Kokoro TTS failed, falling back to local/edge-tts: %s", e)
+        log.info("Remote /tts/kokoro not available (%s), trying /api/inference/tts", e)
+
+    try:
+        import base64
+        voice = _KOKORO_VOICES.get(voice_gender, _KOKORO_VOICES["default"])
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{settings.TTS_REMOTE_ENDPOINT}/api/inference/tts",
+                json={"text": text, "voice": voice},
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            audio_bytes = base64.b64decode(data["audio_b64"])
+            log.info("TTS (Kokoro, remote /api/inference/tts, voice=%s) generated: %d bytes", data.get("voice"), len(audio_bytes))
+            return audio_bytes
+    except Exception as e:
+        log.warning("Remote Kokoro TTS failed on both contracts, falling back to local/edge-tts: %s", e)
         return None
 
 
