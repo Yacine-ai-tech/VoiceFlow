@@ -212,14 +212,28 @@ def _generate_kokoro_sync(text: str, voice_gender: str) -> Optional[bytes]:
         return None
 
 
-async def _post_with_retries(client, url: str, json_body: dict, headers: dict, attempts: int = 3):
-    """The orchestrator this project actually points at has real, observed
-    transient failures (HTTP 530 across all its studios, seconds apart from
-    a successful call) — cold-start/scale-to-zero flakiness on a free-tier
-    host, not a permanent outage. A single attempt treats "temporarily
-    down" the same as "gone", which isn't true here; a couple of quick
-    retries rides out exactly this kind of blip instead of giving up to
-    edge-tts on the first bad roll."""
+async def _post_with_retries(client, url: str, json_body: dict, headers: dict, attempts: int = 4):
+    """Root cause of the orchestrator's HTTP 530s, confirmed live by directly
+    inspecting its source and triggering + timing a real wake: its Lightning
+    AI Studios are stopped by design whenever idle (GPU billing, never left
+    running), and it wakes one on demand the moment a real inference request
+    hits it — but that wake is non-blocking (fired in a background thread)
+    and the request that triggered it still gets a 530 immediately, before
+    the Studio has actually booted. A real wake-to-serving cycle measured
+    ~75-90s (VM boot + cloudflared tunnel bind + service start), not a
+    few-second blip.
+
+    This retry loop CANNOT and does not try to block through that full
+    window — ~90s is too long to hold one HTTP request open (Render's own
+    proxy, and most HTTP clients, would give up first) for what should be a
+    fast TTS call. What it's actually for: catching the tail end of a wake
+    that was already in progress from a *previous* request (the orchestrator
+    debounces repeat wake calls for WAKE_COOLDOWN=120s, so a burst of calls
+    within that window all land on the same in-flight wake). On a fully cold
+    Studio, this still correctly falls through to edge-tts on the first
+    call — that's expected, not a bug — while the orchestrator's own wake
+    keeps booting in the background regardless of what this loop does, so a
+    follow-up call roughly a minute later gets real Kokoro audio."""
     last_exc = None
     for i in range(attempts):
         try:
@@ -229,7 +243,7 @@ async def _post_with_retries(client, url: str, json_body: dict, headers: dict, a
         except Exception as e:
             last_exc = e
             if i < attempts - 1:
-                await asyncio.sleep(1.5 * (i + 1))
+                await asyncio.sleep(2 * (i + 1))
     raise last_exc
 
 
@@ -238,8 +252,10 @@ async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[byte
     — same principle as VOICEFLOW_REMOTE_ENDPOINT for ASR: run the heavy
     model on a host you choose, keep this app's own host lightweight.
 
-    Two contracts are tried, each with a few quick retries (see
-    _post_with_retries), since real Kokoro-serving hosts speak either:
+    Two contracts are tried, each with a bounded retry (see
+    _post_with_retries — it rides out a wake already in progress, not a
+    full cold Studio boot; see that docstring for the confirmed real
+    numbers), since real Kokoro-serving hosts speak either:
       1. {endpoint}/tts/kokoro — {"text","voice_gender"} in, raw audio bytes
          back. The originally-documented contract; tried first for anyone
          who built a remote exactly to that spec.
