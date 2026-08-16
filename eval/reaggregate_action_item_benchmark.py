@@ -93,9 +93,9 @@ def main():
         "corpus needs real people and real recordings, which is a data-collection task, not "
         "something a coding session can produce. Everything downstream of the script — the TTS "
         "audio, the ASR transcript, the LLM extraction, the scoring — is real, measured, and "
-        "reproducible. STRATEGY.md's original framing named GPT-4o-mini and LLaMA 3.1; this "
-        "project's actual configured tiers are Groq Llama 3.3 70B and Claude Sonnet 4.6, so "
-        "those are what's compared here instead.",
+        "reproducible. This benchmark compares this project's two actual configured LLM tiers "
+        "(Groq Llama 3.3 70B and Claude Sonnet 4.6) rather than any fixed pair of models, so it "
+        "stays meaningful as the underlying model configuration evolves.",
         "",
         f"**Run**: {len(results)} meetings attempted, {len(valid)} completed TTS+ASR "
         f"successfully, {len(tts_asr_errors)} failed before reaching analysis.",

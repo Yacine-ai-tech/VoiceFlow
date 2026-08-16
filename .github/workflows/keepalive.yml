@@ -1,8 +1,8 @@
-name: Keep Render App Alive
+name: Uptime Ping
 
 on:
   schedule:
-    - cron: '*/14 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 jobs:

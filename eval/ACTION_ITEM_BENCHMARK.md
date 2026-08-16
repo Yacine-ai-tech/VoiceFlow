@@ -2,7 +2,7 @@
 
 Real pipeline (real TTS -> real ASR -> real LLM analysis), scored against a 50-meeting synthetic corpus with known ground truth. See `eval/generate_corpus.py` and `eval/run_action_item_benchmark.py` for exactly how this was produced — reproduce with `python3 eval/run_action_item_benchmark.py` (and re-aggregate with `eval/reaggregate_action_item_benchmark.py` if a provider rate-limits mid-run).
 
-**Honesty note:** the 50 meetings are LLM-generated synthetic scripts (see `eval/data/action_item_corpus.jsonl`), not real recorded meetings — a real 50-meeting corpus needs real people and real recordings, which is a data-collection task, not something a coding session can produce. Everything downstream of the script — the TTS audio, the ASR transcript, the LLM extraction, the scoring — is real, measured, and reproducible. STRATEGY.md's original framing named GPT-4o-mini and LLaMA 3.1; this project's actual configured tiers are Groq Llama 3.3 70B and Claude Sonnet 4.6, so those are what's compared here instead.
+**Honesty note:** the 50 meetings are LLM-generated synthetic scripts (see `eval/data/action_item_corpus.jsonl`), not real recorded meetings — a real 50-meeting corpus needs real people and real recordings, which is a data-collection task, not something a coding session can produce. Everything downstream of the script — the TTS audio, the ASR transcript, the LLM extraction, the scoring — is real, measured, and reproducible. This benchmark compares this project's two actual configured LLM tiers (Groq Llama 3.3 70B and Claude Sonnet 4.6) rather than any fixed pair of models, so it stays meaningful as the underlying model configuration evolves.
 
 **Run**: 50 meetings attempted, 38 completed TTS+ASR successfully, 12 failed before reaching analysis.
 

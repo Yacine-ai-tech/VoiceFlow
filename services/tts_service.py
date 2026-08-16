@@ -48,7 +48,10 @@ VOICES = {
 # of the public checkpoint this targets — falls back to edge-tts for fr.
 _KOKORO_VOICES = {"female": "af_heart", "male": "am_michael", "default": "af_heart"}
 
-_kokoro_pipeline = None  # lazy-loaded, cached across calls — the model is ~300MB
+_kokoro_pipeline = None  # lazy-loaded, cached across calls. The Kokoro checkpoint
+# itself is ~300MB, but pip-installing this feature (requirements-ml.txt) also
+# pulls in PyTorch/CUDA, which is a multi-GB dependency chain on its own — don't
+# assume ~300MB covers the whole install.
 
 
 async def _generate_elevenlabs(text: str, language: str, voice_gender: str, voice_id: Optional[str] = None) -> Optional[bytes]:
@@ -115,7 +118,7 @@ async def list_elevenlabs_voices() -> list:
 async def clone_elevenlabs_voice(name: str, samples: list[bytes], description: str = "") -> dict:
     """Instant Voice Cloning — upload one or more real audio samples of a
     voice and get back a usable voice_id for /tts's provider=elevenlabs.
-    This is the actual ElevenLabs differentiator STRATEGY.md names, not
+    This is ElevenLabs' actual differentiating feature, not
     just picking between two stock voices. Raises RuntimeError (with
     ElevenLabs' real error message) on failure — a plan that doesn't
     support cloning, too few/short samples, etc. are never silently
@@ -211,27 +214,21 @@ def _generate_kokoro_sync(text: str, voice_gender: str) -> Optional[bytes]:
 
 
 async def _post_with_retries(client, url: str, json_body: dict, headers: dict, attempts: int = 4):
-    """Root cause of the orchestrator's HTTP 530s, confirmed live by directly
-    inspecting its source and triggering + timing a real wake: its Lightning
-    AI Studios are stopped by design whenever idle (GPU billing, never left
-    running), and it wakes one on demand the moment a real inference request
-    hits it — but that wake is non-blocking (fired in a background thread)
-    and the request that triggered it still gets a 530 immediately, before
-    the Studio has actually booted. A real wake-to-serving cycle measured
-    ~75-90s (VM boot + cloudflared tunnel bind + service start), not a
-    few-second blip.
+    """A self-hosted remote inference backend that scales its compute down
+    to zero when idle (a common, cost-effective pattern for GPU-backed
+    endpoints) can return a transient failure on the first request after a
+    period of inactivity, while it wakes back up in the background — the
+    wake itself is normally non-blocking, so that first request doesn't
+    wait for it and can legitimately fail. A cold wake-up can take up to a
+    minute or two depending on the backend, which is too long for a single
+    HTTP request to block on for what should be a fast TTS call.
 
-    This retry loop CANNOT and does not try to block through that full
-    window — ~90s is too long to hold one HTTP request open (Render's own
-    proxy, and most HTTP clients, would give up first) for what should be a
-    fast TTS call. What it's actually for: catching the tail end of a wake
-    that was already in progress from a *previous* request (the orchestrator
-    debounces repeat wake calls for WAKE_COOLDOWN=120s, so a burst of calls
-    within that window all land on the same in-flight wake). On a fully cold
-    Studio, this still correctly falls through to edge-tts on the first
-    call — that's expected, not a bug — while the orchestrator's own wake
-    keeps booting in the background regardless of what this loop does, so a
-    follow-up call roughly a minute later gets real Kokoro audio."""
+    This retry loop is deliberately bounded and does not try to wait out a
+    full cold start — it only catches the tail end of a wake-up already in
+    progress from a recent previous request. On a fully cold backend, this
+    still correctly falls through to edge-tts on the first call (expected,
+    not a bug) while the remote backend keeps warming up independently of
+    this loop, so a follow-up call shortly after tends to succeed."""
     last_exc = None
     for i in range(attempts):
         try:
@@ -251,17 +248,16 @@ async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[byte
     model on a host you choose, keep this app's own host lightweight.
 
     Two contracts are tried, each with a bounded retry (see
-    _post_with_retries — it rides out a wake already in progress, not a
-    full cold Studio boot; see that docstring for the confirmed real
-    numbers), since real Kokoro-serving hosts speak either:
+    _post_with_retries — it rides out a wake-up already in progress, not a
+    full cold start; see that docstring for why), since real Kokoro-serving
+    hosts speak either:
       1. {endpoint}/tts/kokoro — {"text","voice_gender"} in, raw audio bytes
          back. The originally-documented contract; tried first for anyone
          who built a remote exactly to that spec.
       2. {endpoint}/api/inference/tts — {"text","voice"} in (Kokoro's own
          voice IDs, not a gender string), {"audio_b64","voice","sample_rate"}
          JSON back. Same /api/inference/* convention as the /whisper and
-         /nemo ASR routes. This is what this project's own orchestrator
-         actually implements.
+         /nemo ASR routes — a shape some self-hosted inference backends use.
     """
     if not settings.TTS_REMOTE_ENDPOINT:
         return None

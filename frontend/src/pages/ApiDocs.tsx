@@ -34,7 +34,7 @@ const ENDPOINTS: Endpoint[] = [
   },
   {
     method: "GET", path: "/health", category: "System", auth: "public",
-    desc: "Liveness/readiness check used by the Render health check and the frontend's connection banner.",
+    desc: "Liveness/readiness check used by the deployment platform's health check and the frontend's connection banner. Not subject to the per-IP rate limit, unlike every other endpoint.",
     resBody: `{"status":"ok","service":"voiceflow","version":"0.1.0"}`,
   },
   {
@@ -173,7 +173,7 @@ description:  "..."                        optional`,
   "sentiment": "positive",
   "topics_covered": ["roadmap", "export feature"]
 }`,
-    note: "analysis_type → model: meeting & general → LLM_DEFAULT (groq/llama-3.3-70b-versatile); sales_call & interview → LLM_REASONING (anthropic/claude-sonnet-4-6); support_call → LLM_JUDGE (anthropic/claude-haiku-4-5). Each type returns a different JSON schema (sales_call adds objections/buying_signals/likelihood_to_close; support_call adds severity/escalation_needed; interview adds candidate_name/recommendation). Unrecognized types fall back to the \"general\" prompt/schema. On failure: {\"error\":\"litellm_not_installed\"} if the litellm package is missing, {\"error\":\"non_json_response\",\"raw\":...} if the model didn't return valid JSON.",
+    note: "analysis_type → model: meeting & general → LLM_DEFAULT (groq/llama-3.3-70b-versatile); sales_call & interview → LLM_REASONING (anthropic/claude-sonnet-4-6); support_call → LLM_JUDGE (anthropic/claude-haiku-4-5). Each type returns a different JSON schema (sales_call adds objections/buying_signals/likelihood_to_close; support_call adds severity/escalation_needed; interview adds candidate_name/recommendation). Unrecognized types fall back to the \"general\" prompt/schema. Transcripts over 12,000 characters are truncated before analysis, and the response then includes \"truncated\": true and \"original_length\" so that's never silent. The LLM call itself is bounded (LLM_ANALYSIS_TIMEOUT_SECONDS, default 60s) — a slow/rate-limited provider returns {\"error\":\"analysis_timed_out_after_60s\"} instead of hanging. On other failure: {\"error\":\"litellm_not_installed\"} if the litellm package is missing, {\"error\":\"non_json_response\",\"raw\":...} if the model didn't return valid JSON.",
   },
   {
     method: "POST", path: "/analyze/custom", category: "Analysis", auth: "token",
@@ -241,7 +241,7 @@ call_type:  sales_call | support_call |
   // ── Integrations ────────────────────────────────────────────────────────
   {
     method: "POST", path: "/integrations/relay", category: "Integrations", auth: "token",
-    desc: "Posts structured VoiceFlow output (an analysis, a transcript, anything) to any external webhook — Slack, Zapier, n8n, a StreamPulse-style signed receiver, or your own endpoint. Exists because a browser can't POST cross-origin to arbitrary third-party URLs; the server does it on the client's behalf.",
+    desc: "Posts structured VoiceFlow output (an analysis, a transcript, anything) to any external webhook — Slack, Zapier, n8n, a signature-verified receiver of your own, or any other endpoint. Exists because a browser can't POST cross-origin to arbitrary third-party URLs; the server does it on the client's behalf.",
     reqLabel: "application/json",
     reqBody: `{
   "url": "https://hooks.slack.com/services/T000/B000/XXXX",
@@ -251,15 +251,16 @@ call_type:  sales_call | support_call |
   "signature_header": null    // header name for the signature; default "X-Signature-256"
 }`,
     resBody: `{"ok": true, "status": 200, "response": "ok", "target": "slack", "signed": false}`,
-    note: "url must start with http:// or https:// (400 invalid_url otherwise). target is auto-detected from the URL's hostname when omitted (hooks.slack.com → slack, hooks.zapier.com → zapier), defaulting to generic. Only the slack target reformats the payload — into real Slack Block Kit JSON built from whatever shape you sent (see services/relay_formatting.py); n8n/zapier/generic payloads are posted through byte-for-byte unchanged, since those accept arbitrary JSON. If secret is set, the body is HMAC-SHA256-signed and attached under signature_header (default X-Signature-256, value sha256=<hex>) — a generic capability for any receiver that verifies requests this way; verified compatible with StreamPulse's real /webhook/{source} receiver. 502 relay_failed if the target endpoint errors or is unreachable. response is the target's response body, truncated to 500 characters.",
+    note: "url must start with http:// or https:// and resolve to a public address (400 invalid_url / url_not_allowed otherwise — private/loopback/link-local destinations are rejected). target is auto-detected from the URL's hostname when omitted (hooks.slack.com → slack, hooks.zapier.com → zapier), defaulting to generic. Only the slack target reformats the payload — into real Slack Block Kit JSON built from whatever shape you sent (see services/relay_formatting.py); n8n/zapier/generic payloads are posted through byte-for-byte unchanged, since those accept arbitrary JSON. If secret is set, the body is HMAC-SHA256-signed and attached under signature_header (default X-Signature-256, value sha256=<hex>) — a generic capability for any receiver that verifies requests this way. 502 relay_failed if the target endpoint errors or is unreachable. response is the target's response body, truncated to 500 characters.",
   },
 
   // ── Real-time ───────────────────────────────────────────────────────────
   {
-    method: "WS", path: "/stream", category: "Real-time", auth: "public",
+    method: "WS", path: "/stream", category: "Real-time", auth: "token",
     desc: "Streaming transcription over a WebSocket — the browser sends binary audio chunks as they're recorded and gets partial transcripts back before the recording is even finished.",
     reqLabel: "Message protocol",
-    reqBody: `→ connect                                     (no query params)
+    reqBody: `→ connect                                     (?token=... required only if
+                                                REQUIRE_INTERNAL_TOKEN=true)
 ← {"type":"ready","provider":"...","message":"..."}
 → <binary audio chunk>                        (repeat while recording)
 ← {"type":"partial","text":"...","seq":N,"bytes":N}   (periodically, once buffer > 8KB)
@@ -270,10 +271,10 @@ call_type:  sales_call | support_call |
 ← {"type":"ping","timestamp":"..."}           (every 30s of silence, keepalive)`,
     resLabel: "",
     resBody: "",
-    note: "Re-transcribes the accumulated buffer roughly every 3rd chunk once it exceeds 8000 bytes, so \"partial\" results are re-runs of the whole buffer-so-far, not true incremental diffs. Works with whichever STT provider the server is configured for (or whatever `config` sets). Not gated by the internal-token check.",
+    note: "Re-transcribes the accumulated buffer roughly every 3rd chunk once it exceeds 8000 bytes, so \"partial\" results are re-runs of the whole buffer-so-far, not true incremental diffs. Works with whichever STT provider the server is configured for (or whatever `config` sets). Subject to the same connection rate limit as /realtime, and to the token gate via ?token= when REQUIRE_INTERNAL_TOKEN=true — a rejected connection is closed before being accepted, never silently half-open.",
   },
   {
-    method: "WS", path: "/realtime", category: "Real-time", auth: "public",
+    method: "WS", path: "/realtime", category: "Real-time", auth: "token",
     desc: "The bidirectional voice-agent bridge — real-time, low-latency, speech-in/speech-out conversation with an LLM. This is what the Voice Agent page in the app connects to.",
     reqLabel: "Provider selection (server-side, env-driven — strict, no auto-fallback)",
     reqBody: `REALTIME_PROVIDER = "openai" (default) | "gemini"   — a hard choice, not auto-detected
@@ -310,7 +311,7 @@ gemini path:
   ← {"type":"response.done"}
   All input frames are dropped while a Gemini tool call is in flight
   (is_tool_active gate) — the model has to finish "speaking" first.`,
-    note: "Not gated by the internal-token check. Practically: click record in the Voice Agent page, talk, the agent replies with audio in real time using whichever provider the deployment is configured for.",
+    note: "Connect with ?token=<VOICEFLOW_INTERNAL_TOKEN> if the deployment sets REQUIRE_INTERNAL_TOKEN=true (browsers can't set custom headers on a WebSocket handshake, so it travels as a query param) — a missing/wrong token closes the connection before it's ever accepted, so no provider call happens. Also subject to a per-IP connection-rate limit regardless of that setting. Practically: click record in the Voice Agent page, talk, the agent replies with audio in real time using whichever provider the deployment is configured for.",
   },
 ];
 
@@ -328,7 +329,7 @@ function methodColor(m: string) {
 
 function curlSnippet(ep: Endpoint): string {
   if (ep.method === "WS") {
-    return `# WebSocket endpoint — use wscat, websocat, or a WS client library\nwscat -c "${WS_BASE}${ep.path}"`;
+    return `# WebSocket endpoint — use wscat, websocat, or a WS client library\n# add ?token=$VOICEFLOW_TOKEN only if the server has REQUIRE_INTERNAL_TOKEN=true\nwscat -c "${WS_BASE}${ep.path}"`;
   }
   if (ep.method === "GET") {
     return `curl "${BASE_URL}${ep.path}"  # GET requests are always public, no token needed`;
@@ -349,7 +350,7 @@ function curlSnippet(ep: Endpoint): string {
 
 function pythonSnippet(ep: Endpoint): string {
   if (ep.method === "WS") {
-    return `import asyncio, websockets\n\nasync def main():\n    async with websockets.connect("${WS_BASE}${ep.path}") as ws:\n        print(await ws.recv())  # {"type":"ready", ...}\n        # send binary audio chunks / JSON control messages per the protocol above\n\nasyncio.run(main())`;
+    return `import asyncio, websockets\n\n# append "?token=" + VOICEFLOW_TOKEN to the URL only if the server has\n# REQUIRE_INTERNAL_TOKEN=true\nasync def main():\n    async with websockets.connect("${WS_BASE}${ep.path}") as ws:\n        print(await ws.recv())  # {"type":"ready", ...}\n        # send binary audio chunks / JSON control messages per the protocol above\n\nasyncio.run(main())`;
   }
   if (ep.method === "GET") {
     return `import requests\n\n# GET requests are always public, no token needed\nresp = requests.get("${BASE_URL}${ep.path}")\nprint(resp.json())`;
@@ -374,7 +375,7 @@ function pythonSnippet(ep: Endpoint): string {
 
 function nodeSnippet(ep: Endpoint): string {
   if (ep.method === "WS") {
-    return `const ws = new WebSocket("${WS_BASE}${ep.path}");\nws.onmessage = (e) => console.log(JSON.parse(e.data));\n// ws.send(<ArrayBuffer of audio>) / ws.send(JSON.stringify({...}))`;
+    return `// append "?token=" + VOICEFLOW_TOKEN to the URL only if the server has\n// REQUIRE_INTERNAL_TOKEN=true\nconst ws = new WebSocket("${WS_BASE}${ep.path}");\nws.onmessage = (e) => console.log(JSON.parse(e.data));\n// ws.send(<ArrayBuffer of audio>) / ws.send(JSON.stringify({...}))`;
   }
   if (ep.method === "GET") {
     return `// GET requests are always public, no token needed\nconst res = await fetch("${BASE_URL}${ep.path}");\nconst data = await res.json();`;
@@ -450,7 +451,7 @@ export default function ApiDocs() {
       </div>
 
       <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "10px 16px", marginBottom: 20, fontSize: "0.78rem", color: "#94a3b8" }}>
-        Every GET request — page navigation, health checks, analytics, the scenario list — is always public, along with <code>WS /stream</code> and <code>WS /realtime</code>. Only POST endpoints ever check the internal-token header, and only when the server sets <code>REQUIRE_INTERNAL_TOKEN=true</code> (off by default).
+        Every GET request — page navigation, health checks, analytics, the scenario list — skips the token check. POST endpoints and both WebSocket routes (<code>WS /stream</code>, <code>WS /realtime</code>) are gated behind a shared secret only when the server sets <code>REQUIRE_INTERNAL_TOKEN=true</code> (off by default) — HTTP callers send <code>X-VoiceFlow-Internal-Token</code>, WebSocket callers send <code>?token=</code> since a handshake can't carry a custom header. Independent of that flag, every non-static request (GET included) is also subject to a per-IP rate limit.
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 20 }}>
