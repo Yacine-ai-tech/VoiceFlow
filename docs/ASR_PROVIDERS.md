@@ -57,13 +57,13 @@ you actually want — they're independent, heavy, opt-in blocks in that file)
 directly on this host.
 
 **Delegate to remote (`VOICEFLOW_TRANSCRIPTION_MODE=remote` +
-`VOICEFLOW_REMOTE_ENDPOINT`) when:** this host is resource-constrained (e.g.
-a Render free-tier container) — which is the default assumption for this
-project's own deployment. `VOICEFLOW_REMOTE_ENDPOINT` is a black box you
-control: point it at your own GPU box, an on-demand cloud worker, whatever
-— VoiceFlow only knows its `/whisper` contract, not what's running behind
-it. This is engine-agnostic: your remote endpoint could be running
-WhisperX, NeMo Canary, or anything else that speaks the same contract.
+`VOICEFLOW_REMOTE_ENDPOINT`) when:** this host is resource-constrained (a
+small/free-tier container on whatever platform you deploy to is the common
+case). `VOICEFLOW_REMOTE_ENDPOINT` is a black box you control: point it at
+your own GPU box, an on-demand cloud worker, whatever — VoiceFlow only
+knows its `/whisper` contract, not what's running behind it. This is
+engine-agnostic: your remote endpoint could be running WhisperX, NeMo
+Canary, or anything else that speaks the same contract.
 
 **`LOCAL_ASR_ENGINE` / `LOCAL_DIARIZATION_ENGINE`** only matter in local
 mode — they pick which engine runs *on this host specifically*:

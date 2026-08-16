@@ -1,0 +1,11 @@
+{
+  "benchmark": "VoiceFlow realtime audio downsampling latency (real audioop.ratecv call)",
+  "resample_24k_to_16k": {
+    "iterations": 1000,
+    "avg_ms": 0.03288,
+    "p50_ms": 0.03165,
+    "p99_ms": 0.05765
+  },
+  "note": "Frame-gating fidelity and end-to-end realtime voice latency are intentionally not reported by this script \u2014 see the module docstring for why, and eval/run_realtime_benchmark.py / REALTIME_BENCHMARK.md for a live-measured latency number.",
+  "timestamp": "2026-08-16T07:40:41Z"
+}
