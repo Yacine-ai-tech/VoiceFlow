@@ -41,7 +41,7 @@ SCENARIOS: Dict[str, Scenario] = {
         "diarize": False,
         "analysis_model_setting": "LLM_DEFAULT",
         "est_cost_per_min_usd": 0.02,
-        "notes": "Groq Whisper (~10x faster than self-host) + Groq Llama 3.3 70B.",
+        "notes": "Groq Whisper (~10x faster than self-host) + Groq (openai/gpt-oss-120b).",
     },
     "accurate": {
         "description": "Best transcription + real diarization, higher latency/cost.",
@@ -57,7 +57,7 @@ SCENARIOS: Dict[str, Scenario] = {
         "diarize": True,
         "analysis_model_setting": "LLM_DEFAULT",
         "est_cost_per_min_usd": 0.0,
-        "notes": "Local WhisperX (+ pyannote if HF_TOKEN is set) + Groq Llama 3.3 70B.",
+        "notes": "Local WhisperX (+ pyannote if HF_TOKEN is set) + Groq (openai/gpt-oss-120b).",
     },
     "streaming": {
         "description": "Tuned for real-time/streaming call analysis.",
