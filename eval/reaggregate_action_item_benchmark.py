@@ -30,7 +30,12 @@ OUT_MD = Path(__file__).resolve().parent / "ACTION_ITEM_BENCHMARK.md"
 RATE_LIMIT_MARKERS = ("rate_limit", "RateLimitError", "429", "circuit_breaker_skipped", "timed_out_after_")
 
 MODEL_LABELS = {
-    "groq/llama-3.3-70b-versatile": "LLM_DEFAULT tier (fast/cheap — this project's default for meeting notes)",
+    # Current LLM_DEFAULT. groq/llama-3.3-70b-versatile (the prior default,
+    # kept as a key here too) was deprecated by Groq for free/developer-tier
+    # accounts in mid-2026 — this dict covers both so re-running this script
+    # against an older results file still labels it correctly.
+    "groq/openai/gpt-oss-120b": "LLM_DEFAULT tier (fast/cheap — this project's default for meeting notes)",
+    "groq/llama-3.3-70b-versatile": "LLM_DEFAULT tier, prior model (deprecated by Groq, mid-2026)",
     "anthropic/claude-sonnet-4-6": "LLM_REASONING tier (nuance-focused — this project's default for sales/interview)",
 }
 
@@ -55,10 +60,12 @@ def main():
     agg = {}
     for model in models:
         scored, rate_limited, other_errors = [], [], []
+        n_present = 0
         for r in valid:
             pm = r["per_model"].get(model)
             if pm is None:
                 continue
+            n_present += 1
             if is_rate_limited(pm.get("analysis_error")):
                 rate_limited.append(r["id"])
             elif pm.get("analysis_error"):
@@ -70,6 +77,7 @@ def main():
         rec = [s["recall"] for s in scored]
         f1s = [s["f1"] for s in scored]
         agg[model] = {
+            "n_present": n_present,
             "n_scored": len(scored),
             "n_rate_limited": len(rate_limited),
             "rate_limited_ids": rate_limited,
@@ -94,8 +102,9 @@ def main():
         "something a coding session can produce. Everything downstream of the script — the TTS "
         "audio, the ASR transcript, the LLM extraction, the scoring — is real, measured, and "
         "reproducible. This benchmark compares this project's two actual configured LLM tiers "
-        "(Groq Llama 3.3 70B and Claude Sonnet 4.6) rather than any fixed pair of models, so it "
-        "stays meaningful as the underlying model configuration evolves.",
+        "(LLM_DEFAULT and LLM_REASONING — see core/config.py for the current models) rather than "
+        "any fixed pair of models, so it stays meaningful as the underlying model configuration "
+        "evolves.",
         "",
         f"**Run**: {len(results)} meetings attempted, {len(valid)} completed TTS+ASR "
         f"successfully, {len(tts_asr_errors)} failed before reaching analysis.",
@@ -113,9 +122,22 @@ def main():
         "| Model | Meetings scored | Excluded (rate-limited) | Avg precision | Avg recall | Avg F1 |",
         "|---|---|---|---|---|---|",
     ]
+    not_present = []
     for model, stats in agg.items():
+        if stats["n_present"] == 0:
+            # No data at all for this model in this run — showing 0.000 here would
+            # read as "scored zero," not "never tested." Omit the row instead and
+            # say so explicitly below, rather than implying a real result.
+            not_present.append(model)
+            continue
         lines.append(f"| `{model}` | {stats['n_scored']} | {stats['n_rate_limited']} | "
                       f"{stats['avg_precision']:.3f} | {stats['avg_recall']:.3f} | {stats['avg_f1']:.3f} |")
+    if not_present:
+        lines.append("")
+        lines.append(f"*(No data in this run for: {', '.join(f'`{m}`' for m in not_present)} — "
+                      f"omitted above rather than shown as a 0.000 score, since they were never "
+                      f"actually called, not called-and-scored-zero. Re-run "
+                      f"`eval/run_action_item_benchmark.py` to get real numbers for these.)*")
 
     lines += [
         "",
@@ -146,10 +168,15 @@ def main():
             lines.append(f"- `{r['id']}`: {r['error']}")
         lines.append("")
 
-    # Sample: pick a meeting both models actually scored, if one exists
+    # Sample: pick a meeting where every model in `models` was actually run
+    # (present in per_model, not just "not rate-limited" — a model key can be
+    # entirely absent from older results if it wasn't part of that run, e.g.
+    # after LLM_DEFAULT changes and this script is re-run against data
+    # collected under the old default) and none of them were rate-limited.
     sample = None
     for r in valid:
-        if all(not is_rate_limited(r["per_model"].get(m, {}).get("analysis_error")) for m in models):
+        pm_all = r["per_model"]
+        if all(m in pm_all and not is_rate_limited(pm_all[m].get("analysis_error")) for m in models):
             sample = r
             break
     if sample:
@@ -168,6 +195,13 @@ def main():
             pm = sample["per_model"][model]
             lines.append(f"`{model}` extracted: `{json.dumps(pm['predicted_action_items'])}` "
                          f"(P={pm['score']['precision']:.2f} R={pm['score']['recall']:.2f} F1={pm['score']['f1']:.2f})")
+        lines.append("")
+    else:
+        lines.append("## Sample")
+        lines.append("")
+        lines.append("No single meeting has scored results for every model in this report "
+                     "(likely because the model list changed since this data was collected) "
+                     "— see the per-model sections above instead.")
         lines.append("")
 
     OUT_MD.write_text("\n".join(lines))
