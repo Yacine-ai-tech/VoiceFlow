@@ -2,7 +2,7 @@
 
 Real pipeline (real TTS -> real ASR -> real LLM analysis), scored against a 50-meeting synthetic corpus with known ground truth. See `eval/generate_corpus.py` and `eval/run_action_item_benchmark.py` for exactly how this was produced — reproduce with `python3 eval/run_action_item_benchmark.py` (and re-aggregate with `eval/reaggregate_action_item_benchmark.py` if a provider rate-limits mid-run).
 
-**Honesty note:** the 50 meetings are LLM-generated synthetic scripts (see `eval/data/action_item_corpus.jsonl`), not real recorded meetings — a real 50-meeting corpus needs real people and real recordings, which is a data-collection task, not something a coding session can produce. Everything downstream of the script — the TTS audio, the ASR transcript, the LLM extraction, the scoring — is real, measured, and reproducible. This benchmark compares this project's two actual configured LLM tiers (Groq Llama 3.3 70B and Claude Sonnet 4.6) rather than any fixed pair of models, so it stays meaningful as the underlying model configuration evolves.
+**Honesty note:** the 50 meetings are LLM-generated synthetic scripts (see `eval/data/action_item_corpus.jsonl`), not real recorded meetings — a real 50-meeting corpus needs real people and real recordings, which is a data-collection task, not something a coding session can produce. Everything downstream of the script — the TTS audio, the ASR transcript, the LLM extraction, the scoring — is real, measured, and reproducible. This benchmark compares this project's two actual configured LLM tiers (LLM_DEFAULT and LLM_REASONING — see core/config.py for the current models) rather than any fixed pair of models, so it stays meaningful as the underlying model configuration evolves.
 
 **Run**: 50 meetings attempted, 38 completed TTS+ASR successfully, 12 failed before reaching analysis.
 
@@ -14,6 +14,8 @@ Real pipeline (real TTS -> real ASR -> real LLM analysis), scored against a 50-m
 |---|---|---|---|---|---|
 | `groq/llama-3.3-70b-versatile` | 2 | 36 | 0.500 | 0.500 | 0.500 |
 | `anthropic/claude-sonnet-4-6` | 38 | 0 | 0.502 | 0.518 | 0.506 |
+
+*(No data in this run for: `groq/openai/gpt-oss-120b` — omitted above rather than shown as a 0.000 score, since they were never actually called, not called-and-scored-zero. Re-run `eval/run_action_item_benchmark.py` to get real numbers for these.)*
 
 **Scoring method**: greedy matching between each model's extracted `action_items` and the meeting's ground-truth list — owner match (case-insensitive substring, worth 0.4) plus action-text Jaccard token overlap (worth 0.6); a pair counts as matched at score >= 0.5. Precision = matched / predicted, recall = matched / ground truth, F1 = harmonic mean, averaged per-meeting then across all scored meetings (macro-average).
 
@@ -40,11 +42,6 @@ Real pipeline (real TTS -> real ASR -> real LLM analysis), scored against a 50-m
 - `meeting-044`: timed_out_after_90s
 - `meeting-047`: timed_out_after_90s
 
-## Sample: one meeting both models actually scored
+## Sample
 
-**meeting-001** (engineering sprint standup) — ASR method: `groq-whisper`
-
-Ground truth: `[{"owner": "Marcus", "action": "Create a reproducer script for the Redis timeout flakiness in staging and share it in the eng channel", "due": "Friday"}, {"owner": "Priya", "action": "Post the load test results from Tuesday to Confluence", "due": "before the sprint review on the 8th"}, {"owner": "Speaker", "action": "Open a draft PR for the rate limiter (ticket ENG-4712)", "due": "end of day Thursday"}]`
-
-`groq/llama-3.3-70b-versatile` extracted: `[{"owner": "Marcus", "action": "Create a reproducer script for the Redis timeout issue", "due": "2024-02-09", "priority": "medium"}, {"owner": "Priya", "action": "Post load test results to Confluence", "due": "2024-02-08", "priority": "high"}, {"owner": "Speaker", "action": "Create a draft PR for the rate limiter", "due": "2024-02-08", "priority": "high"}]` (P=1.00 R=1.00 F1=1.00)
-`anthropic/claude-sonnet-4-6` extracted: `[{"owner": "Speaker", "action": "Pick up ticket ENG-4712 (rate limiter) and have a draft PR up", "due": null, "priority": "high"}, {"owner": "Marcus", "action": "Create and share a reproducer script for the Redis timeout flakiness in staging in the Eng channel", "due": null, "priority": "high"}, {"owner": "Priya", "action": "Post Tuesday's load test results to Confluence for team review before sprint review", "due": null, "priority": "medium"}]` (P=1.00 R=1.00 F1=1.00)
+No single meeting has scored results for every model in this report (likely because the model list changed since this data was collected) — see the per-model sections above instead.

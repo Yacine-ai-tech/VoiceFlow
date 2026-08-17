@@ -25,6 +25,8 @@ provider than the one the scenario asked for, not a bug.
 
 ## Sample output (first scenario that passed)
 
-Scenario: `fast` (provider: `groq-whisper`, model: `groq/llama-3.3-70b-versatile`)
+Scenario: `fast` (provider: `groq-whisper`, model: `groq/llama-3.3-70b-versatile` at the time
+of this run — Groq deprecated that model for free/developer-tier accounts in mid-2026; the
+`fast` scenario's `LLM_DEFAULT` is now `groq/openai/gpt-oss-120b`, see `services/scenarios.py`)
 
 Transcript: `' .'`

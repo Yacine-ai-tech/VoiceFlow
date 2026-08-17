@@ -24,7 +24,14 @@ class Settings:
     LOG_FORMAT = os.getenv("LOG_FORMAT", "%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     LOGS_DIR = str(LOGS_DIR)
 
-    LLM_DEFAULT = os.getenv("LLM_DEFAULT", "groq/llama-3.3-70b-versatile")
+    # groq/llama-3.3-70b-versatile was Groq's free/developer-tier default here
+    # until Groq deprecated it (2026-06-17); confirmed live via a real API call
+    # returning model_not_found. openai/gpt-oss-120b is Groq's own recommended
+    # replacement and was verified live to produce clean, directly-parseable
+    # JSON with the existing prompt/parsing logic — unlike the other
+    # recommended alternative (qwen3.6-27b), which emits an unstoppable
+    # <think> reasoning block that broke JSON parsing even at 1500 tokens.
+    LLM_DEFAULT = os.getenv("LLM_DEFAULT", "groq/openai/gpt-oss-120b")
     LLM_REASONING = os.getenv("LLM_REASONING", "anthropic/claude-sonnet-4-6")
     LLM_JUDGE = os.getenv("LLM_JUDGE", "anthropic/claude-haiku-4-5")
 
