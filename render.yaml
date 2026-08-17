@@ -55,3 +55,5 @@ services:
         value: "false"
       - key: TELEMETRY_USAGE_INTERVAL_SECONDS
         value: "1800"
+      - key: POSTGRES_URL    # optional: durable session-analytics storage, see core/db.py
+        sync: false

@@ -26,7 +26,7 @@ import os as _os
 import threading
 import time
 import uuid
-from collections import Counter as _Counter, defaultdict as _defaultdict
+from collections import Counter as _Counter
 from typing import Any, Dict, Optional
 
 from fastapi import (
@@ -37,6 +37,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from core import db
 from core.config import settings
 from core.logger import get_logger
 from core.security import RateLimiter, client_ip, is_safe_public_url
@@ -182,13 +183,57 @@ except Exception as e:
 
 analyzer = MeetingAnalyzer()
 
-# Process-local usage counters (v1 "Analytics" ask) — real, reset on restart.
-# Keyed per-session (X-VoiceFlow-Session, a random ID the frontend generates
-# once and persists in localStorage — no account, no PII): a visitor calling
-# GET /analytics only ever sees their own session's counts, never anyone
-# else's or the deployment-wide total. Requests without the header (direct
-# API/curl use) all share one "anonymous" bucket.
-_stats: "_defaultdict[str, _Counter[str]]" = _defaultdict(_Counter)
+
+# Process-local usage counters (v1 "Analytics" ask). Keyed per-session
+# (X-VoiceFlow-Session, a random ID the frontend generates once and persists
+# in localStorage — no account, no PII): a visitor calling GET /analytics
+# only ever sees their own session's counts, never anyone else's or the
+# deployment-wide total. Requests without the header (direct API/curl use)
+# all share one "anonymous" bucket.
+#
+# In-memory reads stay the fast path either way. When POSTGRES_URL is set
+# (core/db.py), every increment is also durably persisted in the background
+# (never blocking the request it came from) and reloaded at startup — same
+# role Postgres plays for the other projects in this portfolio. With no
+# POSTGRES_URL, nothing changes: still real counters, still reset on restart.
+class _PersistentCounter(_Counter):
+    def __init__(self, session_id: str):
+        super().__init__()
+        self._session_id = session_id
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if db.DB_ENABLED:
+            threading.Thread(target=db.save_counter, args=(self._session_id, key, value), daemon=True).start()
+
+
+class _SessionStats(dict):
+    def __missing__(self, session_id: str) -> _PersistentCounter:
+        counter = _PersistentCounter(session_id)
+        self[session_id] = counter
+        return counter
+
+
+_stats: "_SessionStats" = _SessionStats()
+
+
+def _hydrate_stats_from_db():
+    """Reload persisted counters at startup so a restart/redeploy doesn't
+    silently zero out usage history when a database is configured. Runs in
+    a background thread (like the telemetry pings above) so a slow/cold
+    database connection never delays the app actually starting to serve
+    requests — a few requests immediately after a cold start may not see
+    older history yet; this self-heals within seconds once it completes."""
+    if not db.DB_ENABLED:
+        return
+    for session_id, counters in db.load_all_counters().items():
+        counter = _PersistentCounter(session_id)
+        for key, value in counters.items():
+            dict.__setitem__(counter, key, value)  # bypass the persist-on-write override — this data IS the DB
+        _stats[session_id] = counter
+
+
+threading.Thread(target=_hydrate_stats_from_db, daemon=True).start()
 
 
 def _session_id(request: Request) -> str:
@@ -487,6 +532,10 @@ async def analytics(request: Request):
     frontend generates once per browser and persists in localStorage; no
     account, no PII). A caller without that header gets the shared
     "anonymous" bucket, same as any other session would.
+
+    Reset on restart when no database is configured; durable across
+    restarts when POSTGRES_URL is set (core/db.py) — either way, reads
+    here always come from the fast in-memory copy, never a live DB query.
 
     /analytics is also the frontend's page route for the Analytics page, so a
     plain browser navigation here (refresh, bookmark, typed URL) — as opposed

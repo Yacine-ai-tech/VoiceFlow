@@ -150,5 +150,12 @@ class Settings:
         if o.strip()
     ]
 
+    # Optional Postgres persistence for session analytics (see core/db.py) —
+    # same role this setting plays in the other 5 public projects in this
+    # portfolio. Unset by default: with no POSTGRES_URL, analytics stay
+    # exactly as before (in-memory, reset on restart) — nothing about this
+    # is required to run VoiceFlow.
+    POSTGRES_URL = os.getenv("POSTGRES_URL", "").strip()
+
 
 settings = Settings()
