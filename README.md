@@ -10,11 +10,11 @@
 
 - **Transcription router**: local WhisperX (default), Groq Whisper, Deepgram, AssemblyAI
 - **5 analysis types** with per-type LLM routing:
-  - `meeting` → Groq Llama 3.3
+  - `meeting` → Groq (openai/gpt-oss-120b)
   - `sales_call` → Claude Sonnet 4.6
   - `support_call` → Claude Haiku 4.5
   - `interview` → Claude Sonnet 4.6
-  - `general` → Groq Llama 3.3
+  - `general` → Groq (openai/gpt-oss-120b)
 - **Diarization**: pyannote 3.x when `HF_TOKEN` is set; otherwise the transcript comes back without speaker labels, honestly
 - **TTS**: `POST /tts` — edge-tts (default), ElevenLabs, OpenAI tts-1-hd, or Kokoro (self-hosted), each falling back to edge-tts on failure
 - **Integrations**: `POST /integrations/relay` pushes any result to Slack, n8n, Zapier, or a custom webhook. Slack URLs are auto-detected and reformatted into a real Slack message (Slack rejects raw JSON); n8n/Zapier catch-hooks get the payload untouched, since that's what they're built for.
@@ -58,7 +58,7 @@ Open http://localhost:8002/
 
 | Analysis        | Model           | Output                                       |
 |-----------------|-----------------|----------------------------------------------|
-| Meeting notes   | Groq Llama 3.3  | action_items, decisions, next_steps          |
+| Meeting notes   | Groq (gpt-oss-120b)  | action_items, decisions, next_steps          |
 | Sales call CRM  | Claude Sonnet   | pain_points, objections, deal_stage          |
 | Support QA      | Claude Haiku    | severity, escalation, follow_ups             |
 | Interview       | Claude Sonnet   | strengths, gaps, recommendation              |
@@ -71,15 +71,25 @@ Open http://localhost:8002/
 pytest tests/ -q
 ```
 
-## Realtime Voice Agent — Design Notes
+## Security & Reliability
+
+- **Per-IP rate limiting** on every non-static request and WebSocket connection attempt (`RATE_LIMIT_HTTP_PER_MIN`, `RATE_LIMIT_WS_CONNECTS_PER_MIN`) — this product has no user-account system, so this is the realistic abuse mitigation for its paid upstream providers.
+- **SSRF guard on `POST /integrations/relay`**: the destination URL must resolve to a real public address — loopback, private, link-local, and reserved ranges are rejected before the server ever fetches it.
+- **Optional shared-secret gate** (`X-VoiceFlow-Internal-Token` header for HTTP, `?token=` query param for the two WebSocket routes) behind `REQUIRE_INTERNAL_TOKEN=true` — off by default, but actually enforced on both WS routes when turned on, not just HTTP.
+- **Bounded LLM analysis calls** (`LLM_ANALYSIS_TIMEOUT_SECONDS`, default 60s) — a slow or rate-limited provider returns an honest timeout error instead of hanging the request.
+- **Non-blocking transcription**: every ASR provider call runs off the main event loop (`asyncio.to_thread`), so one slow transcription can't stall other concurrent requests on this single-worker deployment.
+
+## Research Notes
 
 The `WS /realtime` bridge (OpenAI Realtime API or Gemini Multimodal Live,
 chosen via `REALTIME_PROVIDER`) does two specific things worth knowing
 about: server-side 24kHz→16kHz PCM downsampling for the Gemini path, and
 gating microphone input while a tool call is in flight (so speaker output
 bleeding into the mic doesn't get misread as a user interruption). See
-[RESEARCH.md](RESEARCH.md) for how and why, and the math behind the
-downsampling ratio.
+[RESEARCH.md](RESEARCH.md) for how and why, the math behind the
+downsampling ratio, an honest literature check against 2026 ASR/diarization/
+realtime-voice benchmarks, and where VoiceFlow's own real measured numbers
+stand relative to them.
 
 ## Benchmark Suite
 

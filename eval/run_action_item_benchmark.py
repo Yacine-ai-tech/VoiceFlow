@@ -10,8 +10,10 @@ Pipeline per meeting, all real, no shortcuts:
      with real transcription noise/errors, not the original script text.
   3. Real LLM analysis (services/meeting_analyzer.py, analysis_type="meeting")
      extracts action items from that real transcript, once per model under
-     comparison — LLM_DEFAULT (Groq Llama 3.3 70B) vs LLM_REASONING (Claude
-     Sonnet 4.6), the two tiers this project actually uses (see
+     comparison — LLM_DEFAULT (Groq, currently openai/gpt-oss-120b — Groq
+     deprecated the prior default, llama-3.3-70b-versatile, for free/
+     developer-tier accounts in mid-2026) vs LLM_REASONING (Claude Sonnet
+     4.6), the two tiers this project actually uses (see
      ACTION_ITEM_BENCHMARK.md for the full model comparison rationale).
   4. Real scoring: each model's extracted action_items vs the corpus's
      ground-truth action_items, via greedy owner+action-similarity matching.
@@ -67,7 +69,7 @@ CORPUS_PATH = Path(__file__).resolve().parent / "data" / "action_item_corpus.jso
 RAW_PATH = Path(__file__).resolve().parent / "data" / "action_item_results.jsonl"
 
 MODELS_UNDER_TEST = [
-    "groq/llama-3.3-70b-versatile",
+    "groq/openai/gpt-oss-120b",
     "anthropic/claude-sonnet-4-6",
 ]
 

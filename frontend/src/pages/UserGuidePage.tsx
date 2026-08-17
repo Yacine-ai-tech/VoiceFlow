@@ -71,8 +71,8 @@ export default function UserGuidePage() {
                 </tr>
               </thead>
               <tbody className="text-dim">
-                <tr className="border-b border-line"><td className="py-2 pr-4 font-mono text-[12px] text-body">meeting</td><td className="py-2 pr-4 font-mono text-[11.5px]">groq/llama-3.3-70b-versatile</td><td className="py-2">Summary, action items, decisions, sentiment, next steps</td></tr>
-                <tr className="border-b border-line"><td className="py-2 pr-4 font-mono text-[12px] text-body">general</td><td className="py-2 pr-4 font-mono text-[11.5px]">groq/llama-3.3-70b-versatile</td><td className="py-2">Open-ended structured extraction, no fixed schema</td></tr>
+                <tr className="border-b border-line"><td className="py-2 pr-4 font-mono text-[12px] text-body">meeting</td><td className="py-2 pr-4 font-mono text-[11.5px]">groq/openai/gpt-oss-120b</td><td className="py-2">Summary, action items, decisions, sentiment, next steps</td></tr>
+                <tr className="border-b border-line"><td className="py-2 pr-4 font-mono text-[12px] text-body">general</td><td className="py-2 pr-4 font-mono text-[11.5px]">groq/openai/gpt-oss-120b</td><td className="py-2">Open-ended structured extraction, no fixed schema</td></tr>
                 <tr className="border-b border-line"><td className="py-2 pr-4 font-mono text-[12px] text-body">sales_call</td><td className="py-2 pr-4 font-mono text-[11.5px]">anthropic/claude-sonnet-4-6</td><td className="py-2">Pain points, objections, buying signals, deal stage, CRM notes</td></tr>
                 <tr className="border-b border-line"><td className="py-2 pr-4 font-mono text-[12px] text-body">interview</td><td className="py-2 pr-4 font-mono text-[11.5px]">anthropic/claude-sonnet-4-6</td><td className="py-2">Strengths, gaps, key quotes, hire/no-hire recommendation</td></tr>
                 <tr><td className="py-2 pr-4 font-mono text-[12px] text-body">support_call</td><td className="py-2 pr-4 font-mono text-[11.5px]">anthropic/claude-haiku-4-5</td><td className="py-2">Issue summary, severity, escalation flag, follow-ups</td></tr>
