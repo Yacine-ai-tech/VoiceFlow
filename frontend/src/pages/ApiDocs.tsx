@@ -70,9 +70,7 @@ const ENDPOINTS: Endpoint[] = [
     reqBody: `file:      <audio binary>                 required
 provider:  local | remote | groq |
            deepgram | assemblyai            optional
-           ("orchestrator" accepted as a
-            compat alias for "remote";
-            LOCAL_WHISPERX, GROQ_WHISPER,
+           (LOCAL_WHISPERX, GROQ_WHISPER,
             DEEPGRAM_NOVA2 etc. also accepted)
 language:  "en" | "fr" | ... | "auto"        default "auto"
 diarize:   true | false                      default false`,

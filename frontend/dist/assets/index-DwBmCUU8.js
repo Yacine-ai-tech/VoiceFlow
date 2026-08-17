@@ -347,9 +347,7 @@ Error generating stack: `+w.message+`
 }`,note:"See services/scenarios.py for the source of truth and eval/run_scenario_benchmark.py for the CLI harness that compares them head-to-head on the same audio file."},{method:"POST",path:"/transcribe",category:"Transcription",auth:"token",desc:"Transcribe an uploaded audio file (mp3, wav, webm, m4a, ...). Runs through the same provider router as every other transcription endpoint.",reqLabel:"multipart/form-data",reqBody:`file:      <audio binary>                 required
 provider:  local | remote | groq |
            deepgram | assemblyai            optional
-           ("orchestrator" accepted as a
-            compat alias for "remote";
-            LOCAL_WHISPERX, GROQ_WHISPER,
+           (LOCAL_WHISPERX, GROQ_WHISPER,
             DEEPGRAM_NOVA2 etc. also accepted)
 language:  "en" | "fr" | ... | "auto"        default "auto"
 diarize:   true | false                      default false`,resBody:`{

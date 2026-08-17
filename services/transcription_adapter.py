@@ -101,10 +101,7 @@ _PROVIDER_ALIASES = {
     "groq": "groq", "groq_whisper": "groq",
     "deepgram": "deepgram", "deepgram_nova2": "deepgram",
     "assemblyai": "assemblyai",
-    # "orchestrator" is a legacy spelling of "remote" — kept as an alias so an
-    # existing WHISPER_PROVIDER=orchestrator / TTS_PROVIDER=orchestrator value
-    # someone already has set doesn't silently start failing.
-    "remote": "remote", "orchestrator": "remote",
+    "remote": "remote",
 }
 
 
