@@ -806,6 +806,13 @@ async def ws_realtime(ws: WebSocket):
                 trigger_tokens=104857,
                 sliding_window=_gtypes.SlidingWindow(target_tokens=52428),
             ),
+            # response_modalities=["AUDIO"] means the model never produces a text part —
+            # response.text stays empty even though audio plays fine, since it's a
+            # convenience view over modelTurn's text parts. The agent's spoken reply never
+            # showed up as an on-screen transcript because of exactly this: audio played,
+            # nothing populated response.text. output_audio_transcription is the opt-in that
+            # actually populates server_content.output_transcription below.
+            output_audio_transcription=_gtypes.AudioTranscriptionConfig(),
         )
 
         try:
@@ -890,6 +897,13 @@ async def ws_realtime(ws: WebSocket):
                                     await ws.send_json({
                                         "type": "response.audio_transcript.delta",
                                         "delta": response.text
+                                    })
+
+                                out_t = getattr(response.server_content, "output_transcription", None) if response.server_content else None
+                                if out_t and out_t.text:
+                                    await ws.send_json({
+                                        "type": "response.audio_transcript.delta",
+                                        "delta": out_t.text
                                     })
 
                                 if response.tool_call:
