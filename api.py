@@ -833,13 +833,21 @@ async def ws_realtime(ws: WebSocket):
                                         import base64
                                         pcm_24k = base64.b64decode(b64)
                                         pcm_16k, _ = audioop.ratecv(pcm_24k, 2, 1, 24000, 16000, None)
-                                        await session.send(input={
-                                            "data": pcm_16k,
-                                            "mime_type": "audio/pcm;rate=16000"
-                                        })
+                                        # session.send(input=...) is deprecated (removal "not before
+                                        # Q3 2025" per the SDK itself) and routes audio through the
+                                        # legacy realtime_input.media_chunks field, which the Live API
+                                        # now silently drops — the session stays open and connected but
+                                        # no audio ever reaches the model. send_realtime_input(audio=...)
+                                        # is the current, supported path for streamed audio chunks.
+                                        await session.send_realtime_input(
+                                            audio=_gtypes.Blob(data=pcm_16k, mime_type="audio/pcm;rate=16000")
+                                        )
 
                                 elif evt == "input_audio_buffer.commit":
-                                    await session.send(input=".", end_of_turn=True)
+                                    # audio_stream_end is the dedicated end-of-turn signal for a
+                                    # send_realtime_input audio stream, replacing the old
+                                    # send(input=".", end_of_turn=True) text-content workaround.
+                                    await session.send_realtime_input(audio_stream_end=True)
                                     cancel_flag[0] = False
 
                                 elif evt == "conversation.item.create":
@@ -849,7 +857,10 @@ async def ws_realtime(ws: WebSocket):
                                         if c.get("type") == "input_text"
                                     )
                                     if text:
-                                        await session.send(input=text, end_of_turn=True)
+                                        await session.send_client_content(
+                                            turns=_gtypes.Content(role="user", parts=[_gtypes.Part(text=text)]),
+                                            turn_complete=True,
+                                        )
 
                                 elif evt == "client.speech_started":
                                     cancel_flag[0] = True
