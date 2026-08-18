@@ -203,21 +203,46 @@ registerProcessor('vad-processor', VADProcessor);
 `;
 
   const startVoice = async () => {
+    // FIX FOR IOS/SAFARI: Create AudioContext synchronously inside the user gesture handler
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    const audioCtx = new AudioCtx({ sampleRate: 24000 });
+    audioCtxRef.current = audioCtx;
+
+    // getUserMedia is split into its own try/catch: everything after this point
+    // (AudioWorklet, WebSocket, SpeechRecognition) can also throw, and lumping all of
+    // it under one catch mislabeled every failure as "Microphone access denied" —
+    // including e.g. AudioWorklet being unsupported in the current browser, which has
+    // nothing to do with mic permission and sent people down the wrong troubleshooting
+    // path (checking app permissions instead of the actual failure).
+    let stream: MediaStream;
     try {
-      // FIX FOR IOS/SAFARI: Create AudioContext synchronously inside the user gesture handler
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const audioCtx = new AudioCtx({ sampleRate: 24000 });
-      audioCtxRef.current = audioCtx;
-      
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new DOMException(
+          'This browser (or embedded webview) does not expose microphone access — try opening this page in Chrome or Safari directly instead of an in-app browser, and make sure the page is loaded over HTTPS.',
+          'NotSupportedError'
+        );
+      }
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err: any) {
+      console.error(err);
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        alert('Microphone permission was denied. Check this browser\'s site settings and allow microphone access for this page, then try again.');
+      } else if (err.name === 'NotFoundError') {
+        alert('No microphone was found on this device.');
+      } else {
+        alert(`Microphone access failed: ${err.message || err.name || err}`);
+      }
+      return;
+    }
+    streamRef.current = stream;
+
+    try {
       nextPlayTimeRef.current = audioCtx.currentTime;
-      
+
       const blob = new Blob([workletCode], { type: 'application/javascript' });
       const workletUrl = URL.createObjectURL(blob);
       await audioCtx.audioWorklet.addModule(workletUrl);
-      
+
       const source = audioCtx.createMediaStreamSource(stream);
       const workletNode = new AudioWorkletNode(audioCtx, 'vad-processor');
       
