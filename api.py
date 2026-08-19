@@ -927,8 +927,21 @@ async def ws_realtime(ws: WebSocket):
                                     is_tool_active[0] = False
                                     cancel_flag[0] = False
                                     await ws.send_json({"type": "response.done"})
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # This used to be a bare `except: pass` — any exception here (a
+                        # malformed response, an SDK-internal error mid-stream, anything)
+                        # silently killed this relay task without ever sending
+                        # response.done. asyncio.gather() below doesn't surface it either,
+                        # since the task returns normally instead of raising, so the outer
+                        # handler's own except-block never saw it. The client was left
+                        # waiting on a turn that would never complete, with no error and no
+                        # sign anything had gone wrong server-side — indistinguishable from
+                        # a hang until its own transport-level keepalive eventually gave up.
+                        log.warning("Gemini _gemini_to_client relay died mid-turn: %s", e)
+                        try:
+                            await ws.send_json({"type": "error", "message": f"Gemini relay error: {e}"})
+                        except Exception:
+                            pass
 
                 await asyncio.gather(_client_to_gemini(), _gemini_to_client())
 
