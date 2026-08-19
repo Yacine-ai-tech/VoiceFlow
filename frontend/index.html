@@ -38,7 +38,11 @@
   
     
 
-  <!-- Analytics pixel placeholder — point at your own analytics endpoint if desired -->
+  <!-- Analytics pixel placeholder — disabled by default. Point the src at your own
+       analytics endpoint and uncomment to enable; the localhost:8000 example below
+       was firing (and failing) on every page load in production, since a dev-only
+       backend port isn't a real analytics endpoint for anyone who deploys this.
   <img src="http://localhost:8000/pixel/voiceflow" width="1" height="1" style="display:none" alt="" aria-hidden="true">
+  -->
 </body>
 </html>
