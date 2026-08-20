@@ -177,7 +177,21 @@ export default function VoiceAgent() {
         return;
       }
       if (type === "response.text.delta" || type === "response.audio_transcript.delta") {
-        setAgentSpeaking(true);
+        // NOTE: does NOT touch agentSpeaking. Text/transcript deltas and audio
+        // deltas are independent event streams (see api.py's _gemini_to_client)
+        // and can arrive in either order, including text-only with no audio at
+        // all (e.g. a turn that gets cancelled by user barge-in before any
+        // audio.delta shows up — see the response.done/cancelled handling
+        // below). Setting agentSpeaking here used to have no matching reset:
+        // if the stream ever produced a text/transcript delta without a
+        // subsequent audio chunk actually finishing playback (which is the
+        // ONLY place that clears it, in scheduleNextBuffers' onended callback
+        // and stopAudioPlayback()), the "Agent is speaking…" indicator got
+        // stuck true forever — most visibly after a stop/restart, where the
+        // session resumes mid-turn and the first thing the client sees can be
+        // a transcript delta with no accompanying audio. agentSpeaking is now
+        // driven solely by actual audio playback state, with a defensive
+        // reset below when a turn ends with nothing queued/playing.
         appendTurnDelta("assistant", String(data.delta ?? ""), agentOpenIdRef, agentDraftRef);
       }
       if (type === "response.user_transcript.delta") {
@@ -192,7 +206,18 @@ export default function VoiceAgent() {
         queueAudioPlayback(base64);
       }
       if (type === "response.done" || type === "response.audio.done") {
+        // A turn that was interrupted mid-stream (barge-in, see api.py's
+        // cancel_flag handling) closes here too, so the NEXT turn's deltas
+        // always open a fresh bubble instead of appending onto whatever text
+        // survived the cut — this is what previously produced garbled,
+        // multi-turn-merged transcript text (old tool-call scaffolding /
+        // stale partial replies glued onto the start of the next real reply).
         closeTurn(agentOpenIdRef, agentDraftRef);
+        // Defensive reset: if nothing is actually queued/playing when a turn
+        // ends, the speaking indicator must not be left on.
+        if (playbackQueueRef.current.length === 0 && !isPlayingRef.current) {
+          setAgentSpeaking(false);
+        }
       }
       if (type === "session.resumption_handle") {
         resumptionHandleRef.current = String(data.handle ?? "") || null;

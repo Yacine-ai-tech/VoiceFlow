@@ -832,7 +832,19 @@ async def ws_realtime(ws: WebSocket):
             "actual declared schema, even if a *different* tool in the list happens "
             "to take that parameter. If a parameter is optional and the user hasn't "
             "specified a value, omit it or use the most sensible default (e.g. 'all' "
-            "for an optional domain) instead of stopping to ask."
+            "for an optional domain) instead of stopping to ask.\n\n"
+            "Do NOT call a tool for a greeting, small talk, or a question about how "
+            "you (the agent) are doing — respond conversationally instead. Only reach "
+            "for a tool when the user is actually asking about their data, metrics, or "
+            "business performance.\n\n"
+            "You are speaking out loud, not writing text. Every number you say must be "
+            "pronounced the way a person would say it in conversation: read a decimal "
+            "point as 'point' (e.g. 37.96 is 'thirty-seven point nine-six', never "
+            "'thirty-seven ninety-six' or two separate numbers), and read percentages "
+            "and currency amounts as whole phrases (e.g. '2.14 percent' is 'two point "
+            "one-four percent', '$37.96 million' is 'thirty-seven point nine-six "
+            "million dollars'). Never speak a raw number's digits one group at a time "
+            "as if they were two unrelated figures."
         )
 
         _config = _gtypes.LiveConnectConfig(
@@ -877,6 +889,22 @@ async def ws_realtime(ws: WebSocket):
 
                 is_tool_active = [False]
                 cancel_flag = [False]
+                # Set alongside cancel_flag[0]=True (by _client_to_gemini, on user
+                # barge-in) and consumed by _gemini_to_client below. Cancelling a
+                # turn used to just `continue`-skip every remaining response chunk
+                # for it, INCLUDING the eventual turn_complete check that sends
+                # {"type":"response.done"} — so the frontend's open turn/bubble for
+                # that cancelled reply was never closed. The next real turn's
+                # deltas then appended onto that dangling, half-received bubble
+                # instead of starting fresh, which is what produced garbled,
+                # multi-turn-merged transcript text in production (old partial
+                # replies / tool-call scaffolding glued onto the front of the next
+                # actual answer — reproduced live 2026-08-20 with "bonjour" /
+                # "comment ça va tu"). Only _gemini_to_client sends to the browser
+                # ws elsewhere in this handler; routing the notification through it
+                # (rather than sending directly from _client_to_gemini) avoids a
+                # second, concurrent writer on the same browser websocket.
+                pending_cancel_notice = [False]
                 # _client_to_gemini() and _gemini_to_client() run concurrently via
                 # asyncio.gather() below, and BOTH write to the same upstream `session`
                 # (send_realtime_input / send_client_content from the client side,
@@ -945,6 +973,7 @@ async def ws_realtime(ws: WebSocket):
 
                                 elif evt == "client.speech_started":
                                     cancel_flag[0] = True
+                                    pending_cancel_notice[0] = True
 
                             except Exception:
                                 log.exception("Gemini client_to_gemini error")
@@ -957,7 +986,22 @@ async def ws_realtime(ws: WebSocket):
                         while True:
                             turn = session.receive()
                             async for response in turn:
+                                # Gemini's own server-side VAD can interrupt generation
+                                # independently of our client-driven cancel_flag (e.g. it
+                                # notices the user talking again before the browser's local
+                                # VAD/`client.speech_started` message even arrives here) —
+                                # server_content.interrupted is the authoritative signal for
+                                # that. Treat it the same as a client-initiated cancel so a
+                                # server-only interruption still closes the frontend's open
+                                # turn instead of leaving it dangling.
+                                if response.server_content and getattr(response.server_content, "interrupted", False):
+                                    cancel_flag[0] = True
+                                    pending_cancel_notice[0] = True
                                 if cancel_flag[0]:
+                                    if pending_cancel_notice[0]:
+                                        pending_cancel_notice[0] = False
+                                        is_tool_active[0] = False
+                                        await ws.send_json({"type": "response.done", "cancelled": True})
                                     continue
 
                                 if response.data:
