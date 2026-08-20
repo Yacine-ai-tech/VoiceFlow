@@ -804,8 +804,40 @@ async def ws_realtime(ws: WebSocket):
         except Exception as e:
             log.warning("agent-tools declarations unavailable for Gemini Live: %s", e)
             _external_tools = []
+
+        # Browsers can't set custom headers on a WS handshake, so a resumption
+        # handle from a *previous* connection on this same logical session
+        # travels as a query param (same convention as ?session=/?token=
+        # elsewhere on this endpoint). Passing handle=None below just means
+        # "start a new session" — the normal case for a first connect.
+        _resume_handle = ws.query_params.get("resume") or None
+
+        # Live testing against production found the model reliably asking an
+        # unnecessary clarifying question (inventing a required `domain` param
+        # with made-up enum values) for open-ended questions like "check my
+        # metrics" — even for get_executive_summary, whose real schema (see
+        # AgentKit's TOOL_META) takes NO parameters at all. The tool call
+        # itself works fine once the model is told to just make it (verified
+        # live: get_executive_summary returned real data). With no
+        # system_instruction at all, the model was left to guess at tool
+        # shapes from sibling tools in the list instead of reading each tool's
+        # actual schema — this is the fix, not a workaround in the frontend.
+        _system_instruction = (
+            "You are VoiceFlow's voice agent. When the user asks about their data, "
+            "metrics, KPIs, revenue, or business performance, proactively call the "
+            "available tools to fetch real data rather than asking a clarifying "
+            "question first. Only ask the user something if a tool's own declared "
+            "parameters truly require information you don't have — never assume a "
+            "tool needs a parameter (or an enum of allowed values) that isn't in its "
+            "actual declared schema, even if a *different* tool in the list happens "
+            "to take that parameter. If a parameter is optional and the user hasn't "
+            "specified a value, omit it or use the most sensible default (e.g. 'all' "
+            "for an optional domain) instead of stopping to ask."
+        )
+
         _config = _gtypes.LiveConnectConfig(
             response_modalities=["AUDIO"],
+            system_instruction=_system_instruction,
             **({"tools": _external_tools} if _external_tools else {}),
             speech_config=_gtypes.SpeechConfig(
                 voice_config=_gtypes.VoiceConfig(
@@ -823,6 +855,20 @@ async def ws_realtime(ws: WebSocket):
             # nothing populated response.text. output_audio_transcription is the opt-in that
             # actually populates server_content.output_transcription below.
             output_audio_transcription=_gtypes.AudioTranscriptionConfig(),
+            # Symmetric opt-in for the USER's side of the call — without this,
+            # only the model's own spoken output ever gets transcribed
+            # (server_content.output_transcription); the human half of the
+            # conversation was never transcribed at all, let alone shown
+            # on-screen. Populates server_content.input_transcription below.
+            input_audio_transcription=_gtypes.AudioTranscriptionConfig(),
+            # Opt in to receiving LiveServerSessionResumptionUpdate messages so a
+            # dropped connection (network blip, the session-duration-limit close
+            # real production logs show: "The session duration limit was reached
+            # ... you may reconnect and resume this session using your
+            # resumption...") can actually resume the underlying Gemini session
+            # instead of just reconnecting to a brand-new one that has lost all
+            # conversational context server-side.
+            session_resumption=_gtypes.SessionResumptionConfig(handle=_resume_handle),
         )
 
         try:
@@ -932,6 +978,43 @@ async def ws_realtime(ws: WebSocket):
                                     await ws.send_json({
                                         "type": "response.audio_transcript.delta",
                                         "delta": out_t.text
+                                    })
+
+                                # The USER's own speech, transcribed by Gemini itself (see
+                                # input_audio_transcription in the config above) — a distinct
+                                # event type so the frontend can render it on the opposite side
+                                # of the conversation from the agent's own transcript above.
+                                # `finished` marks the end of this user turn (Transcription.finished)
+                                # so the frontend knows when to stop appending to the same bubble
+                                # and start a new one for the next thing the user says.
+                                in_t = getattr(response.server_content, "input_transcription", None) if response.server_content else None
+                                if in_t and in_t.text:
+                                    await ws.send_json({
+                                        "type": "response.user_transcript.delta",
+                                        "delta": in_t.text,
+                                        "finished": bool(getattr(in_t, "finished", False)),
+                                    })
+
+                                resumption = getattr(response, "session_resumption_update", None)
+                                if resumption and resumption.resumable and resumption.new_handle:
+                                    # Stashed by the browser and replayed as ?resume=<handle> on its
+                                    # next connection attempt (see _resume_handle above) — lets a
+                                    # reconnect actually resume this Gemini session server-side
+                                    # instead of starting a context-free new one.
+                                    await ws.send_json({
+                                        "type": "session.resumption_handle",
+                                        "handle": resumption.new_handle,
+                                    })
+
+                                go_away = getattr(response, "go_away", None)
+                                if go_away:
+                                    # Gemini telling us this session will be force-closed shortly
+                                    # (session duration limit, etc.) — let the frontend show a
+                                    # "reconnecting soon" state proactively instead of the close
+                                    # arriving with no warning.
+                                    await ws.send_json({
+                                        "type": "session.go_away",
+                                        "time_left": getattr(go_away, "time_left", None),
                                     })
 
                                 if response.tool_call:
