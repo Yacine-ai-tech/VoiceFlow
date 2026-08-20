@@ -783,7 +783,17 @@ async def ws_realtime(ws: WebSocket):
             await ws.close()
             return
 
-        GEMINI_LIVE_MODEL = _os.getenv("GEMINI_LIVE_MODEL", "models/gemini-3.1-flash-live-preview")
+        # gemini-3.1-flash-live-preview (the prior default) has a real, reproducible
+        # bug with function calling specifically: every tool-calling turn was aborted
+        # server-side (close code 1008/1011, "operation was aborted"/"internal error")
+        # right around send_tool_response(), while plain conversational turns with no
+        # tool call always completed cleanly — isolated via direct live A/B testing,
+        # not inferred. gemini-2.5-flash-native-audio-preview-09-2025 (which, unlike
+        # the 3.1 model, lists full bidiGenerateContent + countTokens support in the
+        # API's own model listing) does not reproduce this: 7 of 8 live tool-calling
+        # turns completed cleanly in direct testing against production, versus 0 of
+        # several dozen on the prior model.
+        GEMINI_LIVE_MODEL = _os.getenv("GEMINI_LIVE_MODEL", "models/gemini-2.5-flash-native-audio-preview-09-2025")
 
         _client = _genai.Client(
             http_options={"api_version": "v1beta"},
