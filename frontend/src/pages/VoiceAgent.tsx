@@ -12,12 +12,22 @@ export default function VoiceAgent() {
   const [userInterim, setUserInterim] = useState("");
   const [volume, setVolume] = useState(0);
   const [agentSpeaking, setAgentSpeaking] = useState(false);
-  
+  const [errorMsg, setErrorMsg] = useState("");
+
   const wsRef = useRef<WebSocket | null>(null);
   const draft = useRef("");
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recognitionRef = useRef<any>(null);
+  // Tracks whether THIS connection ever reached "ready". An {"type":"error"}
+  // event means two very different things depending on when it arrives: before
+  // ready, it's a real startup misconfiguration (missing API key etc); after
+  // ready, it's a mid-session failure (e.g. the upstream realtime relay dying —
+  // see api.py's _gemini_to_client) and the session was working a moment ago.
+  // Both used to collapse into the same "unconfigured" state/copy ("API Key Not
+  // Configured"), which is actively wrong and misleading for the second case —
+  // the key IS configured, something else broke mid-call.
+  const wasReadyRef = useRef(false);
   const msgsEndRef = useRef<HTMLDivElement>(null);
 
   // VAD & Playback states
@@ -29,7 +39,8 @@ export default function VoiceAgent() {
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
 
   const connect = () => {
-    setState("connecting"); setMsgs([]);
+    setState("connecting"); setMsgs([]); setErrorMsg("");
+    wasReadyRef.current = false;
     let wsUrl;
     const baseEnv = import.meta.env.VITE_API_BASE_URL;
     if (baseEnv) {
@@ -47,9 +58,13 @@ export default function VoiceAgent() {
       const type = String(data.type ?? "unknown");
 
       if (type === "error") {
-        setState("unconfigured"); return;
+        setErrorMsg(String(data.message ?? ""));
+        // Only a pre-ready error is an actual misconfiguration; a post-ready
+        // error is a mid-session failure and gets its own state/copy below.
+        setState(wasReadyRef.current ? "error" : "unconfigured");
+        return;
       }
-      if (type === "ready") { setState("ready"); return; }
+      if (type === "ready") { setState("ready"); wasReadyRef.current = true; return; }
       if (type === "response.text.delta" || type === "response.audio_transcript.delta") {
         setAgentSpeaking(true);
         draft.current += String(data.delta ?? "");
@@ -334,7 +349,7 @@ registerProcessor('vad-processor', VADProcessor);
             <div>
               <div className="font-semibold text-[15px]">API Key Not Configured</div>
               <div className="text-[13px] opacity-80">
-                Please set OPENAI_API_KEY or GEMINI_API_KEY in your environment to enable the real-time agent.
+                {errorMsg || "Please set OPENAI_API_KEY or GEMINI_API_KEY in your environment to enable the real-time agent."}
               </div>
             </div>
           </div>
@@ -346,13 +361,23 @@ registerProcessor('vad-processor', VADProcessor);
               <div className="flex items-center gap-2">
                 <div className={`h-2.5 w-2.5 rounded-full ${state === "ready" ? "bg-ok" : state === "error" || state === "closed" ? "bg-bad" : "bg-warn animate-pulse"}`} />
                 <span className="text-[13px] font-medium text-body">
-                  {state === "ready" ? "Agent Ready" : state === "error" || state === "closed" ? "Disconnected" : "Connecting..."}
+                  {state === "ready" ? "Agent Ready"
+                    : state === "error" ? (errorMsg ? `Session error: ${errorMsg}` : "Session error")
+                    : state === "closed" ? "Disconnected"
+                    : "Connecting..."}
                 </span>
               </div>
-              <Button variant="secondary" onClick={isRecording ? stopVoice : startVoice} disabled={state !== "ready"}>
-                {isRecording ? <MicOff size={14} className="text-bad" /> : <Mic size={14} />}
-                {isRecording ? "Stop Session" : "Start Session"}
-              </Button>
+              <div className="flex items-center gap-2">
+                {(state === "error" || state === "closed") && (
+                  <Button variant="secondary" onClick={connect}>
+                    Reconnect
+                  </Button>
+                )}
+                <Button variant="secondary" onClick={isRecording ? stopVoice : startVoice} disabled={state !== "ready"}>
+                  {isRecording ? <MicOff size={14} className="text-bad" /> : <Mic size={14} />}
+                  {isRecording ? "Stop Session" : "Start Session"}
+                </Button>
+              </div>
             </div>
             
             <div className="flex-1 overflow-y-auto p-5 space-y-4 relative">
