@@ -3,19 +3,26 @@ import { Mic, MicOff, Settings, AlertTriangle } from "lucide-react";
 import { PageHeader } from "../kit/AppShell";
 import { Button, Card, Chip } from "../kit/primitives";
 
-type Msg = { role: "user" | "assistant" | "tool"; text: string; interim?: boolean };
+type Msg = { id: number; role: "user" | "assistant" | "tool"; text: string; interim?: boolean };
+
+// How many consecutive auto-reconnect attempts before giving up and falling
+// back to the manual "Reconnect" button. Backoff below is capped at 15s, so
+// this is ~1.5 minutes of retrying a genuine network blip before asking the
+// user to intervene.
+const MAX_AUTO_RECONNECT_ATTEMPTS = 6;
 
 export default function VoiceAgent() {
-  const [state, setState] = useState<"connecting" | "ready" | "unconfigured" | "closed" | "error">("connecting");
+  const [state, setState] = useState<"connecting" | "reconnecting" | "ready" | "unconfigured" | "closed" | "error">("connecting");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [userInterim, setUserInterim] = useState("");
   const [volume, setVolume] = useState(0);
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [sessionNotice, setSessionNotice] = useState("");
 
   const wsRef = useRef<WebSocket | null>(null);
-  const draft = useRef("");
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recognitionRef = useRef<any>(null);
@@ -30,6 +37,60 @@ export default function VoiceAgent() {
   const wasReadyRef = useRef(false);
   const msgsEndRef = useRef<HTMLDivElement>(null);
 
+  // ── Conversation-history bookkeeping ────────────────────────────────────
+  // Each streamed turn (agent OR user) gets one persistent id. Deltas for an
+  // OPEN turn update that same msgs entry in place; once a turn closes
+  // (agent: response.done: user: input_transcription.finished) the id is
+  // cleared so the *next* delta opens a brand-new bubble instead of
+  // overwriting/replacing the just-completed one. This replaces the old
+  // "is the last message already an assistant message?" heuristic, which
+  // silently clobbered the previous full turn's text the moment a new turn's
+  // first delta arrived (since the previous turn's message was still last-
+  // and-role-assistant at that point).
+  const nextIdRef = useRef(0);
+  const agentOpenIdRef = useRef<number | null>(null);
+  const agentDraftRef = useRef("");
+  const userOpenIdRef = useRef<number | null>(null);
+  const userDraftRef = useRef("");
+
+  const appendTurnDelta = (
+    role: "assistant" | "user",
+    delta: string,
+    openIdRef: React.MutableRefObject<number | null>,
+    draftRef: React.MutableRefObject<string>,
+  ) => {
+    draftRef.current += delta;
+    setMsgs((old) => {
+      if (openIdRef.current !== null) {
+        return old.map((m) => (m.id === openIdRef.current ? { ...m, text: draftRef.current } : m));
+      }
+      const id = nextIdRef.current++;
+      openIdRef.current = id;
+      return [...old, { id, role, text: draftRef.current }];
+    });
+  };
+
+  const closeTurn = (openIdRef: React.MutableRefObject<number | null>, draftRef: React.MutableRefObject<string>) => {
+    openIdRef.current = null;
+    draftRef.current = "";
+  };
+
+  // ── Reconnect bookkeeping ────────────────────────────────────────────────
+  // socketGenRef distinguishes "the socket we just superseded" from "the
+  // current socket" so a stale onmessage/onclose/onerror from an old,
+  // already-replaced WebSocket can never mutate state on top of a newer
+  // connection (or after unmount).
+  const socketGenRef = useRef(0);
+  const unmountedRef = useRef(false);
+  const hadErrorRef = useRef(false);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Gemini session-resumption handle (see api.py's session_resumption_update
+  // handling) — replayed as ?resume=<handle> on the next connect() so a
+  // reconnect can resume the SAME underlying Gemini session (full
+  // conversational context server-side), not just look continuous in the UI.
+  const resumptionHandleRef = useRef<string | null>(null);
+
   // VAD & Playback states
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastAudioTimeRef = useRef<number>(Date.now());
@@ -38,9 +99,31 @@ export default function VoiceAgent() {
   const isPlayingRef = useRef(false);
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
 
-  const connect = () => {
-    setState("connecting"); setMsgs([]); setErrorMsg("");
+  // resetHistory=true is a genuinely NEW logical session (first mount, or the
+  // user explicitly starting over) — clears the conversation and any
+  // resumption handle. resetHistory=false is a reconnect of the SAME logical
+  // session (auto-retry after a network drop, or the manual Reconnect button
+  // after one) — the visible conversation must survive it untouched, and if
+  // we have a Gemini session-resumption handle we try to resume server-side
+  // too. isAutoRetry distinguishes an internal backoff-scheduled retry from a
+  // fresh connect() call, so the backoff counter only resets on a real
+  // user/mount-initiated attempt, not on the retries it itself schedules.
+  const connect = (resetHistory: boolean = true, isAutoRetry: boolean = false) => {
+    if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
+    const myGen = ++socketGenRef.current;
     wasReadyRef.current = false;
+    hadErrorRef.current = false;
+    setErrorMsg("");
+    setSessionNotice("");
+    if (!isAutoRetry) { reconnectAttemptsRef.current = 0; setReconnectAttempt(0); }
+    if (resetHistory) {
+      setMsgs([]);
+      agentOpenIdRef.current = null; agentDraftRef.current = "";
+      userOpenIdRef.current = null; userDraftRef.current = "";
+      resumptionHandleRef.current = null;
+    }
+    setState(resetHistory ? "connecting" : "reconnecting");
+
     let wsUrl;
     const baseEnv = import.meta.env.VITE_API_BASE_URL;
     if (baseEnv) {
@@ -49,10 +132,31 @@ export default function VoiceAgent() {
       const proto = location.protocol === "https:" ? "wss" : "ws";
       wsUrl = `${proto}://${location.host}/realtime`;
     }
+    if (resumptionHandleRef.current) {
+      wsUrl += (wsUrl.includes("?") ? "&" : "?") + "resume=" + encodeURIComponent(resumptionHandleRef.current);
+    }
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
-    
+
+    const scheduleReconnect = () => {
+      if (unmountedRef.current || socketGenRef.current !== myGen) return;
+      if (reconnectAttemptsRef.current >= MAX_AUTO_RECONNECT_ATTEMPTS) {
+        setState(hadErrorRef.current ? "error" : "closed");
+        return;
+      }
+      const attempt = reconnectAttemptsRef.current;
+      reconnectAttemptsRef.current = attempt + 1;
+      setReconnectAttempt(attempt + 1);
+      const delay = Math.min(1000 * 2 ** attempt, 15000) + Math.random() * 500;
+      setState("reconnecting");
+      reconnectTimerRef.current = setTimeout(() => {
+        if (unmountedRef.current) return;
+        connect(false, true);
+      }, delay);
+    };
+
     ws.onmessage = (m) => {
+      if (unmountedRef.current || socketGenRef.current !== myGen) return;
       let data: Record<string, unknown>;
       try { data = JSON.parse(m.data); } catch { return; }
       const type = String(data.type ?? "unknown");
@@ -64,25 +168,41 @@ export default function VoiceAgent() {
         setState(wasReadyRef.current ? "error" : "unconfigured");
         return;
       }
-      if (type === "ready") { setState("ready"); wasReadyRef.current = true; return; }
+      if (type === "ready") {
+        setState("ready");
+        wasReadyRef.current = true;
+        reconnectAttemptsRef.current = 0;
+        setReconnectAttempt(0);
+        setSessionNotice("");
+        return;
+      }
       if (type === "response.text.delta" || type === "response.audio_transcript.delta") {
         setAgentSpeaking(true);
-        draft.current += String(data.delta ?? "");
-        setMsgs((old) => {
-          const rest = old[old.length - 1]?.role === "assistant" ? old.slice(0, -1) : old;
-          return [...rest, { role: "assistant", text: draft.current }];
-        });
+        appendTurnDelta("assistant", String(data.delta ?? ""), agentOpenIdRef, agentDraftRef);
+      }
+      if (type === "response.user_transcript.delta") {
+        // The user's own speech, transcribed server-side by Gemini
+        // (input_audio_transcription in api.py) — authoritative, unlike the
+        // best-effort browser SpeechRecognition interim caption below.
+        appendTurnDelta("user", String(data.delta ?? ""), userOpenIdRef, userDraftRef);
+        if (data.finished) closeTurn(userOpenIdRef, userDraftRef);
       }
       if (type === "response.audio.delta") {
         const base64 = String(data.delta ?? "");
         queueAudioPlayback(base64);
       }
       if (type === "response.done" || type === "response.audio.done") {
-        draft.current = "";
+        closeTurn(agentOpenIdRef, agentDraftRef);
+      }
+      if (type === "session.resumption_handle") {
+        resumptionHandleRef.current = String(data.handle ?? "") || null;
+      }
+      if (type === "session.go_away") {
+        setSessionNotice("Session refreshing shortly — this will reconnect automatically and keep the conversation.");
       }
       if (type === "tool_call") {
         const name = String(data.name ?? "tool");
-        setMsgs((old) => [...old, { role: "tool", text: `Calling tool: ${name}…` }]);
+        setMsgs((old) => [...old, { id: nextIdRef.current++, role: "tool", text: `Calling tool: ${name}…` }]);
       }
       if (type === "tool_result") {
         const name = String(data.name ?? "tool");
@@ -91,16 +211,47 @@ export default function VoiceAgent() {
           if (idx === -1) return old;
           const realIdx = old.length - 1 - idx;
           const copy = old.slice();
-          copy[realIdx] = { role: "tool", text: `Tool completed: ${name}` };
+          copy[realIdx] = { ...copy[realIdx], text: `Tool completed: ${name}` };
           return copy;
         });
       }
     };
-    ws.onclose = () => { setState((s) => (s === "unconfigured" ? s : "closed")); stopVoice(); };
-    ws.onerror = () => { setState((s) => (s === "unconfigured" ? s : "error")); stopVoice(); };
+    ws.onclose = () => {
+      if (unmountedRef.current || socketGenRef.current !== myGen) return;
+      stopVoice();
+      // Only a session that actually reached "ready" is worth auto-retrying —
+      // a close before that is a real startup misconfiguration (bad/missing
+      // key), and hammering the server with retries won't fix that. A
+      // session that WAS live and dropped (network blip, Gemini-side 1008/
+      // 1011 close, the session-duration-limit close production logs show)
+      // gets automatic backoff retries instead of leaving the user staring
+      // at a dead connection until they notice and click Reconnect.
+      if (wasReadyRef.current) {
+        scheduleReconnect();
+      } else {
+        setState(hadErrorRef.current ? "error" : "closed");
+      }
+    };
+    ws.onerror = () => {
+      if (unmountedRef.current || socketGenRef.current !== myGen) return;
+      // A close event always follows an error event for a browser WebSocket —
+      // onclose above is the single place state actually transitions, this
+      // just records that the eventual close was error-triggered (vs a clean
+      // server-initiated close) so onclose can pick "error" over "closed" copy.
+      hadErrorRef.current = true;
+    };
   };
 
-  useEffect(() => { connect(); return () => { wsRef.current?.close(); stopVoice(); }; }, []);
+  useEffect(() => {
+    unmountedRef.current = false;
+    connect(true);
+    return () => {
+      unmountedRef.current = true;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      wsRef.current?.close();
+      stopVoice();
+    };
+  }, []);
   useEffect(() => { msgsEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, userInterim, agentSpeaking]);
 
   const queueAudioPlayback = (base64: string) => {
@@ -295,19 +446,23 @@ registerProcessor('vad-processor', VADProcessor);
         const recognition = new SpeechRecognition();
         recognition.continuous = true;
         recognition.interimResults = true;
+        // This is a best-effort, browser-local LIVE CAPTION ONLY (support/
+        // accuracy varies a lot by browser and isn't even connected to the
+        // audio actually sent to Gemini). The authoritative user transcript
+        // — the one that's actually appended to conversation history — comes
+        // from the server via response.user_transcript.delta (Gemini's own
+        // input_audio_transcription, see api.py), not from here. This just
+        // clears the interim caption once Web Speech API considers a phrase
+        // final; it never writes into msgs itself, so the two sources can't
+        // race or produce duplicate bubbles.
         recognition.onresult = (event: any) => {
           let interim = "";
-          let final = "";
+          let sawFinal = false;
           for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) final += event.results[i][0].transcript;
+            if (event.results[i].isFinal) sawFinal = true;
             else interim += event.results[i][0].transcript;
           }
-          if (final) {
-            setMsgs(m => [...m, { role: "user", text: final }]);
-            setUserInterim("");
-          } else {
-            setUserInterim(interim);
-          }
+          setUserInterim(sawFinal ? "" : interim);
         };
         recognition.start();
         recognitionRef.current = recognition;
@@ -326,10 +481,7 @@ registerProcessor('vad-processor', VADProcessor);
       audioCtxRef.current = null;
     }
     if (recognitionRef.current) { recognitionRef.current.stop(); recognitionRef.current = null; }
-    if (userInterim) {
-      setMsgs(m => [...m, { role: "user", text: userInterim }]);
-      setUserInterim("");
-    }
+    setUserInterim("");
     setIsRecording(false);
     setVolume(0);
     stopAudioPlayback();
@@ -362,6 +514,7 @@ registerProcessor('vad-processor', VADProcessor);
                 <div className={`h-2.5 w-2.5 rounded-full ${state === "ready" ? "bg-ok" : state === "error" || state === "closed" ? "bg-bad" : "bg-warn animate-pulse"}`} />
                 <span className="text-[13px] font-medium text-body">
                   {state === "ready" ? "Agent Ready"
+                    : state === "reconnecting" ? `Reconnecting… (attempt ${reconnectAttempt}/${MAX_AUTO_RECONNECT_ATTEMPTS})`
                     : state === "error" ? (errorMsg ? `Session error: ${errorMsg}` : "Session error")
                     : state === "closed" ? "Disconnected"
                     : "Connecting..."}
@@ -369,7 +522,7 @@ registerProcessor('vad-processor', VADProcessor);
               </div>
               <div className="flex items-center gap-2">
                 {(state === "error" || state === "closed") && (
-                  <Button variant="secondary" onClick={connect}>
+                  <Button variant="secondary" onClick={() => connect(false)}>
                     Reconnect
                   </Button>
                 )}
@@ -379,7 +532,13 @@ registerProcessor('vad-processor', VADProcessor);
                 </Button>
               </div>
             </div>
-            
+
+            {sessionNotice && (
+              <div className="border-b border-line bg-warn/10 px-5 py-2 text-[12px] text-body">
+                {sessionNotice}
+              </div>
+            )}
+
             <div className="flex-1 overflow-y-auto p-5 space-y-4 relative">
               {msgs.length === 0 && !userInterim && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-muted">
@@ -387,8 +546,8 @@ registerProcessor('vad-processor', VADProcessor);
                   <p className="text-[14px]">Click Start Session and begin speaking.</p>
                 </div>
               )}
-              {msgs.map((m, i) => (
-                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+              {msgs.map((m) => (
+                <div key={m.id} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                   <div className={`max-w-[80%] rounded-xl px-4 py-2 text-[14px] leading-relaxed shadow-sm ${
                     m.role === "user" 
                       ? "bg-[var(--accent)] text-white rounded-br-sm" 
