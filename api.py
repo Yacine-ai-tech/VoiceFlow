@@ -821,6 +821,21 @@ async def ws_realtime(ws: WebSocket):
 
                 is_tool_active = [False]
                 cancel_flag = [False]
+                # _client_to_gemini() and _gemini_to_client() run concurrently via
+                # asyncio.gather() below, and BOTH write to the same upstream `session`
+                # (send_realtime_input / send_client_content from the client side,
+                # send_tool_response from the tool-call side) — i.e. both can call
+                # session's underlying `self._ws.send(...)` at the same time. The
+                # `websockets` library does not guarantee that concurrent, unlocked
+                # sends from separate coroutines stay on the wire as distinct frames;
+                # a genuinely interleaved write is indistinguishable from a malformed
+                # message to the remote end. That lines up with what live testing
+                # against production actually shows: every tool-call turn eventually
+                # gets a close code 1008 ("Policy Violation") with reason "The
+                # operation was aborted" from Gemini's server, right around when
+                # send_tool_response() fires. This lock serializes all writes to the
+                # session so no two coroutines can be mid-`send` on it at once.
+                session_send_lock = asyncio.Lock()
 
                 async def _client_to_gemini():
                     """Forward browser audio/text frames to Gemini session."""
@@ -846,15 +861,17 @@ async def ws_realtime(ws: WebSocket):
                                         # now silently drops — the session stays open and connected but
                                         # no audio ever reaches the model. send_realtime_input(audio=...)
                                         # is the current, supported path for streamed audio chunks.
-                                        await session.send_realtime_input(
-                                            audio=_gtypes.Blob(data=pcm_16k, mime_type="audio/pcm;rate=16000")
-                                        )
+                                        async with session_send_lock:
+                                            await session.send_realtime_input(
+                                                audio=_gtypes.Blob(data=pcm_16k, mime_type="audio/pcm;rate=16000")
+                                            )
 
                                 elif evt == "input_audio_buffer.commit":
                                     # audio_stream_end is the dedicated end-of-turn signal for a
                                     # send_realtime_input audio stream, replacing the old
                                     # send(input=".", end_of_turn=True) text-content workaround.
-                                    await session.send_realtime_input(audio_stream_end=True)
+                                    async with session_send_lock:
+                                        await session.send_realtime_input(audio_stream_end=True)
                                     cancel_flag[0] = False
 
                                 elif evt == "conversation.item.create":
@@ -864,10 +881,11 @@ async def ws_realtime(ws: WebSocket):
                                         if c.get("type") == "input_text"
                                     )
                                     if text:
-                                        await session.send_client_content(
-                                            turns=_gtypes.Content(role="user", parts=[_gtypes.Part(text=text)]),
-                                            turn_complete=True,
-                                        )
+                                        async with session_send_lock:
+                                            await session.send_client_content(
+                                                turns=_gtypes.Content(role="user", parts=[_gtypes.Part(text=text)]),
+                                                turn_complete=True,
+                                            )
 
                                 elif evt == "client.speech_started":
                                     cancel_flag[0] = True
@@ -914,11 +932,12 @@ async def ws_realtime(ws: WebSocket):
                                         result = await agent_tools_bridge.call_tool(fc.name, fc_args)
                                         await ws.send_json({"type": "tool_result", "name": fc.name, "result": result})
                                         try:
-                                            await session.send_tool_response(
-                                                function_responses=[
-                                                    _gtypes.FunctionResponse(id=fc.id, name=fc.name, response=result)
-                                                ]
-                                            )
+                                            async with session_send_lock:
+                                                await session.send_tool_response(
+                                                    function_responses=[
+                                                        _gtypes.FunctionResponse(id=fc.id, name=fc.name, response=result)
+                                                    ]
+                                                )
                                         except Exception as e:
                                             log.warning("Gemini send_tool_response failed: %s", e)
                                     is_tool_active[0] = False
