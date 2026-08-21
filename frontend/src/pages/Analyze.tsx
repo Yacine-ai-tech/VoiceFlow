@@ -26,12 +26,20 @@ export default function Analyze() {
   const [activeStage, setActiveStage] = useState(0);
   const [scenarios, setScenarios] = useState<Record<string, Scenario>>({});
   const [scenario, setScenario] = useState("");
+  const [elapsedMs, setElapsedMs] = useState(0);
 
   useEffect(() => { api.scenarios().then(setScenarios).catch(() => {}); }, []);
 
   const run = async () => {
     setBusy(true); setErr(""); setResult(null); setActiveStage(0);
     const timer = setInterval(() => setActiveStage(s => Math.min(s + 1, tab === "audio" ? 3 : 2)), 1800);
+    // The audio path runs transcription on a GPU-tier orchestrator capability
+    // (whisper) — a cold Studio can take well past a bare spinner's patience to
+    // wake and load the model. A running elapsed-time counter is the honest
+    // signal for that path; the text path is a plain fast LLM call.
+    const startedAt = Date.now();
+    setElapsedMs(0);
+    const elapsedTimer = tab === "audio" ? window.setInterval(() => setElapsedMs(Date.now() - startedAt), 250) : undefined;
     try {
       if (tab === "text") {
         if (!text.trim()) throw new Error("Paste a transcript first");
@@ -48,7 +56,7 @@ export default function Analyze() {
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
-    } finally { clearInterval(timer); setBusy(false); }
+    } finally { clearInterval(timer); window.clearInterval(elapsedTimer); setBusy(false); }
   };
 
   return (
@@ -128,6 +136,14 @@ export default function Analyze() {
                   : ["Sending transcript", "AI reasoning", "Structuring intelligence"]}
                 active={activeStage}
               />
+              {tab === "audio" && (
+                <div className="mt-2 flex items-center gap-2 text-xs text-muted">
+                  <span className="num">{(elapsedMs / 1000).toFixed(0)}s elapsed</span>
+                  {elapsedMs > 20000 && (
+                    <span>— still working; a cold transcription endpoint can take a minute or more to wake.</span>
+                  )}
+                </div>
+              )}
             </Card>
           ) : result ? (
             <>
