@@ -121,9 +121,8 @@ Commercial license: see [COMMERCIAL.md](COMMERCIAL.md).
 ## Telemetry
 
 Running the app sends two anonymous pings if `TELEMETRY_ENDPOINT`/`TELEMETRY_URL` is
-configured: a startup ping (always, once `TELEMETRY_ENDPOINT` is set — not affected by
-`TELEMETRY_OPT_OUT`) and a periodic aggregate usage snapshot (skipped by
-`TELEMETRY_OPT_OUT=true`). Neither includes user data — see `.env.example` for the exact
+configured: a startup ping and a periodic aggregate usage snapshot. Setting
+`TELEMETRY_OPT_OUT=true` disables both. Neither includes user data — see `.env.example` for the exact
 payload shape. This README also carries a tracking-pixel image below, which loads
 whenever this page is viewed with remote images enabled (e.g. on GitHub) — that one is
 independent of the app and isn't affected by any env var.

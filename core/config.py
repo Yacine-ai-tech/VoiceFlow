@@ -118,9 +118,9 @@ class Settings:
     def TELEMETRY_ENDPOINT(self) -> str:
         """Where the anonymous startup ping and periodic usage snapshot are sent
         (see README.md's Telemetry section for the exact payloads). Blank by
-        default — no-op unless this or TELEMETRY_URL is set. Once set: the
-        startup ping always fires (TELEMETRY_OPT_OUT does not affect it); the
-        periodic usage snapshot is skipped when TELEMETRY_OPT_OUT=true.
+        default — no-op unless this or TELEMETRY_URL is set. Both the startup
+        ping and the periodic usage snapshot are skipped entirely when
+        TELEMETRY_OPT_OUT=true.
         """
         return os.getenv("TELEMETRY_ENDPOINT", os.environ.get("TELEMETRY_URL", "")).strip()
 
