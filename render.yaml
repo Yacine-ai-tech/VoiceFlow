@@ -31,8 +31,12 @@ services:
         sync: false
       - key: VOICEFLOW_TTS_REMOTE_TOKEN
         sync: false
-      - key: REALTIME_PROVIDER     # "openai" or "gemini" — which one WS /realtime uses, no fallback
-        value: openai
+      - key: REALTIME_PROVIDER     # "gemini" or "openai" — which one WS /realtime uses, no fallback
+        value: gemini
+      - key: GEMINI_LIVE_MODEL     # required for /realtime when REALTIME_PROVIDER=gemini
+        value: models/gemini-2.5-flash-native-audio-preview-09-2025
+      - key: OPENAI_BASE_URL
+        sync: false
       - key: OPENAI_API_KEY        # required for /realtime when REALTIME_PROVIDER=openai
         sync: false
       - key: GEMINI_API_KEY        # required for /realtime when REALTIME_PROVIDER=gemini
