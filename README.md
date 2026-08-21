@@ -2,7 +2,7 @@
 [![CI](https://github.com/Yacine-ai-tech/VoiceFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Yacine-ai-tech/VoiceFlow/actions/workflows/ci.yml) [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
 **Speech → structured intelligence. Complete web dashboard. 4 providers, 5 analysis types, real-time voice agent.**
-> 🔗 **Live web dashboard (record in your browser):** https://voiceflow.ysiddo-ai-projects.app/
+> **Live web dashboard (record in your browser):** https://voiceflow.ysiddo-ai-projects.app/
 > On-demand backend (first request ~30–60 s to wake).
 > Self-hosting: see [SELF_HOSTING.md](SELF_HOSTING.md).
 
