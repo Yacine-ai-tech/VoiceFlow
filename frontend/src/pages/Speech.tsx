@@ -21,6 +21,7 @@ export default function Speech() {
   const [err, setErr] = useState("");
   const [url, setUrl] = useState<string | null>(null);
   const [isWav, setIsWav] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState(0);
 
   // ElevenLabs voices — stock library voices + real cloned ones.
   const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
@@ -64,13 +65,20 @@ export default function Speech() {
 
   const run = async () => {
     setBusy(true); setErr("");
+    // Every provider proxies through this app's own backend first (Render free
+    // tier, can be cold-sleeping), and kokoro additionally lazy-loads its model
+    // pipeline on first use — either can take well past a bare "Synthesizing…"
+    // label's patience. A running elapsed-time counter is the honest signal.
+    const startedAt = Date.now();
+    setElapsedMs(0);
+    const elapsedTimer = window.setInterval(() => setElapsedMs(Date.now() - startedAt), 250);
     try {
       const { url: u, isWav: wav } = await api.tts(text, lang, gender, provider, provider === "elevenlabs" ? voiceId || undefined : undefined);
       setIsWav(wav);
       setUrl((old) => { if (old) URL.revokeObjectURL(old); return u; });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
-    } finally { setBusy(false); }
+    } finally { window.clearInterval(elapsedTimer); setBusy(false); }
   };
 
   return (
@@ -105,6 +113,15 @@ export default function Speech() {
                 <Volume2 size={14} /> {busy ? "Synthesizing…" : "Speak"}
               </Button>
             </div>
+
+            {busy && (
+              <div className="flex items-center gap-2 text-xs text-muted">
+                <span className="num">{(elapsedMs / 1000).toFixed(0)}s elapsed</span>
+                {elapsedMs > 15000 && (
+                  <span>— still working; a cold backend or first-use model load can take a bit longer.</span>
+                )}
+              </div>
+            )}
 
             {provider === "elevenlabs" && (
               <div className="space-y-3 rounded-xl border border-line bg-surface-2 p-3">
