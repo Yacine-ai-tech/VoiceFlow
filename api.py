@@ -94,12 +94,15 @@ def _send_telemetry():
 
     A no-op unless TELEMETRY_ENDPOINT is set — nothing is sent anywhere by
     default, and self-hosters who set their own TELEMETRY_ENDPOINT control
-    exactly where this goes. Unlike the periodic usage snapshot below,
-    this specific ping is NOT gated by TELEMETRY_OPT_OUT — it always fires
-    once TELEMETRY_ENDPOINT is set. Payload: {service, event:"startup",
-    version, instance_id} — no user data, no per-session detail.
+    exactly where this goes. Skipped entirely when TELEMETRY_OPT_OUT is set,
+    as with the periodic usage snapshot below. Payload: {service,
+    event:"startup", version, instance_id} — no user data, no per-session
+    detail.
     """
     import os
+
+    if os.environ.get("TELEMETRY_OPT_OUT", "").lower() in ("1", "true", "yes"):
+        return
 
     endpoint = settings.TELEMETRY_ENDPOINT
     if not endpoint:
@@ -255,9 +258,9 @@ def _all_sessions_totals() -> "_Counter[str]":
 
 
 def _telemetry_usage_loop():
-    """Opt-outable via TELEMETRY_OPT_OUT=true (unlike the startup ping above,
-    which always fires once TELEMETRY_ENDPOINT is set): if TELEMETRY_ENDPOINT
-    is set, periodically sends one anonymous AGGREGATE usage snapshot —
+    """Opt-outable via TELEMETRY_OPT_OUT=true, as with the startup ping above:
+    if TELEMETRY_ENDPOINT is set, periodically sends one anonymous AGGREGATE
+    usage snapshot —
     cumulative counters summed across every session on this instance since
     it started, plus how many distinct sessions have been seen. No session
     IDs, no per-visitor data, nothing GET /analytics doesn't already compute
