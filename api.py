@@ -301,7 +301,7 @@ threading.Thread(target=_telemetry_usage_loop, daemon=True).start()
 
 def _check_diarization_available(settings) -> dict:
     """Return diarization status dict to include in API responses."""
-    pyannote_token = getattr(settings, "PYANNOTE_TOKEN", "") or getattr(settings, "HF_TOKEN", "") or ""
+    pyannote_token = getattr(settings, "PYANNOTE_TOKEN", "")
     if not pyannote_token:
         return {
             "diarization_available": False,
