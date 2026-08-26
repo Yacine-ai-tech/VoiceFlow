@@ -160,11 +160,23 @@ async def verify_internal_token(request: Request, call_next):
     if request.method == "GET":
         return await call_next(request)
 
-    token = request.headers.get("X-VoiceFlow-Internal-Token") or ""
-    expected_token = _os.environ.get("VOICEFLOW_INTERNAL_TOKEN", "")
+    token = (
+        request.headers.get("X-VoiceFlow-Internal-Token")
+        or request.headers.get("X-Internal-Token")
+        or request.headers.get("X-OmniIntel-Internal-Token")
+        or (request.headers.get("Authorization", "").replace("Bearer ", "") if request.headers.get("Authorization", "").startswith("Bearer ") else "")
+    )
+    expected_tokens = [
+        t for t in (
+            _os.environ.get("VOICEFLOW_INTERNAL_TOKEN"),
+            _os.environ.get("INTERNAL_TOKEN"),
+            _os.environ.get("OMNIINTEL_INTERNAL_TOKEN"),
+        ) if t
+    ]
 
-    if not hmac.compare_digest(token, expected_token) and _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true":
-        return JSONResponse(status_code=403, content={"detail": "Missing or invalid X-VoiceFlow-Internal-Token"})
+    if _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true":
+        if not token or not any(hmac.compare_digest(token, exp) for exp in expected_tokens):
+            return JSONResponse(status_code=403, content={"detail": "Missing or invalid X-VoiceFlow-Internal-Token"})
 
     return await call_next(request)
 
