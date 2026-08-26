@@ -52,8 +52,8 @@ class Settings:
         return os.getenv("GEMINI_API_KEY", "").strip()
 
     @property
-    def HF_TOKEN(self) -> str:
-        return os.getenv("HF_TOKEN", "").strip()
+    def PYANNOTE_TOKEN(self) -> str:
+        return os.getenv("PYANNOTE_TOKEN", "").strip()
 
     @property
     def DEEPGRAM_API_KEY(self) -> str:
@@ -68,9 +68,6 @@ class Settings:
         return os.getenv("ELEVENLABS_API_KEY", "").strip()
 
     @property
-    def PYANNOTE_TOKEN(self) -> str:
-        return os.getenv("PYANNOTE_TOKEN", "").strip()
-
     TRANSCRIPTION_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "LOCAL_WHISPERX")
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
     WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")

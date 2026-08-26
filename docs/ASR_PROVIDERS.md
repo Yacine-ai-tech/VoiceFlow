@@ -71,7 +71,7 @@ mode — they pick which engine runs *on this host specifically*:
 | Setting | Options | Notes |
 |---|---|---|
 | `LOCAL_ASR_ENGINE` | `whisperx` (default), `nemo_canary` | Canary is NVIDIA's research-SOTA model — GPU strongly recommended, CPU works but slowly enough to be a benchmarking tool, not a production path |
-| `LOCAL_DIARIZATION_ENGINE` | `pyannote` (default), `nemo` | pyannote needs `HF_TOKEN` and a GPU for speed; NeMo's `ClusteringDiarizer` is the CPU-capable option |
+| `LOCAL_DIARIZATION_ENGINE` | `pyannote` (default), `nemo` | pyannote needs `PYANNOTE_TOKEN` and a GPU for speed; NeMo's `ClusteringDiarizer` is the CPU-capable option |
 
 Same idea applies to TTS: `provider=kokoro` runs locally by default, or set
 `VOICEFLOW_TTS_REMOTE_ENDPOINT` to delegate it instead of installing

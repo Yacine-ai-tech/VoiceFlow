@@ -15,7 +15,7 @@
   - `support_call` → Claude Haiku 4.5
   - `interview` → Claude Sonnet 4.6
   - `general` → Groq (openai/gpt-oss-120b)
-- **Diarization**: pyannote 3.x when `HF_TOKEN` is set; otherwise the transcript comes back without speaker labels, honestly
+- **Diarization**: pyannote 3.x when `PYANNOTE_TOKEN` is set; otherwise the transcript comes back without speaker labels, honestly
 - **TTS**: `POST /tts` — edge-tts (default), ElevenLabs, OpenAI tts-1-hd, or Kokoro (self-hosted), each falling back to edge-tts on failure
 - **Integrations**: `POST /integrations/relay` pushes any result to Slack, n8n, Zapier, or a custom webhook. Slack URLs are auto-detected and reformatted into a real Slack message (Slack rejects raw JSON); n8n/Zapier catch-hooks get the payload untouched, since that's what they're built for.
 - **Full web dashboard** at `/`
