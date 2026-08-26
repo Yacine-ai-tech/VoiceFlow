@@ -6,7 +6,7 @@ Real pipeline (real TTS -> real ASR -> real LLM analysis), scored against a 50-m
 
 **Run**: 50 meetings attempted, 38 completed TTS+ASR successfully, 12 failed before reaching analysis.
 
-**A real Groq daily token-quota limit (100,000 TPD, on-demand tier) was hit partway through this run** — not a code bug, an actual account ceiling. Meetings analyzed by Groq *after* the quota ran out are excluded from Groq's scoring below rather than counted as 0-score extraction failures (a rate limit and a bad extraction are not the same kind of failure, and averaging them together would understate Groq's real accuracy). Claude Sonnet has a separate quota and was unaffected — its numbers cover the full run.
+**A free-tier API quota ceiling was reached partway through this run** — not a code bug, an actual provider daily token limit. Meetings analyzed by Groq *after* the quota ran out are excluded from Groq's scoring below rather than counted as 0-score extraction failures (a rate limit and a bad extraction are not the same kind of failure, and averaging them together would understate Groq's real accuracy on meetings it actually processed). Claude Sonnet operates under a separate quota and was unaffected — its numbers cover the full run.
 
 ## Results
 
