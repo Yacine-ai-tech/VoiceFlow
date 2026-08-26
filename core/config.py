@@ -49,7 +49,7 @@ class Settings:
 
     @property
     def GEMINI_API_KEY(self) -> str:
-        return os.getenv("GEMINI_API_KEY", "").strip()
+        return os.getenv("GEMINI_API_KEY", "").strip() or (os.getenv("REALTIME_API_KEY", "").strip() if self.REALTIME_PROVIDER == "gemini" else "")
 
     @property
     def PYANNOTE_TOKEN(self) -> str:
@@ -104,10 +104,13 @@ class Settings:
     def REALTIME_API_KEY(self) -> str:
         """The API key for whichever provider REALTIME_PROVIDER selects.
 
-        If you set REALTIME_PROVIDER=openai but only GEMINI_API_KEY is
-        configured, this returns empty and /realtime correctly reports
-        "not configured" — it will not silently use Gemini instead.
+        If REALTIME_API_KEY is explicitly configured in environment, it is used
+        directly. Otherwise, falls back to the matching provider key (GEMINI_API_KEY
+        for gemini, OPENAI_API_KEY for openai).
         """
+        explicit = os.getenv("REALTIME_API_KEY", "").strip()
+        if explicit:
+            return explicit
         return self.GEMINI_API_KEY if self.REALTIME_PROVIDER == "gemini" else self.OPENAI_API_KEY
 
     @property
