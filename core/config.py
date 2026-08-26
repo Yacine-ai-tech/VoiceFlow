@@ -67,7 +67,6 @@ class Settings:
     def ELEVENLABS_API_KEY(self) -> str:
         return os.getenv("ELEVENLABS_API_KEY", "").strip()
 
-    @property
     TRANSCRIPTION_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "LOCAL_WHISPERX")
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
     WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
