@@ -4,7 +4,7 @@ Manual smoke check against a running VoiceFlow instance — real audio through
 POST /transcribe. Not part of the pytest suite (see tests/ for that); this is
 for a quick manual check against local or deployed instance.
 
-Usage: VOICEFLOW_URL=https://your-instance python scripts/test_deployed_audio.py
+Usage: VOICEFLOW_URL=http://localhost:8002 python scripts/test_deployed_audio.py
 """
 import os
 import httpx
