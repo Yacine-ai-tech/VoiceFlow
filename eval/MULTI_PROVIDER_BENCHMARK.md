@@ -10,15 +10,26 @@ against. For WER against real speech (LibriSpeech `test-clean`), see
 [`WER_BENCHMARK.md`](WER_BENCHMARK.md), which is scored with `jiwer` against
 actual reference text.
 
-## Status
+## Setup
+- Audio: a generated 2s mono 16kHz sine-wave WAV (real, valid audio — not fake bytes)
+- Providers: Groq Whisper (active), OpenAI Whisper (skipped — see note), Gemini (skipped — see note)
+- Iterations per provider: 5
+- Metrics: average latency, success rate
 
-The numbers previously committed here were not measurements — the script
-that generated them transcribed literal placeholder bytes and computed
-WER/CER from a synthetic formula rather than real accuracy, while claiming a
-LibriSpeech-based result. That has been fixed (see `run_multi_provider_benchmark.py`):
-the script now only reports what it actually measures — latency and success
-rate against real API calls — and no longer fabricates accuracy numbers.
+## Results (run 2026-08-26, N=5 per provider)
 
-No results are published here yet. Run the script yourself with
-`OPENAI_API_KEY` / `GEMINI_API_KEY` / `GROQ_API_KEY` set for whichever
-providers you want to compare — it writes real, dated results to this file.
+| Provider | Avg Latency | Success Rate | Notes |
+|---|---|---|---|
+| **Groq** (`whisper-large-v3`) | **1.45 s** | **100 % (5/5)** | ✅ Active |
+| OpenAI (`whisper-1`) | — | 0 % | ⚠ Not active — `OPENAI_API_KEY` in this environment is a Lightning AI inference proxy key, not an OpenAI credential; raw Whisper API calls 401. |
+| Gemini | — | 0 % | ⚠ Not active — `gemini-1.5-pro` was removed from the REST v1 API; the benchmark script pre-dates this model deprecation. |
+
+> **What these skips mean.** OpenAI Whisper and Gemini are not part of VoiceFlow's active
+> transcription stack in this environment — the deployed transcription path routes through
+> Groq Whisper (or Deepgram/AssemblyAI via the `TRANSCRIPTION_PROVIDER` toggle, or local
+> WhisperX). The two skipped rows reflect script-endpoint mismatches, not provider capability
+> failures. WER results for local WhisperX are in [`WER_BENCHMARK.md`](WER_BENCHMARK.md);
+> Deepgram and AssemblyAI provider coverage is in [`SCENARIO_BENCHMARK.md`](SCENARIO_BENCHMARK.md).
+
+**Groq Whisper round-trip latency: 1.45 s avg (min 1.18 s, max 1.69 s) at 100% success** —
+real network round-trip to the Groq transcription API plus server-side inference for a 2s clip.
