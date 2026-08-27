@@ -273,7 +273,11 @@ def _deepgram_whisper_sync(audio_bytes: bytes, diarize: bool = False) -> Optiona
         words = results.get("words", [])
         got_speakers = diarize and any("speaker" in w for w in words)
         return {
-            "text": results.get("transcript", ""),
+            # `.get(k, "")` only substitutes the default when the key is *absent* — Deepgram
+            # can return the key present with an explicit `null` value for near-silent/no-speech
+            # audio, which `.get` would pass straight through as None and break any downstream
+            # code (e.g. an LLM call) that requires a string. `or ""` catches both cases.
+            "text": results.get("transcript") or "",
             "language": "en",
             "segments": results.get("paragraphs", {}).get("paragraphs", []) or words,
             "method": "deepgram-nova3",
@@ -331,7 +335,9 @@ def _assemblyai_whisper_sync(audio_bytes: bytes) -> Optional[Dict[str, Any]]:
             status = poll_res.get("status")
             if status == "completed":
                 return {
-                    "text": poll_res.get("text", ""),
+                    # See the matching comment in _deepgram_whisper_sync — AssemblyAI can
+                    # return "text": null (not just an empty string) for no-speech audio.
+                    "text": poll_res.get("text") or "",
                     "language": poll_res.get("language_code", "en"),
                     "segments": poll_res.get("utterances", []),
                     "method": "assemblyai",

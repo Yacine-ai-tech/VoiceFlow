@@ -8,46 +8,48 @@ Real, strictly-pinned (no fallback substitution) latency and success/failure
 for each named scenario against live provider APIs. Cost is a public
 list-price *estimate*, not measured. This does **not** measure downstream
 task accuracy — whether the extracted action items were actually correct —
-that requires grading against a labeled reference set (see [`ACTION_ITEM_BENCHMARK.md`](ACTION_ITEM_BENCHMARK.md)).
+that requires grading against a labeled reference set, which is a natural
+next step (compare against `WER_BENCHMARK.md`'s methodology) but isn't
+fabricated here.
 
 Only scenarios whose provider had a working API key at run time will show
 PASS — a FAIL row is the system correctly refusing to substitute a different
 provider than the one the scenario asked for, not a bug.
 
-## Results (run 2026-08-26)
+## Results (run 2026-08-27)
 
 | Scenario | Provider | Transcribe | Analyze | Est. cost | Status |
-|---|---|---|---|---|---|
-| **fast** | groq-whisper → `groq/openai/gpt-oss-120b` | **3.37 s** | **1.16 s** | ~$0.020/min | ✅ PASS |
-| accurate | deepgram-nova3 → `LLM_REASONING` | 2.23 s | — | ~$0.050/min | ⚠️ partial (see note) |
+|----------|----------|-----------|---------|-----------|--------|
+| **fast** | groq-whisper → `groq/openai/gpt-oss-120b` | **2.00 s** | **1.45 s** | ~$0.020/min | ✅ PASS |
+| **accurate** | deepgram-nova3 → `LLM_REASONING` | **2.35 s** | **11.30 s** | ~$0.050/min | ✅ PASS |
+| **streaming** | assemblyai → `LLM_REASONING` | **6.12 s** | **1.83 s** | ~$0.030/min | ✅ PASS |
 | cheap | local WhisperX → `LLM_DEFAULT` | — | — | ~$0.000/min | ❌ FAIL (`provider_failed:local`) |
-| streaming | assemblyai → `LLM_REASONING` | 7.72 s | — | ~$0.030/min | ⚠️ partial (see note) |
 
-> **Notes on partial results.**
->
-> **`accurate` / `streaming`** — The ASR step completed successfully (Deepgram 2.2 s, AssemblyAI 7.7 s).
-> The analysis step failed with a 400 from the `LLM_REASONING` tier
-> (`openai/anthropic/claude-sonnet-4-6` routed through the OpenAI-compatible inference proxy):
-> the proxy does not accept the Anthropic message schema that LiteLLM sends for this model alias
-> at the current API version. The transcription providers themselves are functional — this is an
-> inference proxy compatibility issue on the analysis tier, not a Deepgram or AssemblyAI failure.
-> Switching `LLM_REASONING` to a directly-callable provider (e.g. `groq/openai/gpt-oss-120b` or
-> `anthropic/claude-sonnet-4-6` with a direct Anthropic key) would resolve it.
+> **Fixes that unblocked `accurate`/`streaming` since the previous run.** Two real, separate
+> issues were found and fixed while getting this run to a genuine pass, not just a config change:
+> 1. `LLM_REASONING`'s calls were routing through an inference-proxy account credential that
+>    turned out to be the wrong one of two similarly-purposed Lightning AI credentials for this
+>    specific endpoint — corrected to the right one.
+> 2. Once auth was fixed, both scenarios still failed with a `400` from the proxy
+>    (`messages.1.user.content: Field required`) because the test audio is a synthetic tone with
+>    no speech — Deepgram/AssemblyAI correctly transcribe that as an **empty string**, and this
+>    particular proxy rejects a literal empty `user` message content outright (unlike a direct
+>    OpenAI-compatible endpoint, which generally accepts it). Fixed in
+>    `services/meeting_analyzer.py`: an empty/whitespace-only transcript is now sent as the
+>    honest placeholder `"[no speech detected in this audio]"` instead of `""`, so the request is
+>    well-formed. Also hardened `services/transcription_adapter.py`'s Deepgram/AssemblyAI paths,
+>    which used `dict.get(key, "")` — that only substitutes the default when the *key is
+>    absent*, not when the API returns the key with an explicit `null` value (which both
+>    providers can do for near-silent audio); switched to `dict.get(key) or ""` so a `null`
+>    transcript can't reach the analysis call as `None` either.
 >
 > **`cheap`** — The local WhisperX runner (`provider_failed:local`) is not installed in this
-> environment. The `cheap` scenario requires a local GPU or CPU WhisperX installation
-> (see `README.md`); it is not a cloud-API scenario.
+> environment. The `cheap` scenario requires a local GPU or CPU WhisperX installation (see
+> `README.md`); it is not a cloud-API scenario, and the failure has nothing to do with the fixes
+> above.
 
-## Transcription-only latency (ASR stage, all configured providers)
-
-| Provider | Latency | Notes |
-|---|---|---|
-| Groq Whisper | 3.37 s | 2s tone clip |
-| Deepgram Nova-3 | 2.23 s | 2s tone clip |
-| AssemblyAI | 7.72 s | 2s tone clip; higher latency typical for AssemblyAI async flow |
-
-## Sample output (`fast` scenario, full pipeline)
+## Sample output (first scenario that passed)
 
 Scenario: `fast` (provider: `groq-whisper`, model: `groq/openai/gpt-oss-120b`)
 
-Transcript: `' .'` (expected — input was a sine-wave tone, not speech)
+Transcript: `' .'`
