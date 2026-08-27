@@ -17,7 +17,14 @@ from core.logger import get_logger
 log = get_logger(__name__)
 
 try:
+    import litellm
     from litellm import acompletion
+    # Some model families (e.g. the gpt-5 line) reject a temperature other than the
+    # provider default and raise UnsupportedParamsError instead of silently ignoring
+    # it — drop_params lets litellm strip an incompatible sampling param per-model
+    # rather than this analyzer needing a model-family special case for every tier
+    # it might be pointed at via LLM_DEFAULT/LLM_REASONING/LLM_JUDGE.
+    litellm.drop_params = True
     _LITELLM = True
 except ImportError:
     _LITELLM = False
@@ -106,9 +113,22 @@ class MeetingAnalyzer:
         scenarios (services/scenarios.py) to pin an exact model for benchmarking."""
         if not _LITELLM:
             return {"error": "litellm_not_installed", "analysis_type": analysis_type}
+        # Defensive: a transcription provider can hand back an explicit None for a
+        # no-speech/near-silent clip (fixed at the source in transcription_adapter.py, but
+        # guard here too since a null message `content` is rejected outright by some
+        # OpenAI-compatible endpoints — better an empty-transcript analysis than a 400).
+        transcript = transcript or ""
         prompt = PROMPTS.get(analysis_type, PROMPTS["general"])
         model = model or ANALYSIS_MODELS.get(analysis_type, settings.LLM_DEFAULT)
         sent_transcript, truncated, original_length = _truncate(transcript)
+        if not sent_transcript.strip():
+            # A genuinely empty user-message content (not just a short one) is rejected
+            # outright by some OpenAI-compatible endpoints — confirmed live against the
+            # Lightning Model API proxy ("messages.1.user.content: Field required" for a
+            # literal ""). A real no-speech/silent-audio transcript is a legitimate,
+            # honestly-reported input, not an error — send a minimal, truthful placeholder
+            # instead of the bare empty string so the request is well-formed.
+            sent_transcript = "[no speech detected in this audio]"
         try:
             resp = await asyncio.wait_for(
                 acompletion(
