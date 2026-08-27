@@ -10,6 +10,7 @@ does against real LibriSpeech data. See WER_BENCHMARK.md for that methodology.
 Any provider without an API key set is skipped, not scored as a failure.
 """
 import asyncio
+import base64
 import math
 import struct
 import time
@@ -51,9 +52,12 @@ class MultiProviderBenchmark:
                 "model": "whisper-1"
             },
             "gemini": {
-                "url": "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent",
+                # gemini-1.5-pro was retired from the v1 REST API (confirmed live: 404
+                # "models/gemini-1.5-pro is not found for API version v1") — gemini-3.5-flash
+                # is the current, working multimodal model, confirmed live via a real API call.
+                "url": "https://generativelanguage.googleapis.com/v1/models/gemini-3.5-flash:generateContent",
                 "api_key": os.environ.get("GEMINI_API_KEY", ""),
-                "model": "gemini-1.5-pro"
+                "model": "gemini-3.5-flash"
             },
             "groq": {
                 "url": "https://api.groq.com/openai/v1/audio/transcriptions",
@@ -81,11 +85,23 @@ class MultiProviderBenchmark:
                         data={"model": config["model"]}
                     )
                 elif provider == "gemini":
+                    # The v1 REST API expects camelCase keys (inlineData/mimeType) and the
+                    # inline bytes base64-encoded, not hex — sending hex-encoded bytes under
+                    # snake_case keys is silently invalid (400 "invalid argument", no field-
+                    # level detail), confirmed by testing both encodings live. A "transcribe
+                    # this" text part alongside the audio part is required too — an
+                    # audio-only content array is otherwise rejected.
                     response = await client.post(
                         f"{config['url']}?key={config['api_key']}",
                         json={
                             "contents": [{
-                                "parts": [{"inline_data": {"mime_type": "audio/wav", "data": audio_data.hex()}}]
+                                "parts": [
+                                    {"text": "Transcribe this audio."},
+                                    {"inlineData": {
+                                        "mimeType": "audio/wav",
+                                        "data": base64.b64encode(audio_data).decode("ascii"),
+                                    }},
+                                ]
                             }]
                         }
                     )
