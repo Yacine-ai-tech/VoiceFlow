@@ -32,8 +32,14 @@ class Settings:
     # recommended alternative (qwen3.6-27b), which emits an unstoppable
     # <think> reasoning block that broke JSON parsing even at 1500 tokens.
     LLM_DEFAULT = os.getenv("LLM_DEFAULT", "groq/openai/gpt-oss-120b")
-    LLM_REASONING = os.getenv("LLM_REASONING", "anthropic/claude-sonnet-4-6")
-    LLM_JUDGE = os.getenv("LLM_JUDGE", "anthropic/claude-haiku-4-5")
+    # Routed via the `openai/<provider>/<model>` LiteLLM prefix (OPENAI_BASE_URL +
+    # OPENAI_API_KEY) rather than `anthropic/<model>` + ANTHROPIC_API_KEY directly —
+    # the same OpenAI-compatible inference-proxy bypass IntelAI's LLM_REASONING and
+    # RAGeval's JUDGE_MODELS already use for their Claude-tier calls, so this project's
+    # direct Anthropic key (which has its own separate credit/quota state) isn't a
+    # single point of failure for the reasoning/judge tiers.
+    LLM_REASONING = os.getenv("LLM_REASONING", "openai/anthropic/claude-sonnet-4-6")
+    LLM_JUDGE = os.getenv("LLM_JUDGE", "openai/anthropic/claude-haiku-4-5")
 
     @property
     def GROQ_API_KEY(self) -> str:
