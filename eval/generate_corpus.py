@@ -72,7 +72,10 @@ async def generate_batch(domains: list[str]) -> list[dict]:
     from litellm import acompletion
     prompt = PROMPT_TEMPLATE.format(n=len(domains), domains=", ".join(domains))
     resp = await acompletion(
-        model="anthropic/claude-sonnet-4-6",
+        # openai/anthropic/<model> via OPENAI_BASE_URL + OPENAI_API_KEY (OpenAI-compatible
+        # inference proxy) instead of anthropic/<model> + ANTHROPIC_API_KEY directly — see
+        # the note in eval/run_action_item_benchmark.py's MODELS_UNDER_TEST for why.
+        model="openai/anthropic/claude-sonnet-4-6",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.9,
         max_tokens=4000,

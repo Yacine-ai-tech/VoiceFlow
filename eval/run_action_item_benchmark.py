@@ -70,7 +70,12 @@ RAW_PATH = Path(__file__).resolve().parent / "data" / "action_item_results.jsonl
 
 MODELS_UNDER_TEST = [
     "groq/openai/gpt-oss-120b",
-    "anthropic/claude-sonnet-4-6",
+    # Routed via the `openai/anthropic/<model>` LiteLLM prefix (OPENAI_BASE_URL +
+    # OPENAI_API_KEY, an OpenAI-compatible inference proxy) rather than calling
+    # `anthropic/claude-sonnet-4-6` directly with ANTHROPIC_API_KEY — the same bypass
+    # IntelAI's LLM_REASONING and RAGeval's JUDGE_MODELS already use, so this run isn't
+    # single-point-of-failure dependent on this project's own direct Anthropic key.
+    "openai/anthropic/claude-sonnet-4-6",
 ]
 
 MEETING_TIMEOUT_S = 90

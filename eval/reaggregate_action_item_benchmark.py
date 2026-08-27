@@ -36,7 +36,12 @@ MODEL_LABELS = {
     # against an older results file still labels it correctly.
     "groq/openai/gpt-oss-120b": "LLM_DEFAULT tier (fast/cheap — this project's default for meeting notes)",
     "groq/llama-3.3-70b-versatile": "LLM_DEFAULT tier, prior model (deprecated by Groq, mid-2026)",
-    "anthropic/claude-sonnet-4-6": "LLM_REASONING tier (nuance-focused — this project's default for sales/interview)",
+    # openai/anthropic/claude-sonnet-4-6 (routed via OPENAI_BASE_URL + OPENAI_API_KEY, an
+    # OpenAI-compatible inference proxy) is the current LLM_REASONING model string. The
+    # bare anthropic/claude-sonnet-4-6 key is kept too so this script still labels older
+    # results files (collected before the switch to the proxy-routed form) correctly.
+    "openai/anthropic/claude-sonnet-4-6": "LLM_REASONING tier (nuance-focused — this project's default for sales/interview)",
+    "anthropic/claude-sonnet-4-6": "LLM_REASONING tier, direct-Anthropic form (superseded by the proxy-routed openai/anthropic/... form)",
 }
 
 
