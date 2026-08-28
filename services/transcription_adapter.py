@@ -480,7 +480,9 @@ async def transcribe(
             return result
 
     # Every remote provider failed — try local as a last resort if it wasn't already tried.
-    if not tried_local:
+    # Set ALLOW_LOCAL_ASR_FALLBACK=false on memory-constrained hosts, where loading a
+    # multi-GB WhisperX model on demand risks an out-of-memory crash loop.
+    if not tried_local and os.getenv("ALLOW_LOCAL_ASR_FALLBACK", "true").strip().lower() != "false":
         result = await asyncio.to_thread(_local_whisper, audio_bytes, lang, diarize)
         if result:
             log.info("All remote ASR providers failed — used local WhisperX as last resort")
