@@ -24,7 +24,7 @@ work the handler does before it can respond, not network/infra wake time.
 > back to the client until it has: (1) opened a live session with Google's Gemini
 > Multimodal Live API via the `google-genai` SDK, (2) discovered the tools this
 > project's agent-tools bridge exposes (a live HTTP call to a separate deployed
-> service, `agentkit-sbz5.onrender.com`), and (3) confirmed the Postgres session-stats
+> service, the agent-tools provider), and (3) confirmed the Postgres session-stats
 > schema is ready. `TestClient`'s `websocket_connect()` blocks until the handler
 > reaches its first receive/send point, which for the Gemini path is *after* all of
 > that — so the reported 4.26 s "connection latency" is really the sum of those three
