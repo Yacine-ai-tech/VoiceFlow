@@ -16,6 +16,8 @@ Endpoints:
                          is set, any tools that service exposes are available
                          for the model to call mid-call — see
                          services/agent_tools_bridge.py.
+  WS   /realtime/gemini  optimized Gemini Live relay (binary PCM input)
+  POST /realtime/session/openai  OpenAI Realtime WebRTC SDP session bootstrap
 """
 from __future__ import annotations
 
@@ -309,6 +311,42 @@ def _telemetry_usage_loop():
 
 
 threading.Thread(target=_telemetry_usage_loop, daemon=True).start()
+
+
+def _prewarm_agent_tools_loop():
+    """Keep tool discovery warm so realtime connect does not wait on AgentKit."""
+    interval = max(30, int(_os.getenv("AGENT_TOOLS_PREWARM_INTERVAL_SECONDS", "120")))
+    while True:
+        try:
+            asyncio.run(agent_tools_bridge.prewarm())
+        except Exception as e:
+            log.debug("agent-tools prewarm failed: %s", e)
+        time.sleep(interval)
+
+
+if settings.AGENT_TOOLS_URL:
+    threading.Thread(target=_prewarm_agent_tools_loop, daemon=True).start()
+
+
+class _RealtimeTrace:
+    def __init__(self, ws: WebSocket):
+        self.ws = ws
+        self.t0 = time.perf_counter()
+        self.seen: set[str] = set()
+
+    async def mark(self, event: str, **extra: Any) -> None:
+        elapsed_ms = round((time.perf_counter() - self.t0) * 1000, 1)
+        log.info("realtime metric %s %.1fms %s", event, elapsed_ms, extra or "")
+        try:
+            await self.ws.send_json({"type": "metric", "event": event, "elapsed_ms": elapsed_ms, **extra})
+        except Exception:
+            pass
+
+    async def first(self, event: str, **extra: Any) -> None:
+        if event in self.seen:
+            return
+        self.seen.add(event)
+        await self.mark(event, **extra)
 
 
 def _check_diarization_available(settings) -> dict:
@@ -754,6 +792,97 @@ async def ws_stream(ws: WebSocket):
         log.warning("stream error: %s", e)
 
 
+@app.get("/realtime/config")
+async def realtime_config() -> Dict[str, Any]:
+    provider = getattr(settings, "REALTIME_PROVIDER", "openai").lower()
+    return {
+        "provider": provider,
+        "auth_required": _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true",
+        "gemini_ws_path": "/realtime/gemini",
+        "openai_webrtc_session_path": "/realtime/session/openai",
+        "openai_webrtc_available": bool(settings.OPENAI_API_KEY),
+        "gemini_available": bool(settings.GEMINI_API_KEY),
+        "tools_cached": len(agent_tools_bridge.cached_tools_snapshot()),
+    }
+
+
+@app.post("/realtime/session/openai")
+async def openai_webrtc_session(request: Request):
+    """Create an OpenAI Realtime WebRTC session from browser SDP.
+
+    This keeps the standard OpenAI key server-side. The browser sends its SDP
+    offer here and receives OpenAI's SDP answer. Tool declarations are attached
+    from the warm cache; tool execution remains on this server through the
+    generic agent-tools bridge.
+    """
+    if _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true":
+        token = (
+            request.headers.get("X-VoiceFlow-Internal-Token")
+            or request.query_params.get("token", "")
+        )
+        expected = _os.environ.get("VOICEFLOW_INTERNAL_TOKEN", "")
+        if not hmac.compare_digest(token, expected):
+            raise HTTPException(status_code=403, detail="Missing or invalid X-VoiceFlow-Internal-Token")
+
+    if not settings.OPENAI_API_KEY:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured for OpenAI Realtime WebRTC")
+
+    sdp = (await request.body()).decode("utf-8", "ignore")
+    if not sdp.strip():
+        raise HTTPException(status_code=400, detail="SDP offer required")
+
+    session_config = {
+        "type": "realtime",
+        "model": settings.OPENAI_REALTIME_MODEL,
+        "instructions": (
+            "You are VoiceFlow's realtime voice agent. Keep spoken answers brief. "
+            "When a tool is needed, say a short preamble like 'Checking that now.' "
+            "Then use the available tool and continue with the result."
+        ),
+        "audio": {
+            "input": {
+                "turn_detection": {"type": "semantic_vad"},
+            },
+            "output": {"voice": settings.OPENAI_REALTIME_VOICE},
+        },
+        "tools": agent_tools_bridge.openai_tools_from_snapshot(),
+        "tool_choice": "auto",
+        "reasoning": {"effort": "low"},
+    }
+
+    import httpx
+    files = {
+        "sdp": (None, sdp, "application/sdp"),
+        "session": (None, json.dumps(session_config), "application/json"),
+    }
+    headers = {"Authorization": f"Bearer {settings.OPENAI_API_KEY}"}
+    session_id = request.headers.get("X-VoiceFlow-Session")
+    if session_id:
+        headers["OpenAI-Safety-Identifier"] = session_id
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post("https://api.openai.com/v1/realtime/calls", files=files, headers=headers)
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text[:500])
+    return Response(content=resp.text, media_type="application/sdp")
+
+
+class RealtimeToolCallRequest(BaseModel):
+    name: str
+    arguments: Dict[str, Any] = {}
+
+
+@app.post("/realtime/tool-call")
+async def realtime_tool_call(req: RealtimeToolCallRequest, request: Request) -> Dict[str, Any]:
+    if _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true":
+        token = request.headers.get("X-VoiceFlow-Internal-Token") or request.query_params.get("token", "")
+        expected = _os.environ.get("VOICEFLOW_INTERNAL_TOKEN", "")
+        if not hmac.compare_digest(token, expected):
+            raise HTTPException(status_code=403, detail="Missing or invalid X-VoiceFlow-Internal-Token")
+    return await agent_tools_bridge.call_tool(req.name, req.arguments)
+
+
+@app.websocket("/realtime/gemini")
 @app.websocket("/realtime")
 async def ws_realtime(ws: WebSocket):
     """OpenAI Realtime API & Gemini Multimodal Live bridge (voice agent).
@@ -779,7 +908,9 @@ async def ws_realtime(ws: WebSocket):
         await ws.close(code=4429 if reason == "rate_limited" else 4403, reason=reason)
         return
     await ws.accept()
-    provider = getattr(settings, "REALTIME_PROVIDER", "openai").lower()
+    trace = _RealtimeTrace(ws)
+    await trace.mark("transport_ready")
+    provider = "gemini" if ws.url.path.endswith("/gemini") else getattr(settings, "REALTIME_PROVIDER", "openai").lower()
     api_key = getattr(settings, "REALTIME_API_KEY", "")
 
     if not api_key:
@@ -815,10 +946,13 @@ async def ws_realtime(ws: WebSocket):
             api_key=gemini_key,
         )
         try:
-            _external_tools = await agent_tools_bridge.gemini_tool_declarations()
+            _external_tools = agent_tools_bridge.gemini_tool_declarations_from_snapshot()
+            if not _external_tools and settings.AGENT_TOOLS_URL:
+                asyncio.create_task(agent_tools_bridge.prewarm())
         except Exception as e:
             log.warning("agent-tools declarations unavailable for Gemini Live: %s", e)
             _external_tools = []
+        await trace.mark("tools_ready", count=len(_external_tools))
 
         # Browsers can't set custom headers on a WS handshake, so a resumption
         # handle from a *previous* connection on this same logical session
@@ -851,7 +985,8 @@ async def ws_realtime(ws: WebSocket):
             "Do NOT call a tool for a greeting, small talk, or a question about how "
             "you (the agent) are doing — respond conversationally instead. Only reach "
             "for a tool when the user is actually asking about their data, metrics, or "
-            "business performance.\n\n"
+            "business performance. When a tool is needed, speak one short preamble "
+            "first, such as 'Checking that now,' then call the tool immediately.\n\n"
             "You are speaking out loud, not writing text. Every number you say must be "
             "pronounced the way a person would say it in conversation: read a decimal "
             "point as 'point' (e.g. 37.96 is 'thirty-seven point nine-six', never "
@@ -900,7 +1035,8 @@ async def ws_realtime(ws: WebSocket):
 
         try:
             async with _client.aio.live.connect(model=GEMINI_LIVE_MODEL, config=_config) as session:
-                await ws.send_json({"type": "ready", "message": f"Connected to Gemini Multimodal Live ({GEMINI_LIVE_MODEL})"})
+                await trace.mark("provider_ready", provider="gemini", model=GEMINI_LIVE_MODEL)
+                await ws.send_json({"type": "provider_ready", "provider": "gemini", "message": f"Connected to Gemini Multimodal Live ({GEMINI_LIVE_MODEL})"})
 
                 is_tool_active = [False]
                 cancel_flag = [False]
@@ -940,10 +1076,20 @@ async def ws_realtime(ws: WebSocket):
                     """Forward browser audio/text frames to Gemini session."""
                     try:
                         while True:
-                            msg_text = await ws.receive_text()
-                            if is_tool_active[0]:
-                                continue  # Gate: drop all input during tool execution
+                            msg = await ws.receive()
+                            msg_text = msg.get("text")
+                            msg_bytes = msg.get("bytes")
                             try:
+                                if msg_bytes:
+                                    await trace.first("first_input_audio")
+                                    async with session_send_lock:
+                                        await session.send_realtime_input(
+                                            audio=_gtypes.Blob(data=msg_bytes, mime_type="audio/pcm;rate=16000")
+                                        )
+                                    continue
+
+                                if not msg_text:
+                                    continue
                                 data = json.loads(msg_text)
                                 evt = data.get("type", "")
 
@@ -953,7 +1099,8 @@ async def ws_realtime(ws: WebSocket):
                                         import audioop
                                         import base64
                                         pcm_24k = base64.b64decode(b64)
-                                        pcm_16k, _ = audioop.ratecv(pcm_24k, 2, 1, 24000, 16000, None)
+                                        sample_rate = int(data.get("sample_rate") or 24000)
+                                        pcm_16k = pcm_24k if sample_rate == 16000 else audioop.ratecv(pcm_24k, 2, 1, sample_rate, 16000, None)[0]
                                         # session.send(input=...) is deprecated (removal "not before
                                         # Q3 2025" per the SDK itself) and routes audio through the
                                         # legacy realtime_input.media_chunks field, which the Live API
@@ -964,6 +1111,7 @@ async def ws_realtime(ws: WebSocket):
                                             await session.send_realtime_input(
                                                 audio=_gtypes.Blob(data=pcm_16k, mime_type="audio/pcm;rate=16000")
                                             )
+                                        await trace.first("first_input_audio", mode="json_base64")
 
                                 elif evt == "input_audio_buffer.commit":
                                     # audio_stream_end is the dedicated end-of-turn signal for a
@@ -972,6 +1120,7 @@ async def ws_realtime(ws: WebSocket):
                                     async with session_send_lock:
                                         await session.send_realtime_input(audio_stream_end=True)
                                     cancel_flag[0] = False
+                                    await trace.first("first_commit")
 
                                 elif evt == "conversation.item.create":
                                     item = data.get("item", {})
@@ -985,6 +1134,7 @@ async def ws_realtime(ws: WebSocket):
                                                 turns=_gtypes.Content(role="user", parts=[_gtypes.Part(text=text)]),
                                                 turn_complete=True,
                                             )
+                                        await trace.first("first_commit", mode="text")
 
                                 elif evt == "client.speech_started":
                                     cancel_flag[0] = True
@@ -1021,6 +1171,7 @@ async def ws_realtime(ws: WebSocket):
 
                                 if response.data:
                                     import base64
+                                    await trace.first("first_output_audio")
                                     await ws.send_json({
                                         "type": "response.audio.delta",
                                         "delta": base64.b64encode(response.data).decode()
@@ -1080,8 +1231,10 @@ async def ws_realtime(ws: WebSocket):
                                     is_tool_active[0] = True
                                     for fc in (getattr(response.tool_call, "function_calls", None) or []):
                                         fc_args = dict(fc.args or {})
+                                        await trace.mark("tool_start", name=fc.name)
                                         await ws.send_json({"type": "tool_call", "name": fc.name, "arguments": fc_args})
                                         result = await agent_tools_bridge.call_tool(fc.name, fc_args)
+                                        await trace.mark("tool_end", name=fc.name, ok="error" not in result)
                                         await ws.send_json({"type": "tool_result", "name": fc.name, "result": result})
                                         try:
                                             async with session_send_lock:
@@ -1147,7 +1300,8 @@ async def ws_realtime(ws: WebSocket):
                         "tool_choice": "auto",
                     },
                 }))
-                await ws.send_json({"type": "ready", "message": f"Connected to {model_name}"})
+                await trace.mark("provider_ready", provider="openai", model=model)
+                await ws.send_json({"type": "provider_ready", "provider": "openai", "message": f"Connected to {model_name}"})
 
                 async def client_to_upstream():
                     try:
@@ -1161,6 +1315,7 @@ async def ws_realtime(ws: WebSocket):
                             except Exception:
                                 pass
                             await upstream.send(msg_text)
+                            await trace.first("first_input_audio")
                     except Exception:
                         pass
 
@@ -1184,7 +1339,9 @@ async def ws_realtime(ws: WebSocket):
                                     fc_args = {}
 
                                 await ws.send_json({"type": "tool_call", "name": name, "arguments": fc_args})
+                                await trace.mark("tool_start", name=name)
                                 result = await agent_tools_bridge.call_tool(name, fc_args)
+                                await trace.mark("tool_end", name=name, ok="error" not in result)
                                 await ws.send_json({"type": "tool_result", "name": name, "result": result})
 
                                 await upstream.send(json.dumps({
