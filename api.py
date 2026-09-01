@@ -1143,22 +1143,22 @@ async def ws_realtime(ws: WebSocket):
                                         await trace.first("first_input_audio", mode="json_base64")
 
                                 elif evt == "input_audio_buffer.commit":
-                                    if turn_active[0]:
-                                        # A second audio_stream_end into a turn that hasn't
-                                        # reached turn_complete yet is the overlap that
-                                        # corrupted the Gemini session into a 1011 close in
-                                        # testing — drop this redundant commit instead of
-                                        # sending it. Any new audio is already reaching
-                                        # Gemini via the continuous send_realtime_input(audio=…)
-                                        # stream below regardless of commit, so nothing is
-                                        # lost; the still-active turn's own turn_complete (or
-                                        # a genuine client.speech_started barge-in) will clear
-                                        # turn_active and let the next commit through cleanly.
-                                        log.warning("Gemini relay: dropped an overlapping commit — a turn was still active")
-                                        continue
-                                    # audio_stream_end is the dedicated end-of-turn signal for a
-                                    # send_realtime_input audio stream, replacing the old
-                                    # send(input=".", end_of_turn=True) text-content workaround.
+                                    # Sending audio_stream_end while a previous turn is still
+                                    # active is fine and expected for a genuine barge-in —
+                                    # Gemini's own server-side VAD treats fresh audio input as
+                                    # an interrupt of whatever it was generating and reports it
+                                    # back via server_content.interrupted (handled below, in
+                                    # _gemini_to_client), which is what actually closes out the
+                                    # stale turn. An earlier version of this handler tried to
+                                    # pre-empt that by dropping a commit whenever turn_active
+                                    # was still True, but turn_active only clears once
+                                    # _gemini_to_client has *processed* the interruption
+                                    # asynchronously — a legitimate barge-in commit sent right
+                                    # after client.speech_started routinely arrived before that
+                                    # happened, so the drop silently ate real turns and left the
+                                    # session hanging until it died with a 1011 Internal error
+                                    # (confirmed live, 2026-09-01). Always forward the commit;
+                                    # turn_active is tracked only as telemetry now.
                                     async with session_send_lock:
                                         await session.send_realtime_input(audio_stream_end=True)
                                     cancel_flag[0] = False
