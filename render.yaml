@@ -35,6 +35,10 @@ services:
         value: gemini
       - key: GEMINI_LIVE_MODEL     # required for /realtime when REALTIME_PROVIDER=gemini
         value: models/gemini-2.5-flash-native-audio-preview-09-2025
+      - key: OPENAI_REALTIME_MODEL
+        value: gpt-realtime-2.1
+      - key: OPENAI_REALTIME_VOICE
+        value: marin
       - key: OPENAI_BASE_URL
         sync: false
       - key: OPENAI_API_KEY        # required for /realtime when REALTIME_PROVIDER=openai
@@ -51,6 +55,12 @@ services:
         sync: false
       - key: AGENTKIT_INTERNAL_TOKEN   # outbound secret sent to AGENT_TOOLS_URL if it requires one — separate
         sync: false                    # from VOICEFLOW_INTERNAL_TOKEN above; only relevant when AGENT_TOOLS_URL is set
+      - key: AGENT_TOOLS_PREWARM_INTERVAL_SECONDS
+        value: "120"
+      - key: AGENT_TOOLS_CALL_BUDGET_SECONDS
+        value: "2.0"
+      - key: AGENT_TOOLS_RESULT_CACHE_TTL
+        value: "30"
       - key: REQUIRE_INTERNAL_TOKEN
         value: "false"
       - key: TELEMETRY_ENDPOINT    # optional: startup ping + usage-snapshot target, see README.md's Telemetry section

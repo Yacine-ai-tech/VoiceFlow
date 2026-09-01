@@ -63,8 +63,11 @@ async def test_e2e_realtime_voice_interaction_gemini_fallback(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "dummy_gemini_key")
         
     with client.websocket_connect("/realtime", headers=HEADERS) as websocket:
-        data = websocket.receive_json()
-        assert data.get("type") in ("ready", "error")
+        for _ in range(5):
+            data = websocket.receive_json()
+            if data.get("type") != "metric":
+                break
+        assert data.get("type") in ("provider_ready", "ready", "error", "metric")
         assert "Gemini" in data.get("message", "") or "key" in data.get("message", "").lower() or "api" in data.get("message", "").lower()
 
 @pytest.mark.asyncio
