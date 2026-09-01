@@ -37,6 +37,14 @@ const MAX_AUTO_RECONNECT_ATTEMPTS = 6;
 const USER_CLOSE_DELAY_MS = 650;
 const ASSISTANT_CLOSE_DELAY_MS = 900;
 const CLOSED_TURN_MERGE_WINDOW_MS = 1800;
+// A response is "pending" from the moment we commit a turn until the
+// provider reports it done/cancelled. Committing again — or treating a VAD
+// blip as a fresh turn — while one is already pending is what produced the
+// overlapping commit/response.create pairs that corrupted the Gemini
+// session into a 1011 "Internal error" and silently ate every reply before
+// it could ever play. Speech detected while a response is pending is only
+// ever a deliberate barge-in (cancel), never a new commit.
+const MIN_SPEECH_CONFIRM_MS = 200;
 
 function authToken() {
   return import.meta.env.VITE_VOICEFLOW_INTERNAL_TOKEN || localStorage.getItem(TOKEN_KEY) || "";
@@ -178,11 +186,13 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
 }
 
 const workletCode = `
+const MIN_SPEECH_CONFIRM_MS = ${MIN_SPEECH_CONFIRM_MS};
 class VADProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.isSilent = true;
     this.lastAudioTime = Date.now();
+    this.aboveThresholdSince = null;
     this.targetRate = 16000;
     this.ratio = sampleRate / this.targetRate;
   }
@@ -197,13 +207,23 @@ class VADProcessor extends AudioWorkletProcessor {
     const now = Date.now();
     if (vol > 0.025) {
       this.lastAudioTime = now;
-      if (this.isSilent) {
+      // Require ~200ms of continuous voice-level energy before declaring
+      // speech_started, not a single loud frame. A single transient (a
+      // click, a cough, speaker bleed picked up by the mic) used to fire
+      // speech_started instantly, which the app treats as a deliberate
+      // barge-in and uses to cancel an in-flight reply — so one bad frame
+      // could kill a response before it was ever heard.
+      if (this.aboveThresholdSince === null) this.aboveThresholdSince = now;
+      if (this.isSilent && now - this.aboveThresholdSince >= MIN_SPEECH_CONFIRM_MS) {
         this.isSilent = false;
         this.port.postMessage({ type: 'speech_started' });
       }
-    } else if (!this.isSilent && now - this.lastAudioTime > 350) {
-      this.isSilent = true;
-      this.port.postMessage({ type: 'speech_stopped' });
+    } else {
+      this.aboveThresholdSince = null;
+      if (!this.isSilent && now - this.lastAudioTime > 350) {
+        this.isSilent = true;
+        this.port.postMessage({ type: 'speech_stopped' });
+      }
     }
     if (!this.isSilent) {
       const outLen = Math.max(1, Math.floor(channelData.length / this.ratio));
@@ -252,6 +272,11 @@ export default function VoiceAgent() {
   const nextPlayTimeRef = useRef(0);
   const isPlayingRef = useRef(false);
   const wasReadyRef = useRef(false);
+  // True from the moment we commit a turn (send commit + response.create)
+  // until the provider reports it done/cancelled. See MIN_SPEECH_CONFIRM_MS
+  // above for why: while this is true, new speech is a barge-in (cancel),
+  // never a second commit.
+  const responsePendingRef = useRef(false);
 
   const clearCloseTimer = (role: RealtimeRole) => {
     const timer = closeTimersRef.current[role];
@@ -327,6 +352,7 @@ export default function VoiceAgent() {
       return;
     }
     if (type === "error") {
+      responsePendingRef.current = false;
       setErrorMsg(String(data.message || ""));
       setState(wasReadyRef.current ? "error" : "unconfigured");
       return;
@@ -337,8 +363,12 @@ export default function VoiceAgent() {
       if (data.finished) scheduleCloseTurn("user", userOpenIdRef, userDraftRef, 0);
     }
     if (type === "input_audio_buffer.committed") scheduleCloseTurn("user", userOpenIdRef, userDraftRef, USER_CLOSE_DELAY_MS);
-    if (type === "assistant.cancelled") closeTurn("assistant", agentOpenIdRef, agentDraftRef);
+    if (type === "assistant.cancelled") {
+      responsePendingRef.current = false;
+      closeTurn("assistant", agentOpenIdRef, agentDraftRef);
+    }
     if (type === "response.done" || type === "response.audio.done") {
+      responsePendingRef.current = false;
       scheduleCloseTurn("assistant", agentOpenIdRef, agentDraftRef, ASSISTANT_CLOSE_DELAY_MS);
       if (!isPlayingRef.current && playbackQueueRef.current.length === 0) setAgentSpeaking(false);
     }
@@ -421,6 +451,7 @@ export default function VoiceAgent() {
   };
 
   const stopVoice = () => {
+    responsePendingRef.current = false;
     closeTurn("assistant", agentOpenIdRef, agentDraftRef);
     closeTurn("user", userOpenIdRef, userDraftRef);
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -528,11 +559,20 @@ export default function VoiceAgent() {
       workletNode.port.onmessage = (e) => {
         const data = e.data;
         if (data.type === "volume") setVolume(data.vol);
-        if (data.type === "speech_started" && isPlayingRef.current) {
+        if (data.type === "speech_started" && (isPlayingRef.current || responsePendingRef.current)) {
+          // Genuine barge-in: the agent is either speaking or still
+          // generating a reply, and the user started talking again over it.
+          // Cancel it instead of letting a second commit pile onto the
+          // still-pending one (that overlap is what corrupted the Gemini
+          // session and produced the 1011 crash).
           stopAudioPlayback();
+          responsePendingRef.current = false;
           transportRef.current?.cancel();
         }
-        if (data.type === "speech_stopped") transportRef.current?.commitTurn();
+        if (data.type === "speech_stopped" && !responsePendingRef.current) {
+          responsePendingRef.current = true;
+          transportRef.current?.commitTurn();
+        }
         if (data.type === "audio") transportRef.current?.sendAudio(data.buffer);
       };
       const silent = audioCtx.createGain();
