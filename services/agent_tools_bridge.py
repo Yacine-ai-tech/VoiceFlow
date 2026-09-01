@@ -42,6 +42,7 @@ tool-free rather than crashing.
 from __future__ import annotations
 
 import time
+import asyncio
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -65,6 +66,13 @@ _cache: Dict[str, Any] = {
     "prompts":    None,
     "fetched_at": 0.0,
 }
+
+_result_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def _cache_key(name: str, arguments: Optional[Dict[str, Any]]) -> str:
+    import json
+    return json.dumps([name, arguments or {}], sort_keys=True, separators=(",", ":"))
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -146,7 +154,20 @@ async def _refresh_cache(force: bool = False) -> None:
         )
     except Exception as exc:
         log.warning("agent-tools discovery failed (%s) — continuing without tools", exc)
-        _cache.update({"tools": [], "resources": [], "prompts": [], "fetched_at": time.time()})
+        # If we had a previous good discovery, keep serving it. A transient
+        # AgentKit/Render cold start should not remove tools from live sessions.
+        if _cache["tools"] is None:
+            _cache.update({"tools": [], "resources": [], "prompts": [], "fetched_at": time.time()})
+
+
+async def prewarm() -> None:
+    """Best-effort background discovery warmup for realtime sessions."""
+    await _refresh_cache(force=True)
+
+
+def cached_tools_snapshot() -> List[Dict[str, Any]]:
+    """Return the current in-memory tools without network I/O."""
+    return _cache["tools"] or []
 
 
 async def discover_tools(force: bool = False) -> List[Dict[str, Any]]:
@@ -205,6 +226,22 @@ async def openai_tools() -> List[Dict[str, Any]]:
     return result
 
 
+def openai_tools_from_snapshot() -> List[Dict[str, Any]]:
+    """OpenAI tool declarations from the current cache only."""
+    result = []
+    for t in cached_tools_snapshot():
+        if not t.get("name"):
+            continue
+        effect = t.get("effect", "read")
+        result.append({
+            "type": "function",
+            "name": t["name"],
+            "description": (t.get("description") or "") + _effect_suffix(effect),
+            "parameters": _params_to_json_schema(t.get("params", [])),
+        })
+    return result
+
+
 async def gemini_tool_declarations():
     """Tools as google-genai FunctionDeclaration objects for Gemini Live.
 
@@ -228,6 +265,29 @@ async def gemini_tool_declarations():
             _gtypes.FunctionDeclaration(
                 name=t["name"],
                 description=description,
+                parameters=_params_to_json_schema(t.get("params", [])),
+            )
+        )
+    return [_gtypes.Tool(function_declarations=declarations)] if declarations else []
+
+
+def gemini_tool_declarations_from_snapshot():
+    """Gemini tool declarations from the current cache only."""
+    tools = cached_tools_snapshot()
+    if not tools:
+        return []
+
+    from google.genai import types as _gtypes  # type: ignore
+
+    declarations = []
+    for t in tools:
+        if not t.get("name"):
+            continue
+        effect = t.get("effect", "read")
+        declarations.append(
+            _gtypes.FunctionDeclaration(
+                name=t["name"],
+                description=(t.get("description") or "") + _effect_suffix(effect),
                 parameters=_params_to_json_schema(t.get("params", [])),
             )
         )
@@ -261,7 +321,7 @@ async def call_tool(
     Never raises — returns {"error": ...} on any failure so the model can
     report the issue to the user.
     """
-    tools = await discover_tools()
+    tools = cached_tools_snapshot() or await discover_tools()
     spec = next((t for t in tools if t.get("name") == name), None)
     if not spec:
         return {"error": f"unknown_tool: {name}"}
@@ -289,28 +349,45 @@ async def call_tool(
 
     log.debug("agent-tool call: %r  effect=%s  dry_run=%s", name, effect, dry_run)
 
+    result_key = _cache_key(name, args)
+    now = time.time()
+    if effect == "read" and not dry_run:
+        cached = _result_cache.get(result_key)
+        if cached and now - cached["fetched_at"] < int(__import__("os").getenv("AGENT_TOOLS_RESULT_CACHE_TTL", "30")):
+            return cached["value"]
+
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            if effect in ("write", "destructive"):
-                body: Dict[str, Any] = {**args}
-                if dry_run:
-                    body["dry_run"] = True
-                if approval_token:
-                    body["approval_token"] = approval_token
-                resp = await client.post(url, json=body, headers=_auth_headers())
-            else:
+        async def _request() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=float(__import__("os").getenv("AGENT_TOOLS_HTTP_TIMEOUT_SECONDS", "8"))) as client:
+                if effect in ("write", "destructive"):
+                    body: Dict[str, Any] = {**args}
+                    if dry_run:
+                        body["dry_run"] = True
+                    if approval_token:
+                        body["approval_token"] = approval_token
+                    return await client.post(url, json=body, headers=_auth_headers())
                 params = dict(args)
                 if dry_run:
                     params["dry_run"] = "true"
-                resp = await client.get(url, params=params, headers=_auth_headers())
+                return await client.get(url, params=params, headers=_auth_headers())
+
+        resp = await asyncio.wait_for(
+            _request(),
+            timeout=float(__import__("os").getenv("AGENT_TOOLS_CALL_BUDGET_SECONDS", "2.0")),
+        )
 
         if resp.status_code >= 400:
             return {
                 "error":  f"agent_tool_error_{resp.status_code}",
                 "detail": resp.text[:300],
             }
-        return resp.json()
+        value = resp.json()
+        if effect == "read" and not dry_run:
+            _result_cache[result_key] = {"value": value, "fetched_at": time.time()}
+        return value
 
+    except asyncio.TimeoutError:
+        return {"error": "agent_tool_timeout", "detail": f"tool exceeded {__import__('os').getenv('AGENT_TOOLS_CALL_BUDGET_SECONDS', '2.0')}s budget"}
     except httpx.RequestError as exc:
         log.warning("agent tool call %r failed: %s", name, exc)
         return {"error": "agent_tools_unreachable", "detail": str(exc), "url": base}
