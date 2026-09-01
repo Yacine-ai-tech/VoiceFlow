@@ -26,3 +26,15 @@ def test_realtime_config():
     body = r.json()
     assert body["gemini_ws_path"] == "/realtime/gemini"
     assert body["openai_webrtc_session_path"] == "/realtime/session/openai"
+
+
+@pytest.mark.unit
+def test_openai_realtime_ignores_openai_proxy_key(monkeypatch):
+    from core.config import settings
+    monkeypatch.setattr(settings, "REALTIME_PROVIDER", "openai")
+    monkeypatch.delenv("REALTIME_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_REALTIME_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://proxy.example.test/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "proxy-key")
+    assert settings.REALTIME_API_KEY == ""
+    assert settings.OPENAI_REALTIME_API_KEY == ""

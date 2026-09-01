@@ -45,6 +45,8 @@ services:
         sync: false
       - key: GEMINI_API_KEY        # required for /realtime when REALTIME_PROVIDER=gemini
         sync: false
+      - key: OPENAI_REALTIME_API_KEY  # real OpenAI platform Realtime key; keep separate from OPENAI_BASE_URL proxy keys
+        sync: false
       - key: ELEVENLABS_API_KEY    # optional: premium TTS provider for /tts
         sync: false
       - key: AGENT_TOOLS_URL       # optional: any service implementing the agent-tools discovery
