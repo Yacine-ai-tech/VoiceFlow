@@ -800,7 +800,7 @@ async def realtime_config() -> Dict[str, Any]:
         "auth_required": _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true",
         "gemini_ws_path": "/realtime/gemini",
         "openai_webrtc_session_path": "/realtime/session/openai",
-        "openai_webrtc_available": bool(settings.OPENAI_API_KEY),
+        "openai_webrtc_available": bool(settings.OPENAI_REALTIME_API_KEY),
         "gemini_available": bool(settings.GEMINI_API_KEY),
         "tools_cached": len(agent_tools_bridge.cached_tools_snapshot()),
     }
@@ -824,8 +824,9 @@ async def openai_webrtc_session(request: Request):
         if not hmac.compare_digest(token, expected):
             raise HTTPException(status_code=403, detail="Missing or invalid X-VoiceFlow-Internal-Token")
 
-    if not settings.OPENAI_API_KEY:
-        raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured for OpenAI Realtime WebRTC")
+    openai_realtime_key = settings.OPENAI_REALTIME_API_KEY
+    if not openai_realtime_key:
+        raise HTTPException(status_code=503, detail="OPENAI_REALTIME_API_KEY not configured for OpenAI Realtime WebRTC")
 
     sdp = (await request.body()).decode("utf-8", "ignore")
     if not sdp.strip():
@@ -855,7 +856,7 @@ async def openai_webrtc_session(request: Request):
         "sdp": (None, sdp, "application/sdp"),
         "session": (None, json.dumps(session_config), "application/json"),
     }
-    headers = {"Authorization": f"Bearer {settings.OPENAI_API_KEY}"}
+    headers = {"Authorization": f"Bearer {openai_realtime_key}"}
     session_id = request.headers.get("X-VoiceFlow-Session")
     if session_id:
         headers["OpenAI-Safety-Identifier"] = session_id

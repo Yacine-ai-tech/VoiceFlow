@@ -54,6 +54,24 @@ class Settings:
         return os.getenv("OPENAI_API_KEY", "").strip()
 
     @property
+    def OPENAI_REALTIME_API_KEY(self) -> str:
+        """A real OpenAI platform key for Realtime.
+
+        OPENAI_API_KEY may intentionally point at an OpenAI-compatible proxy
+        when OPENAI_BASE_URL is set for LLM routing. That proxy is not a
+        Realtime/WebRTC credential, so don't treat it as one.
+        """
+        explicit = os.getenv("OPENAI_REALTIME_API_KEY", "").strip()
+        if explicit:
+            return explicit
+        realtime = os.getenv("REALTIME_API_KEY", "").strip()
+        if realtime and self.REALTIME_PROVIDER == "openai":
+            return realtime
+        if os.getenv("OPENAI_BASE_URL", "").strip():
+            return ""
+        return self.OPENAI_API_KEY
+
+    @property
     def GEMINI_API_KEY(self) -> str:
         return os.getenv("GEMINI_API_KEY", "").strip() or (os.getenv("REALTIME_API_KEY", "").strip() if self.REALTIME_PROVIDER == "gemini" else "")
 
@@ -118,7 +136,7 @@ class Settings:
         explicit = os.getenv("REALTIME_API_KEY", "").strip()
         if explicit:
             return explicit
-        return self.GEMINI_API_KEY if self.REALTIME_PROVIDER == "gemini" else self.OPENAI_API_KEY
+        return self.GEMINI_API_KEY if self.REALTIME_PROVIDER == "gemini" else self.OPENAI_REALTIME_API_KEY
 
     @property
     def TELEMETRY_ENDPOINT(self) -> str:
