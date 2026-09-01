@@ -64,6 +64,7 @@ _cache: Dict[str, Any] = {
     "tools":      None,
     "resources":  None,
     "prompts":    None,
+    "gemini_tools": None,
     "fetched_at": 0.0,
 }
 
@@ -129,7 +130,7 @@ async def _refresh_cache(force: bool = False) -> None:
 
     base = settings.AGENT_TOOLS_URL
     if not base:
-        _cache.update({"tools": [], "resources": [], "prompts": [], "fetched_at": time.time()})
+        _cache.update({"tools": [], "resources": [], "prompts": [], "gemini_tools": [], "fetched_at": time.time()})
         return
 
     try:
@@ -146,6 +147,7 @@ async def _refresh_cache(force: bool = False) -> None:
             "tools":      tools,
             "resources":  resources,
             "prompts":    prompts,
+            "gemini_tools": None,
             "fetched_at": time.time(),
         })
         log.info(
@@ -157,12 +159,43 @@ async def _refresh_cache(force: bool = False) -> None:
         # If we had a previous good discovery, keep serving it. A transient
         # AgentKit/Render cold start should not remove tools from live sessions.
         if _cache["tools"] is None:
-            _cache.update({"tools": [], "resources": [], "prompts": [], "fetched_at": time.time()})
+            _cache.update({"tools": [], "resources": [], "prompts": [], "gemini_tools": [], "fetched_at": time.time()})
+
+
+def _build_gemini_tool_declarations_from_tools(tools: List[Dict[str, Any]]):
+    """Build Gemini SDK tool objects from already-discovered tools.
+
+    This imports google-genai and constructs pydantic SDK objects, which can be
+    slow on small Render instances. Keep it out of the WebSocket connect path.
+    """
+    if not tools:
+        return []
+
+    from google.genai import types as _gtypes  # type: ignore
+
+    declarations = []
+    for t in tools:
+        if not t.get("name"):
+            continue
+        effect = t.get("effect", "read")
+        declarations.append(
+            _gtypes.FunctionDeclaration(
+                name=t["name"],
+                description=(t.get("description") or "") + _effect_suffix(effect),
+                parameters=_params_to_json_schema(t.get("params", [])),
+            )
+        )
+    return [_gtypes.Tool(function_declarations=declarations)] if declarations else []
 
 
 async def prewarm() -> None:
     """Best-effort background discovery warmup for realtime sessions."""
     await _refresh_cache(force=True)
+    try:
+        _cache["gemini_tools"] = _build_gemini_tool_declarations_from_tools(cached_tools_snapshot())
+    except Exception as exc:
+        log.warning("agent-tools Gemini declaration warmup failed (%s) — continuing without tools", exc)
+        _cache["gemini_tools"] = []
 
 
 def cached_tools_snapshot() -> List[Dict[str, Any]]:
@@ -272,26 +305,14 @@ async def gemini_tool_declarations():
 
 
 def gemini_tool_declarations_from_snapshot():
-    """Gemini tool declarations from the current cache only."""
-    tools = cached_tools_snapshot()
-    if not tools:
-        return []
+    """Gemini tool declarations from the warm cache only.
 
-    from google.genai import types as _gtypes  # type: ignore
-
-    declarations = []
-    for t in tools:
-        if not t.get("name"):
-            continue
-        effect = t.get("effect", "read")
-        declarations.append(
-            _gtypes.FunctionDeclaration(
-                name=t["name"],
-                description=(t.get("description") or "") + _effect_suffix(effect),
-                parameters=_params_to_json_schema(t.get("params", [])),
-            )
-        )
-    return [_gtypes.Tool(function_declarations=declarations)] if declarations else []
+    This must stay non-blocking for `/realtime/gemini`: no network, no imports,
+    no SDK object construction. `prewarm()` fills this snapshot in the
+    background; if it is unavailable, the session starts tool-free instead of
+    adding seconds of startup latency.
+    """
+    return _cache.get("gemini_tools") or []
 
 
 # ── Tool execution ────────────────────────────────────────────────────────────
