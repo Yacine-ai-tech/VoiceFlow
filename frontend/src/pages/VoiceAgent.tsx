@@ -6,6 +6,8 @@ import { getSessionId } from "../lib/api";
 
 type Msg = { id: number; role: "user" | "assistant" | "tool"; text: string };
 type Metric = { event: string; elapsed_ms: number };
+type RealtimeRole = "user" | "assistant";
+type LastClosedTurn = { id: number | null; text: string; at: number };
 type RealtimeConfig = {
   provider: "gemini" | "openai" | string;
   auth_required: boolean;
@@ -32,6 +34,9 @@ const BASE = import.meta.env.VITE_API_BASE_URL || "";
 const WS_BASE = BASE ? BASE.replace(/^http/, "ws") : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
 const TOKEN_KEY = "voiceflow.internal_token";
 const MAX_AUTO_RECONNECT_ATTEMPTS = 6;
+const USER_CLOSE_DELAY_MS = 650;
+const ASSISTANT_CLOSE_DELAY_MS = 900;
+const CLOSED_TURN_MERGE_WINDOW_MS = 1800;
 
 function authToken() {
   return import.meta.env.VITE_VOICEFLOW_INTERNAL_TOKEN || localStorage.getItem(TOKEN_KEY) || "";
@@ -71,10 +76,14 @@ class GeminiWebSocketTransport implements RealtimeTransport {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
       this.ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio"] } }));
+      this.cb.onEvent({ type: "input_audio_buffer.committed" });
     }
   }
   cancel() {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: "client.speech_started" }));
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: "client.speech_started" }));
+      this.cb.onEvent({ type: "assistant.cancelled" });
+    }
   }
   close() {
     this.ws?.close();
@@ -132,9 +141,11 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
   sendAudio() {}
   commitTurn() {
     this.dc?.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio"] } }));
+    this.cb.onEvent({ type: "input_audio_buffer.committed" });
   }
   cancel() {
     this.dc?.send(JSON.stringify({ type: "response.cancel" }));
+    this.cb.onEvent({ type: "assistant.cancelled" });
   }
   close() {
     this.stream?.getTracks().forEach((t) => t.stop());
@@ -190,7 +201,7 @@ class VADProcessor extends AudioWorkletProcessor {
         this.isSilent = false;
         this.port.postMessage({ type: 'speech_started' });
       }
-    } else if (!this.isSilent && now - this.lastAudioTime > 450) {
+    } else if (!this.isSilent && now - this.lastAudioTime > 350) {
       this.isSilent = true;
       this.port.postMessage({ type: 'speech_stopped' });
     }
@@ -222,12 +233,18 @@ export default function VoiceAgent() {
   const cfgRef = useRef<RealtimeConfig | null>(null);
   const transportRef = useRef<RealtimeTransport | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const playbackCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const nextIdRef = useRef(0);
   const agentOpenIdRef = useRef<number | null>(null);
   const agentDraftRef = useRef("");
   const userOpenIdRef = useRef<number | null>(null);
   const userDraftRef = useRef("");
+  const closeTimersRef = useRef<Record<RealtimeRole, ReturnType<typeof setTimeout> | null>>({ user: null, assistant: null });
+  const lastClosedRef = useRef<Record<RealtimeRole, LastClosedTurn>>({
+    user: { id: null, text: "", at: 0 },
+    assistant: { id: null, text: "", at: 0 },
+  });
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const playbackQueueRef = useRef<Float32Array[]>([]);
@@ -236,19 +253,63 @@ export default function VoiceAgent() {
   const isPlayingRef = useRef(false);
   const wasReadyRef = useRef(false);
 
-  const appendTurnDelta = (role: "assistant" | "user", delta: string, openIdRef: React.MutableRefObject<number | null>, draftRef: React.MutableRefObject<string>) => {
-    draftRef.current += delta;
+  const clearCloseTimer = (role: RealtimeRole) => {
+    const timer = closeTimersRef.current[role];
+    if (timer) clearTimeout(timer);
+    closeTimersRef.current[role] = null;
+  };
+
+  const mergeText = (current: string, delta: string) => {
+    if (!delta) return current;
+    if (!current) return delta;
+    if (delta.startsWith(current)) return delta;
+    if (current.endsWith(delta)) return current;
+    const maxOverlap = Math.min(current.length, delta.length);
+    for (let i = maxOverlap; i > 0; i--) {
+      if (current.slice(-i) === delta.slice(0, i)) return current + delta.slice(i);
+    }
+    return current + delta;
+  };
+
+  const appendTurnDelta = (
+    role: RealtimeRole,
+    delta: string,
+    openIdRef: React.MutableRefObject<number | null>,
+    draftRef: React.MutableRefObject<string>,
+    allowClosedMerge = false,
+  ) => {
+    if (!delta) return;
+    clearCloseTimer(role);
     setMsgs((old) => {
-      if (openIdRef.current !== null) return old.map((m) => (m.id === openIdRef.current ? { ...m, text: draftRef.current } : m));
+      if (openIdRef.current !== null) {
+        draftRef.current = mergeText(draftRef.current, delta);
+        return old.map((m) => (m.id === openIdRef.current ? { ...m, text: draftRef.current } : m));
+      }
+      const last = lastClosedRef.current[role];
+      if (allowClosedMerge && last.id !== null && Date.now() - last.at <= CLOSED_TURN_MERGE_WINDOW_MS) {
+        openIdRef.current = last.id;
+        draftRef.current = mergeText(last.text, delta);
+        return old.map((m) => (m.id === last.id ? { ...m, text: draftRef.current } : m));
+      }
       const id = nextIdRef.current++;
       openIdRef.current = id;
+      draftRef.current = delta;
       return [...old, { id, role, text: draftRef.current }];
     });
   };
 
-  const closeTurn = (openIdRef: React.MutableRefObject<number | null>, draftRef: React.MutableRefObject<string>) => {
+  const closeTurn = (role: RealtimeRole, openIdRef: React.MutableRefObject<number | null>, draftRef: React.MutableRefObject<string>) => {
+    clearCloseTimer(role);
+    if (openIdRef.current !== null) {
+      lastClosedRef.current[role] = { id: openIdRef.current, text: draftRef.current, at: Date.now() };
+    }
     openIdRef.current = null;
     draftRef.current = "";
+  };
+
+  const scheduleCloseTurn = (role: RealtimeRole, openIdRef: React.MutableRefObject<number | null>, draftRef: React.MutableRefObject<string>, delayMs: number) => {
+    clearCloseTimer(role);
+    closeTimersRef.current[role] = setTimeout(() => closeTurn(role, openIdRef, draftRef), delayMs);
   };
 
   const handleEvent = (data: Record<string, unknown>) => {
@@ -270,13 +331,15 @@ export default function VoiceAgent() {
       setState(wasReadyRef.current ? "error" : "unconfigured");
       return;
     }
-    if (type === "response.text.delta" || type === "response.audio_transcript.delta") appendTurnDelta("assistant", String(data.delta || ""), agentOpenIdRef, agentDraftRef);
+    if (type === "response.text.delta" || type === "response.audio_transcript.delta") appendTurnDelta("assistant", String(data.delta || ""), agentOpenIdRef, agentDraftRef, true);
     if (type === "response.user_transcript.delta") {
-      appendTurnDelta("user", String(data.delta || ""), userOpenIdRef, userDraftRef);
-      if (data.finished) closeTurn(userOpenIdRef, userDraftRef);
+      appendTurnDelta("user", String(data.delta || ""), userOpenIdRef, userDraftRef, true);
+      if (data.finished) scheduleCloseTurn("user", userOpenIdRef, userDraftRef, 0);
     }
+    if (type === "input_audio_buffer.committed") scheduleCloseTurn("user", userOpenIdRef, userDraftRef, USER_CLOSE_DELAY_MS);
+    if (type === "assistant.cancelled") closeTurn("assistant", agentOpenIdRef, agentDraftRef);
     if (type === "response.done" || type === "response.audio.done") {
-      closeTurn(agentOpenIdRef, agentDraftRef);
+      scheduleCloseTurn("assistant", agentOpenIdRef, agentDraftRef, ASSISTANT_CLOSE_DELAY_MS);
       if (!isPlayingRef.current && playbackQueueRef.current.length === 0) setAgentSpeaking(false);
     }
     if (type === "tool_call") setMsgs((old) => [...old, { id: nextIdRef.current++, role: "tool", text: `Calling tool: ${String(data.name || "tool")}...` }]);
@@ -292,21 +355,38 @@ export default function VoiceAgent() {
     }
   };
 
+  const ensurePlaybackContext = () => {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) throw new Error("Audio playback is not supported in this browser.");
+    if (!playbackCtxRef.current || playbackCtxRef.current.state === "closed") {
+      playbackCtxRef.current = new AudioCtx();
+      nextPlayTimeRef.current = playbackCtxRef.current.currentTime;
+    }
+    if (playbackCtxRef.current.state === "suspended") {
+      playbackCtxRef.current.resume().catch((err) => setErrorMsg(err.message || String(err)));
+    }
+    return playbackCtxRef.current;
+  };
+
   const queueAudioPlayback = (base64: string) => {
-    const audioCtx = audioCtxRef.current;
-    if (!audioCtx) return;
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const int16 = new Int16Array(bytes.buffer);
-    const float32 = new Float32Array(int16.length);
-    for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
-    playbackQueueRef.current.push(float32);
-    scheduleNextBuffers();
+    try {
+      ensurePlaybackContext();
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const int16 = new Int16Array(bytes.buffer);
+      const float32 = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
+      playbackQueueRef.current.push(float32);
+      scheduleNextBuffers();
+    } catch (err: any) {
+      setErrorMsg(err.message || String(err));
+      setState("error");
+    }
   };
 
   const scheduleNextBuffers = () => {
-    const audioCtx = audioCtxRef.current;
+    const audioCtx = playbackCtxRef.current;
     if (!audioCtx || playbackQueueRef.current.length === 0) return;
     isPlayingRef.current = true;
     setAgentSpeaking(true);
@@ -341,10 +421,14 @@ export default function VoiceAgent() {
   };
 
   const stopVoice = () => {
+    closeTurn("assistant", agentOpenIdRef, agentDraftRef);
+    closeTurn("user", userOpenIdRef, userDraftRef);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     audioCtxRef.current?.close();
     audioCtxRef.current = null;
+    playbackCtxRef.current?.close();
+    playbackCtxRef.current = null;
     setIsRecording(false);
     setVolume(0);
     stopAudioPlayback();
@@ -367,8 +451,12 @@ export default function VoiceAgent() {
     if (reset) {
       setMsgs([]);
       setMetrics([]);
-      closeTurn(agentOpenIdRef, agentDraftRef);
-      closeTurn(userOpenIdRef, userDraftRef);
+      closeTurn("assistant", agentOpenIdRef, agentDraftRef);
+      closeTurn("user", userOpenIdRef, userDraftRef);
+      lastClosedRef.current = {
+        user: { id: null, text: "", at: 0 },
+        assistant: { id: null, text: "", at: 0 },
+      };
     }
     setState("connecting");
     try {
@@ -400,41 +488,69 @@ export default function VoiceAgent() {
   }, []);
 
   const startVoice = async () => {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    const audioCtx = new AudioCtx({ sampleRate: 24000 });
-    audioCtxRef.current = audioCtx;
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    streamRef.current = stream;
-    nextPlayTimeRef.current = audioCtx.currentTime;
+    setErrorMsg("");
+    let stream: MediaStream | null = null;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) throw new Error("Audio capture is not supported in this browser.");
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("Microphone access is not available in this browser.");
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+      });
+      streamRef.current = stream;
+      ensurePlaybackContext();
 
-    if (cfgRef.current?.provider === "openai" && transportRef.current instanceof OpenAIWebRTCTransport) {
-      await transportRef.current.attachMic(stream);
-      setIsRecording(true);
-      return;
-    }
-
-    const blob = new Blob([workletCode], { type: "application/javascript" });
-    const workletUrl = URL.createObjectURL(blob);
-    await audioCtx.audioWorklet.addModule(workletUrl);
-    URL.revokeObjectURL(workletUrl);
-    const source = audioCtx.createMediaStreamSource(stream);
-    const workletNode = new AudioWorkletNode(audioCtx, "vad-processor");
-    workletNode.port.onmessage = (e) => {
-      const data = e.data;
-      if (data.type === "volume") setVolume(data.vol);
-      if (data.type === "speech_started" && isPlayingRef.current) {
-        stopAudioPlayback();
-        transportRef.current?.cancel();
+      if (cfgRef.current?.provider === "openai" && transportRef.current instanceof OpenAIWebRTCTransport) {
+        await transportRef.current.attachMic(stream);
+        setIsRecording(true);
+        return;
       }
-      if (data.type === "speech_stopped") transportRef.current?.commitTurn();
-      if (data.type === "audio") transportRef.current?.sendAudio(data.buffer);
-    };
-    const silent = audioCtx.createGain();
-    silent.gain.value = 0;
-    source.connect(workletNode);
-    workletNode.connect(silent);
-    silent.connect(audioCtx.destination);
-    setIsRecording(true);
+
+      const audioCtx = new AudioCtx();
+      audioCtxRef.current = audioCtx;
+      if (audioCtx.state === "suspended") await audioCtx.resume();
+      if (!audioCtx.audioWorklet) throw new Error("AudioWorklet is not supported in this browser.");
+
+      const blob = new Blob([workletCode], { type: "application/javascript" });
+      const workletUrl = URL.createObjectURL(blob);
+      try {
+        await audioCtx.audioWorklet.addModule(workletUrl);
+      } finally {
+        URL.revokeObjectURL(workletUrl);
+      }
+      const source = audioCtx.createMediaStreamSource(stream);
+      const workletNode = new AudioWorkletNode(audioCtx, "vad-processor");
+      workletNode.port.onmessage = (e) => {
+        const data = e.data;
+        if (data.type === "volume") setVolume(data.vol);
+        if (data.type === "speech_started" && isPlayingRef.current) {
+          stopAudioPlayback();
+          transportRef.current?.cancel();
+        }
+        if (data.type === "speech_stopped") transportRef.current?.commitTurn();
+        if (data.type === "audio") transportRef.current?.sendAudio(data.buffer);
+      };
+      const silent = audioCtx.createGain();
+      silent.gain.value = 0;
+      source.connect(workletNode);
+      workletNode.connect(silent);
+      silent.connect(audioCtx.destination);
+      setIsRecording(true);
+    } catch (err: any) {
+      stream?.getTracks().forEach((t) => t.stop());
+      audioCtxRef.current?.close();
+      audioCtxRef.current = null;
+      playbackCtxRef.current?.close();
+      playbackCtxRef.current = null;
+      setIsRecording(false);
+      setErrorMsg(err.message || String(err));
+      setState("error");
+    }
   };
 
   return (
