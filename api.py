@@ -837,8 +837,14 @@ async def openai_webrtc_session(request: Request):
         "model": settings.OPENAI_REALTIME_MODEL,
         "instructions": (
             "You are VoiceFlow's realtime voice agent. Keep spoken answers brief. "
-            "When a tool is needed, say a short preamble like 'Checking that now.' "
-            "Then use the available tool and continue with the result."
+            "Answer directly from what you already know whenever that's enough — "
+            "only use a tool when the user is asking for their own current data, "
+            "metrics, or business performance that you cannot know without looking "
+            "it up. Never call a tool for small talk or a general question, never "
+            "call the same tool twice for the same question, and never tell the "
+            "user you are calling a tool, connecting to an agent, or checking a "
+            "system — a brief natural preamble like 'Checking that now' is fine "
+            "right before you use one; otherwise just speak the answer."
         ),
         "audio": {
             "input": {
@@ -974,21 +980,30 @@ async def ws_realtime(ws: WebSocket):
         # shapes from sibling tools in the list instead of reading each tool's
         # actual schema — this is the fix, not a workaround in the frontend.
         _system_instruction = (
-            "You are VoiceFlow's voice agent. When the user asks about their data, "
-            "metrics, KPIs, revenue, or business performance, proactively call the "
-            "available tools to fetch real data rather than asking a clarifying "
-            "question first. Only ask the user something if a tool's own declared "
-            "parameters truly require information you don't have — never assume a "
-            "tool needs a parameter (or an enum of allowed values) that isn't in its "
-            "actual declared schema, even if a *different* tool in the list happens "
-            "to take that parameter. If a parameter is optional and the user hasn't "
-            "specified a value, omit it or use the most sensible default (e.g. 'all' "
-            "for an optional domain) instead of stopping to ask.\n\n"
-            "Do NOT call a tool for a greeting, small talk, or a question about how "
-            "you (the agent) are doing — respond conversationally instead. Only reach "
-            "for a tool when the user is actually asking about their data, metrics, or "
-            "business performance. When a tool is needed, speak one short preamble "
-            "first, such as 'Checking that now,' then call the tool immediately.\n\n"
+            "You are VoiceFlow's voice agent. Answer directly from what you already "
+            "know whenever that's enough. Only call a tool when the user is asking "
+            "for their own current data, metrics, KPIs, revenue, or business "
+            "performance — something you cannot know without looking it up. Do NOT "
+            "call a tool for a greeting, small talk, a question about how you are "
+            "doing, a general knowledge question, or anything you can already answer "
+            "conversationally. When you are unsure whether a tool applies, prefer "
+            "answering conversationally over guessing and calling one anyway.\n\n"
+            "Call at most one tool per distinct piece of information you need. Never "
+            "call the same tool again for the same question in the same turn — if a "
+            "call fails or returns nothing useful, say so plainly instead of retrying "
+            "it or trying a different tool as a guess.\n\n"
+            "The tools are internal plumbing, not something to narrate. Never tell "
+            "the user you are 'calling a tool', 'connecting to an agent', 'checking a "
+            "system', or name any tool, API, or backend service. A brief, natural "
+            "preamble like 'Checking that now' is fine right before you call one; "
+            "otherwise just speak the answer as if you already knew it.\n\n"
+            "When a tool's own declared parameters truly require information you "
+            "don't have, ask the user for it — never assume a tool needs a parameter "
+            "(or an enum of allowed values) that isn't in its actual declared schema, "
+            "even if a *different* tool in the list happens to take that parameter. "
+            "If a parameter is optional and the user hasn't specified a value, omit "
+            "it or use the most sensible default (e.g. 'all' for an optional domain) "
+            "instead of stopping to ask.\n\n"
             "You are speaking out loud, not writing text. Every number you say must be "
             "pronounced the way a person would say it in conversation: read a decimal "
             "point as 'point' (e.g. 37.96 is 'thirty-seven point nine-six', never "
@@ -1058,6 +1073,18 @@ async def ws_realtime(ws: WebSocket):
                 # (rather than sending directly from _client_to_gemini) avoids a
                 # second, concurrent writer on the same browser websocket.
                 pending_cancel_notice = [False]
+                # True from a successful commit (audio_stream_end sent) until this
+                # turn's turn_complete arrives. The frontend now gates its own
+                # commits on an equivalent "response pending" flag so it should
+                # never send a second commit before this clears — but a client is
+                # untrusted input, and live testing (feeding a continuously-looping
+                # audio source) reproduced exactly this: repeated commits before
+                # turn_complete, which corrupted the Gemini session into a close
+                # code 1011 "Internal error" and silently dropped every reply. If a
+                # commit still arrives while a turn is active, treat it the same as
+                # a client barge-in (cancel the stale turn first) instead of sending
+                # a second audio_stream_end into an unfinished one.
+                turn_active = [False]
                 # _client_to_gemini() and _gemini_to_client() run concurrently via
                 # asyncio.gather() below, and BOTH write to the same upstream `session`
                 # (send_realtime_input / send_client_content from the client side,
@@ -1116,12 +1143,26 @@ async def ws_realtime(ws: WebSocket):
                                         await trace.first("first_input_audio", mode="json_base64")
 
                                 elif evt == "input_audio_buffer.commit":
+                                    if turn_active[0]:
+                                        # A second audio_stream_end into a turn that hasn't
+                                        # reached turn_complete yet is the overlap that
+                                        # corrupted the Gemini session into a 1011 close in
+                                        # testing — drop this redundant commit instead of
+                                        # sending it. Any new audio is already reaching
+                                        # Gemini via the continuous send_realtime_input(audio=…)
+                                        # stream below regardless of commit, so nothing is
+                                        # lost; the still-active turn's own turn_complete (or
+                                        # a genuine client.speech_started barge-in) will clear
+                                        # turn_active and let the next commit through cleanly.
+                                        log.warning("Gemini relay: dropped an overlapping commit — a turn was still active")
+                                        continue
                                     # audio_stream_end is the dedicated end-of-turn signal for a
                                     # send_realtime_input audio stream, replacing the old
                                     # send(input=".", end_of_turn=True) text-content workaround.
                                     async with session_send_lock:
                                         await session.send_realtime_input(audio_stream_end=True)
                                     cancel_flag[0] = False
+                                    turn_active[0] = True
                                     await trace.first("first_commit")
 
                                 elif evt == "conversation.item.create":
@@ -1168,6 +1209,7 @@ async def ws_realtime(ws: WebSocket):
                                     if pending_cancel_notice[0]:
                                         pending_cancel_notice[0] = False
                                         is_tool_active[0] = False
+                                        turn_active[0] = False
                                         await ws.send_json({"type": "response.done", "cancelled": True})
                                     continue
 
@@ -1252,6 +1294,7 @@ async def ws_realtime(ws: WebSocket):
                                 if response.server_content and getattr(response.server_content, "turn_complete", False):
                                     is_tool_active[0] = False
                                     cancel_flag[0] = False
+                                    turn_active[0] = False
                                     await ws.send_json({"type": "response.done"})
                     except Exception as e:
                         # This used to be a bare `except: pass` — any exception here (a
