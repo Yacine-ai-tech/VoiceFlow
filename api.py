@@ -910,8 +910,9 @@ async def ws_realtime(ws: WebSocket):
     await ws.accept()
     trace = _RealtimeTrace(ws)
     await trace.mark("transport_ready")
-    provider = "gemini" if ws.url.path.endswith("/gemini") else getattr(settings, "REALTIME_PROVIDER", "openai").lower()
-    api_key = getattr(settings, "REALTIME_API_KEY", "")
+    explicit_gemini_route = ws.url.path.endswith("/gemini")
+    provider = "gemini" if explicit_gemini_route else getattr(settings, "REALTIME_PROVIDER", "openai").lower()
+    api_key = settings.GEMINI_API_KEY if explicit_gemini_route else getattr(settings, "REALTIME_API_KEY", "")
 
     if not api_key:
         await ws.send_json({"type": "error", "message": "REALTIME_API_KEY not configured."})
