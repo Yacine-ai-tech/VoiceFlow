@@ -98,7 +98,8 @@ class Settings:
     def TTS_REMOTE_TOKEN(self) -> str:
         return os.getenv("VOICEFLOW_TTS_REMOTE_TOKEN", "").strip()
 
-    OPENAI_REALTIME_MODEL = os.getenv("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview")
+    OPENAI_REALTIME_MODEL = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1")
+    OPENAI_REALTIME_VOICE = os.getenv("OPENAI_REALTIME_VOICE", "marin")
 
     # Which backend the /realtime voice agent bridges to — "openai" or "gemini".
     # This is a deliberate choice, not an auto-detected one: whichever value is
@@ -148,6 +149,8 @@ class Settings:
     # be running at any particular address.
     AGENT_TOOLS_URL = os.getenv("AGENT_TOOLS_URL", "").rstrip("/")
     AGENT_TOOLS_CACHE_TTL = int(os.getenv("AGENT_TOOLS_CACHE_TTL", "300"))
+    AGENT_TOOLS_CALL_BUDGET_SECONDS = float(os.getenv("AGENT_TOOLS_CALL_BUDGET_SECONDS", "2.0"))
+    AGENT_TOOLS_RESULT_CACHE_TTL = int(os.getenv("AGENT_TOOLS_RESULT_CACHE_TTL", "30"))
 
     @property
     def AGENT_TOOLS_TOKEN(self) -> str:
