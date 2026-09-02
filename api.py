@@ -31,6 +31,7 @@ import uuid
 from collections import Counter as _Counter
 from typing import Any, Dict, Optional
 
+import httpx
 from fastapi import (
     FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect,
 )
@@ -502,6 +503,14 @@ async def tts_voices_delete_endpoint(voice_id: str) -> Dict[str, Any]:
         await tts_service.delete_elevenlabs_voice(voice_id)
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        # delete_elevenlabs_voice's resp.raise_for_status() previously escaped
+        # uncaught here — a nonexistent/invalid voice_id (or any other
+        # ElevenLabs API error) surfaced as a bare 500 "Internal Server Error"
+        # instead of a real status/message. Confirmed live 2026-09-02.
+        detail = e.response.text[:300] if e.response is not None else str(e)
+        status = e.response.status_code if e.response is not None else 502
+        raise HTTPException(status_code=status if 400 <= status < 500 else 502, detail=detail)
     return {"ok": True, "voice_id": voice_id}
 
 
