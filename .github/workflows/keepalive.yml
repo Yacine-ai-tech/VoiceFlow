@@ -2,7 +2,11 @@ name: Uptime Ping
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    # Offset off the round-number boundary (:00/:10/:20/...) — GitHub documents that
+    # schedule events queue behind everything else at exactly those marks, and this
+    # was found competing with the orchestrator repo's own */10 watchdog cron for
+    # the same account-wide Actions scheduling slot (2026-09-03).
+    - cron: '7-59/10 * * * *'   # :07, :17, :27, :37, :47, :57
   workflow_dispatch:
 
 jobs:
