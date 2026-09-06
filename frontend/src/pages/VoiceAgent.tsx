@@ -1,13 +1,62 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, AlertTriangle, Mic, MicOff } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  Bot,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  Layers,
+  Mic,
+  MicOff,
+  Sparkles,
+  Terminal,
+  Trash2,
+  User,
+  Wifi,
+  Wrench,
+  XCircle,
+} from "lucide-react";
 import { PageHeader } from "../kit/AppShell";
 import { Button, Card } from "../kit/primitives";
 import { getSessionId } from "../lib/api";
 
-type Msg = { id: number; role: "user" | "assistant" | "tool"; text: string };
-type Metric = { event: string; elapsed_ms: number };
+type Role = "user" | "assistant" | "tool";
+
+export type ToolCallData = {
+  name: string;
+  callId?: string;
+  args?: Record<string, unknown>;
+  result?: Record<string, unknown> | string;
+  status: "running" | "completed" | "failed";
+  startedAt: number;
+  completedAt?: number;
+  durationMs?: number;
+};
+
+export type Msg = {
+  id: number;
+  role: Role;
+  text: string;
+  timestamp: number;
+  toolData?: ToolCallData;
+  interrupted?: boolean;
+  isStreaming?: boolean;
+};
+
+export type TelemetryEvent = {
+  id: number;
+  timestamp: number;
+  type: string;
+  detail?: string;
+  level: "info" | "success" | "warn" | "error";
+};
+
+type Metric = { event: string; elapsed_ms: number; at: number };
 type RealtimeRole = "user" | "assistant";
 type LastClosedTurn = { id: number | null; text: string; at: number };
+
 type RealtimeConfig = {
   provider: "gemini" | "openai" | string;
   auth_required: boolean;
@@ -15,12 +64,14 @@ type RealtimeConfig = {
   openai_webrtc_session_path: string;
   openai_webrtc_available: boolean;
 };
+
 type TransportCallbacks = {
   onEvent: (data: Record<string, unknown>) => void;
   onClose: () => void;
   onError: (message: string) => void;
   onAudio: (base64: string) => void;
 };
+
 interface RealtimeTransport {
   connect(): Promise<void>;
   attachMic(stream: MediaStream): Promise<void>;
@@ -34,17 +85,8 @@ const BASE = import.meta.env.VITE_API_BASE_URL || "";
 const WS_BASE = BASE ? BASE.replace(/^http/, "ws") : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
 const TOKEN_KEY = "voiceflow.internal_token";
 const MAX_AUTO_RECONNECT_ATTEMPTS = 6;
-const USER_CLOSE_DELAY_MS = 650;
-const ASSISTANT_CLOSE_DELAY_MS = 900;
-const CLOSED_TURN_MERGE_WINDOW_MS = 1800;
-// A response is "pending" from the moment we commit a turn until the
-// provider reports it done/cancelled. Committing again — or treating a VAD
-// blip as a fresh turn — while one is already pending is what produced the
-// overlapping commit/response.create pairs that corrupted the Gemini
-// session into a 1011 "Internal error" and silently ate every reply before
-// it could ever play. Speech detected while a response is pending is only
-// ever a deliberate barge-in (cancel), never a new commit.
-const MIN_SPEECH_CONFIRM_MS = 200;
+const CLOSED_TURN_MERGE_WINDOW_MS = 3000;
+const MIN_SPEECH_CONFIRM_MS = 250;
 
 function authToken() {
   return import.meta.env.VITE_VOICEFLOW_INTERNAL_TOKEN || localStorage.getItem(TOKEN_KEY) || "";
@@ -53,6 +95,47 @@ function authToken() {
 function withAuth(path: string) {
   const token = authToken();
   return token ? path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token) : path;
+}
+
+/**
+ * Robust transcript merger that handles both cumulative text replacements
+ * and streaming token deltas without corrupting mid-word character boundaries.
+ */
+function mergeTranscriptText(current: string, delta: string): string {
+  if (!delta) return current;
+  if (!current) return delta.trimStart();
+
+  const normCurrent = current;
+  const normDelta = delta;
+
+  // 1. If delta is an extension of current (cumulative ASR rewrite)
+  if (normDelta.startsWith(normCurrent)) {
+    return normDelta;
+  }
+  // 2. If current already covers delta (stale chunk)
+  if (normCurrent.startsWith(normDelta) && normCurrent.length > normDelta.length) {
+    return normCurrent;
+  }
+
+  // 3. Check for word-level overlap to avoid duplicate words
+  const currentWords = normCurrent.trimEnd().split(/\s+/);
+  const deltaWords = normDelta.trimStart().split(/\s+/);
+
+  const maxOverlap = Math.min(currentWords.length, deltaWords.length, 6);
+  for (let k = maxOverlap; k > 0; k--) {
+    const currentTail = currentWords.slice(-k).join(" ").toLowerCase();
+    const deltaHead = deltaWords.slice(0, k).join(" ").toLowerCase();
+    if (currentTail === deltaHead) {
+      const remainingDelta = deltaWords.slice(k).join(" ");
+      return remainingDelta ? `${normCurrent.trimEnd()} ${remainingDelta}` : normCurrent;
+    }
+  }
+
+  // 4. Clean token append
+  if (normCurrent.endsWith(" ") || normDelta.startsWith(" ")) {
+    return normCurrent + normDelta;
+  }
+  return `${normCurrent} ${normDelta}`;
 }
 
 class GeminiWebSocketTransport implements RealtimeTransport {
@@ -67,9 +150,17 @@ class GeminiWebSocketTransport implements RealtimeTransport {
     this.ws.binaryType = "arraybuffer";
     this.ws.onmessage = (m) => {
       let data: Record<string, unknown>;
-      try { data = JSON.parse(m.data); } catch { return; }
-      if (data.type === "session.resumption_handle") this.resumeHandle = String(data.handle || "") || null;
-      if (data.type === "response.audio.delta") this.cb.onAudio(String(data.delta || ""));
+      try {
+        data = JSON.parse(m.data);
+      } catch {
+        return;
+      }
+      if (data.type === "session.resumption_handle") {
+        this.resumeHandle = String(data.handle || "") || null;
+      }
+      if (data.type === "response.audio.delta") {
+        this.cb.onAudio(String(data.delta || ""));
+      }
       this.cb.onEvent(data);
     };
     this.ws.onclose = this.cb.onClose;
@@ -111,7 +202,11 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
     this.dc = this.pc.createDataChannel("oai-events");
     this.dc.onmessage = async (m) => {
       let data: Record<string, unknown>;
-      try { data = JSON.parse(m.data); } catch { return; }
+      try {
+        data = JSON.parse(m.data);
+      } catch {
+        return;
+      }
       await this.handleToolCall(data);
       this.cb.onEvent(data);
     };
@@ -121,7 +216,9 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
       audio.srcObject = event.streams[0];
     };
     this.pc.onconnectionstatechange = () => {
-      if (this.pc?.connectionState === "failed" || this.pc?.connectionState === "closed") this.cb.onClose();
+      if (this.pc?.connectionState === "failed" || this.pc?.connectionState === "closed") {
+        this.cb.onClose();
+      }
     };
     this.cb.onEvent({ type: "metric", event: "transport_ready", elapsed_ms: 0 });
   }
@@ -165,7 +262,11 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
     if (data.type !== "response.function_call_arguments.done" || !this.dc) return;
     const name = String(data.name || "");
     let args: Record<string, unknown> = {};
-    try { args = JSON.parse(String(data.arguments || "{}")); } catch { args = {}; }
+    try {
+      args = JSON.parse(String(data.arguments || "{}"));
+    } catch {
+      args = {};
+    }
     this.cb.onEvent({ type: "tool_call", name, arguments: args });
     const headers: HeadersInit = { "Content-Type": "application/json", "X-VoiceFlow-Session": getSessionId() };
     const token = authToken();
@@ -177,10 +278,12 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
     });
     const result = await res.json();
     this.cb.onEvent({ type: "tool_result", name, result });
-    this.dc.send(JSON.stringify({
-      type: "conversation.item.create",
-      item: { type: "function_call_output", call_id: data.call_id, output: JSON.stringify(result) },
-    }));
+    this.dc.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: { type: "function_call_output", call_id: data.call_id, output: JSON.stringify(result) },
+      })
+    );
     this.dc.send(JSON.stringify({ type: "response.create" }));
   }
 }
@@ -207,12 +310,6 @@ class VADProcessor extends AudioWorkletProcessor {
     const now = Date.now();
     if (vol > 0.025) {
       this.lastAudioTime = now;
-      // Require ~200ms of continuous voice-level energy before declaring
-      // speech_started, not a single loud frame. A single transient (a
-      // click, a cough, speaker bleed picked up by the mic) used to fire
-      // speech_started instantly, which the app treats as a deliberate
-      // barge-in and uses to cancel an in-flight reply — so one bad frame
-      // could kill a response before it was ever heard.
       if (this.aboveThresholdSince === null) this.aboveThresholdSince = now;
       if (this.isSilent && now - this.aboveThresholdSince >= MIN_SPEECH_CONFIRM_MS) {
         this.isSilent = false;
@@ -248,7 +345,10 @@ export default function VoiceAgent() {
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [metrics, setMetrics] = useState<Metric[]>([]);
+  const [events, setEvents] = useState<TelemetryEvent[]>([]);
+  const [showTelemetry, setShowTelemetry] = useState(false);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [activeTool, setActiveTool] = useState<string | null>(null);
 
   const cfgRef = useRef<RealtimeConfig | null>(null);
   const transportRef = useRef<RealtimeTransport | null>(null);
@@ -256,15 +356,18 @@ export default function VoiceAgent() {
   const playbackCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const nextIdRef = useRef(0);
+  const nextEventIdRef = useRef(0);
+
   const agentOpenIdRef = useRef<number | null>(null);
   const agentDraftRef = useRef("");
   const userOpenIdRef = useRef<number | null>(null);
   const userDraftRef = useRef("");
-  const closeTimersRef = useRef<Record<RealtimeRole, ReturnType<typeof setTimeout> | null>>({ user: null, assistant: null });
+
   const lastClosedRef = useRef<Record<RealtimeRole, LastClosedTurn>>({
     user: { id: null, text: "", at: 0 },
     assistant: { id: null, text: "", at: 0 },
   });
+
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const playbackQueueRef = useRef<Float32Array[]>([]);
@@ -272,28 +375,20 @@ export default function VoiceAgent() {
   const nextPlayTimeRef = useRef(0);
   const isPlayingRef = useRef(false);
   const wasReadyRef = useRef(false);
-  // True from the moment we commit a turn (send commit + response.create)
-  // until the provider reports it done/cancelled. See MIN_SPEECH_CONFIRM_MS
-  // above for why: while this is true, new speech is a barge-in (cancel),
-  // never a second commit.
   const responsePendingRef = useRef(false);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
-  const clearCloseTimer = (role: RealtimeRole) => {
-    const timer = closeTimersRef.current[role];
-    if (timer) clearTimeout(timer);
-    closeTimersRef.current[role] = null;
-  };
-
-  const mergeText = (current: string, delta: string) => {
-    if (!delta) return current;
-    if (!current) return delta;
-    if (delta.startsWith(current)) return delta;
-    if (current.endsWith(delta)) return current;
-    const maxOverlap = Math.min(current.length, delta.length);
-    for (let i = maxOverlap; i > 0; i--) {
-      if (current.slice(-i) === delta.slice(0, i)) return current + delta.slice(i);
-    }
-    return current + delta;
+  const addTelemetryLog = (type: string, detail?: string, level: "info" | "success" | "warn" | "error" = "info") => {
+    setEvents((old) => [
+      ...old.slice(-49),
+      {
+        id: nextEventIdRef.current++,
+        timestamp: Date.now(),
+        type,
+        detail,
+        level,
+      },
+    ]);
   };
 
   const appendTurnDelta = (
@@ -301,85 +396,168 @@ export default function VoiceAgent() {
     delta: string,
     openIdRef: React.MutableRefObject<number | null>,
     draftRef: React.MutableRefObject<string>,
-    allowClosedMerge = false,
+    allowClosedMerge = false
   ) => {
     if (!delta) return;
-    clearCloseTimer(role);
     setMsgs((old) => {
       if (openIdRef.current !== null) {
-        draftRef.current = mergeText(draftRef.current, delta);
-        return old.map((m) => (m.id === openIdRef.current ? { ...m, text: draftRef.current } : m));
+        draftRef.current = mergeTranscriptText(draftRef.current, delta);
+        return old.map((m) => (m.id === openIdRef.current ? { ...m, text: draftRef.current, isStreaming: true } : m));
       }
       const last = lastClosedRef.current[role];
       if (allowClosedMerge && last.id !== null && Date.now() - last.at <= CLOSED_TURN_MERGE_WINDOW_MS) {
         openIdRef.current = last.id;
-        draftRef.current = mergeText(last.text, delta);
-        return old.map((m) => (m.id === last.id ? { ...m, text: draftRef.current } : m));
+        draftRef.current = mergeTranscriptText(last.text, delta);
+        return old.map((m) => (m.id === last.id ? { ...m, text: draftRef.current, isStreaming: true } : m));
       }
       const id = nextIdRef.current++;
       openIdRef.current = id;
-      draftRef.current = delta;
-      return [...old, { id, role, text: draftRef.current }];
+      draftRef.current = delta.trimStart();
+      return [
+        ...old,
+        {
+          id,
+          role,
+          text: draftRef.current,
+          timestamp: Date.now(),
+          isStreaming: true,
+        },
+      ];
     });
   };
 
-  const closeTurn = (role: RealtimeRole, openIdRef: React.MutableRefObject<number | null>, draftRef: React.MutableRefObject<string>) => {
-    clearCloseTimer(role);
+  const closeTurn = (
+    role: RealtimeRole,
+    openIdRef: React.MutableRefObject<number | null>,
+    draftRef: React.MutableRefObject<string>,
+    interrupted = false
+  ) => {
     if (openIdRef.current !== null) {
-      lastClosedRef.current[role] = { id: openIdRef.current, text: draftRef.current, at: Date.now() };
+      const turnId = openIdRef.current;
+      lastClosedRef.current[role] = { id: turnId, text: draftRef.current, at: Date.now() };
+      setMsgs((old) =>
+        old.map((m) =>
+          m.id === turnId
+            ? {
+                ...m,
+                isStreaming: false,
+                interrupted: interrupted || m.interrupted,
+              }
+            : m
+        )
+      );
     }
     openIdRef.current = null;
     draftRef.current = "";
   };
 
-  const scheduleCloseTurn = (role: RealtimeRole, openIdRef: React.MutableRefObject<number | null>, draftRef: React.MutableRefObject<string>, delayMs: number) => {
-    clearCloseTimer(role);
-    closeTimersRef.current[role] = setTimeout(() => closeTurn(role, openIdRef, draftRef), delayMs);
-  };
-
   const handleEvent = (data: Record<string, unknown>) => {
     const type = String(data.type || "");
+
     if (type === "metric") {
-      setMetrics((old) => [...old.slice(-7), { event: String(data.event || "metric"), elapsed_ms: Number(data.elapsed_ms || 0) }]);
-      if (data.event === "transport_ready") setState("provider_connecting");
+      const eventName = String(data.event || "metric");
+      const elapsed = Number(data.elapsed_ms || 0);
+      setMetrics((old) => [...old.slice(-7), { event: eventName, elapsed_ms: elapsed, at: Date.now() }]);
+      addTelemetryLog(`metric:${eventName}`, `${elapsed}ms`, "info");
+      if (eventName === "transport_ready") setState("provider_connecting");
       return;
     }
+
     if (type === "provider_ready" || type === "ready") {
       wasReadyRef.current = true;
       reconnectAttemptsRef.current = 0;
       setReconnectAttempt(0);
       setState("ready");
+      addTelemetryLog("provider_ready", String(data.message || "Provider connected"), "success");
       return;
     }
+
     if (type === "error") {
       responsePendingRef.current = false;
-      setErrorMsg(String(data.message || ""));
+      const msg = String(data.message || "Unknown error");
+      setErrorMsg(msg);
       setState(wasReadyRef.current ? "error" : "unconfigured");
+      addTelemetryLog("error", msg, "error");
       return;
     }
-    if (type === "response.text.delta" || type === "response.audio_transcript.delta") appendTurnDelta("assistant", String(data.delta || ""), agentOpenIdRef, agentDraftRef, true);
+
+    if (type === "response.text.delta" || type === "response.audio_transcript.delta") {
+      appendTurnDelta("assistant", String(data.delta || ""), agentOpenIdRef, agentDraftRef, true);
+    }
+
     if (type === "response.user_transcript.delta") {
       appendTurnDelta("user", String(data.delta || ""), userOpenIdRef, userDraftRef, true);
-      if (data.finished) scheduleCloseTurn("user", userOpenIdRef, userDraftRef, 0);
+      if (data.finished) {
+        addTelemetryLog("user_transcript.finished", undefined, "info");
+        closeTurn("user", userOpenIdRef, userDraftRef);
+      }
     }
-    if (type === "input_audio_buffer.committed") scheduleCloseTurn("user", userOpenIdRef, userDraftRef, USER_CLOSE_DELAY_MS);
+
+    if (type === "input_audio_buffer.committed") {
+      addTelemetryLog("audio_buffer.committed", undefined, "info");
+      // Allow late transcription deltas to attach before hard closing turn
+    }
+
     if (type === "assistant.cancelled") {
       responsePendingRef.current = false;
-      closeTurn("assistant", agentOpenIdRef, agentDraftRef);
+      addTelemetryLog("assistant.interrupted", "Speech barge-in triggered", "warn");
+      closeTurn("assistant", agentOpenIdRef, agentDraftRef, true);
     }
+
     if (type === "response.done" || type === "response.audio.done") {
       responsePendingRef.current = false;
-      scheduleCloseTurn("assistant", agentOpenIdRef, agentDraftRef, ASSISTANT_CLOSE_DELAY_MS);
+      addTelemetryLog("response.completed", undefined, "success");
+      closeTurn("assistant", agentOpenIdRef, agentDraftRef);
       if (!isPlayingRef.current && playbackQueueRef.current.length === 0) setAgentSpeaking(false);
     }
-    if (type === "tool_call") setMsgs((old) => [...old, { id: nextIdRef.current++, role: "tool", text: `Calling tool: ${String(data.name || "tool")}...` }]);
+
+    if (type === "tool_call") {
+      const toolName = String(data.name || "tool");
+      setActiveTool(toolName);
+      addTelemetryLog("tool_call:start", toolName, "info");
+      const toolData: ToolCallData = {
+        name: toolName,
+        callId: String(data.call_id || ""),
+        args: (data.arguments as Record<string, unknown>) || {},
+        status: "running",
+        startedAt: Date.now(),
+      };
+      setMsgs((old) => [
+        ...old,
+        {
+          id: nextIdRef.current++,
+          role: "tool",
+          text: `Executing ${toolName}`,
+          timestamp: Date.now(),
+          toolData,
+        },
+      ]);
+    }
+
     if (type === "tool_result") {
-      const name = String(data.name || "tool");
+      const toolName = String(data.name || "tool");
+      setActiveTool(null);
+      addTelemetryLog("tool_call:done", toolName, "success");
+      const completedAt = Date.now();
       setMsgs((old) => {
-        const idx = [...old].reverse().findIndex((m) => m.role === "tool" && m.text.includes(name));
+        const idx = [...old].reverse().findIndex((m) => m.role === "tool" && m.toolData?.name === toolName);
         if (idx === -1) return old;
+        const targetIdx = old.length - 1 - idx;
         const copy = old.slice();
-        copy[old.length - 1 - idx] = { ...copy[old.length - 1 - idx], text: `Tool completed: ${name}` };
+        const existing = copy[targetIdx].toolData;
+        const startedAt = existing?.startedAt || completedAt;
+        copy[targetIdx] = {
+          ...copy[targetIdx],
+          text: `Completed ${toolName}`,
+          toolData: {
+            ...existing!,
+            name: toolName,
+            result: data.result as Record<string, unknown>,
+            status: "completed",
+            completedAt,
+            durationMs: completedAt - startedAt,
+          },
+        };
         return copy;
       });
     }
@@ -420,7 +598,7 @@ export default function VoiceAgent() {
     if (!audioCtx || playbackQueueRef.current.length === 0) return;
     isPlayingRef.current = true;
     setAgentSpeaking(true);
-    nextPlayTimeRef.current = Math.max(audioCtx.currentTime + 0.1, nextPlayTimeRef.current);
+    nextPlayTimeRef.current = Math.max(audioCtx.currentTime + 0.15, nextPlayTimeRef.current);
     while (playbackQueueRef.current.length > 0) {
       const float32 = playbackQueueRef.current.shift()!;
       const audioBuffer = audioCtx.createBuffer(1, float32.length, 24000);
@@ -443,7 +621,11 @@ export default function VoiceAgent() {
 
   const stopAudioPlayback = () => {
     playbackQueueRef.current = [];
-    activeSourcesRef.current.forEach((s) => { try { s.stop(); } catch {} });
+    activeSourcesRef.current.forEach((s) => {
+      try {
+        s.stop();
+      } catch {}
+    });
     activeSourcesRef.current = [];
     isPlayingRef.current = false;
     nextPlayTimeRef.current = 0;
@@ -463,17 +645,20 @@ export default function VoiceAgent() {
     setIsRecording(false);
     setVolume(0);
     stopAudioPlayback();
+    addTelemetryLog("session.stopped", "Microphone audio capture ended", "info");
   };
 
   const scheduleReconnect = () => {
     stopVoice();
     if (!wasReadyRef.current || reconnectAttemptsRef.current >= MAX_AUTO_RECONNECT_ATTEMPTS) {
       setState("closed");
+      addTelemetryLog("session.closed", "Connection terminated", "warn");
       return;
     }
     const attempt = reconnectAttemptsRef.current++;
     setReconnectAttempt(attempt + 1);
     setState("connecting");
+    addTelemetryLog("session.reconnecting", `Attempt ${attempt + 1}/${MAX_AUTO_RECONNECT_ATTEMPTS}`, "warn");
     reconnectTimerRef.current = setTimeout(() => connect(false), Math.min(1000 * 2 ** attempt, 15000));
   };
 
@@ -482,6 +667,7 @@ export default function VoiceAgent() {
     if (reset) {
       setMsgs([]);
       setMetrics([]);
+      setEvents([]);
       closeTurn("assistant", agentOpenIdRef, agentDraftRef);
       closeTurn("user", userOpenIdRef, userDraftRef);
       lastClosedRef.current = {
@@ -490,6 +676,7 @@ export default function VoiceAgent() {
       };
     }
     setState("connecting");
+    addTelemetryLog("transport.connecting", "Negotiating realtime session", "info");
     try {
       const cfg = await fetch(BASE + "/realtime/config", { headers: { "X-VoiceFlow-Session": getSessionId() } }).then((r) => r.json());
       cfgRef.current = cfg;
@@ -499,13 +686,25 @@ export default function VoiceAgent() {
         return;
       }
       transportRef.current?.close();
-      transportRef.current = cfg.provider === "openai" && cfg.openai_webrtc_available
-        ? new OpenAIWebRTCTransport(cfg, { onEvent: handleEvent, onClose: scheduleReconnect, onError: setErrorMsg, onAudio: queueAudioPlayback })
-        : new GeminiWebSocketTransport(cfg, { onEvent: handleEvent, onClose: scheduleReconnect, onError: setErrorMsg, onAudio: queueAudioPlayback });
+      transportRef.current =
+        cfg.provider === "openai" && cfg.openai_webrtc_available
+          ? new OpenAIWebRTCTransport(cfg, {
+              onEvent: handleEvent,
+              onClose: scheduleReconnect,
+              onError: setErrorMsg,
+              onAudio: queueAudioPlayback,
+            })
+          : new GeminiWebSocketTransport(cfg, {
+              onEvent: handleEvent,
+              onClose: scheduleReconnect,
+              onError: setErrorMsg,
+              onAudio: queueAudioPlayback,
+            });
       await transportRef.current.connect();
     } catch (err: any) {
       setErrorMsg(err.message || String(err));
       setState("error");
+      addTelemetryLog("transport.error", err.message || String(err), "error");
     }
   };
 
@@ -518,6 +717,12 @@ export default function VoiceAgent() {
     };
   }, []);
 
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [msgs]);
+
   const startVoice = async () => {
     setErrorMsg("");
     let stream: MediaStream | null = null;
@@ -525,6 +730,7 @@ export default function VoiceAgent() {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) throw new Error("Audio capture is not supported in this browser.");
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("Microphone access is not available in this browser.");
+
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -539,6 +745,7 @@ export default function VoiceAgent() {
       if (cfgRef.current?.provider === "openai" && transportRef.current instanceof OpenAIWebRTCTransport) {
         await transportRef.current.attachMic(stream);
         setIsRecording(true);
+        addTelemetryLog("audio.started", "OpenAI WebRTC bidirectional audio stream active", "success");
         return;
       }
 
@@ -560,11 +767,6 @@ export default function VoiceAgent() {
         const data = e.data;
         if (data.type === "volume") setVolume(data.vol);
         if (data.type === "speech_started" && (isPlayingRef.current || responsePendingRef.current)) {
-          // Genuine barge-in: the agent is either speaking or still
-          // generating a reply, and the user started talking again over it.
-          // Cancel it instead of letting a second commit pile onto the
-          // still-pending one (that overlap is what corrupted the Gemini
-          // session and produced the 1011 crash).
           stopAudioPlayback();
           responsePendingRef.current = false;
           transportRef.current?.cancel();
@@ -581,6 +783,7 @@ export default function VoiceAgent() {
       workletNode.connect(silent);
       silent.connect(audioCtx.destination);
       setIsRecording(true);
+      addTelemetryLog("audio.started", "16kHz PCM VAD worklet initialized", "success");
     } catch (err: any) {
       stream?.getTracks().forEach((t) => t.stop());
       audioCtxRef.current?.close();
@@ -590,75 +793,415 @@ export default function VoiceAgent() {
       setIsRecording(false);
       setErrorMsg(err.message || String(err));
       setState("error");
+      addTelemetryLog("audio.error", err.message || String(err), "error");
     }
+  };
+
+  const clearSessionHistory = () => {
+    setMsgs([]);
+    setEvents([]);
+    addTelemetryLog("history.cleared", "Cleared conversation timeline", "info");
   };
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title="Live Agent" sub="Low-latency realtime voice with provider-specific transports and tool calling." />
+      <PageHeader
+        title="Live Voice Agent"
+        sub="Full-duplex multimodal speech with streaming transcripts and dynamic agent tool calling."
+      />
 
       {state === "unconfigured" ? (
         <Card>
           <div className="flex items-center gap-3 py-4 text-bad">
             <AlertTriangle size={24} />
             <div>
-              <div className="font-semibold text-[15px]">Realtime Not Configured</div>
-              <div className="text-[13px] opacity-80">{errorMsg || "Set GEMINI_API_KEY or a real OpenAI Realtime key."}</div>
+              <div className="font-semibold text-[15px]">Realtime Backend Not Configured</div>
+              <div className="text-[13px] opacity-80">{errorMsg || "Set GEMINI_API_KEY or OPENAI_API_KEY to activate."}</div>
             </div>
           </div>
         </Card>
       ) : (
         <div className="flex flex-1 gap-4 overflow-hidden min-h-0">
-          <Card className="flex flex-1 flex-col p-0 overflow-hidden">
-            <div className="flex items-center justify-between border-b border-line px-5 py-3">
-              <div className="flex items-center gap-2">
-                <div className={`h-2.5 w-2.5 rounded-full ${state === "ready" ? "bg-ok" : state === "error" || state === "closed" ? "bg-bad" : "bg-warn animate-pulse"}`} />
-                <span className="text-[13px] font-medium text-body">
-                  {state === "ready" ? "Agent Ready" : state === "provider_connecting" ? "Provider connecting..." : state === "closed" ? "Disconnected" : state === "error" ? errorMsg || "Session error" : reconnectAttempt ? `Reconnecting (${reconnectAttempt}/${MAX_AUTO_RECONNECT_ATTEMPTS})` : "Connecting..."}
-                </span>
+          {/* Main Chat & Voice Interaction Area */}
+          <Card className="flex flex-1 flex-col p-0 overflow-hidden shadow-card">
+            {/* Session Status Header */}
+            <div className="flex items-center justify-between border-b border-line px-5 py-3 bg-surface">
+              <div className="flex items-center gap-3">
+                <div
+                  className={`h-2.5 w-2.5 rounded-full ${
+                    state === "ready"
+                      ? "bg-ok ring-4 ring-ok/20"
+                      : state === "error" || state === "closed"
+                      ? "bg-bad ring-4 ring-bad/20"
+                      : "bg-warn animate-pulse ring-4 ring-warn/20"
+                  }`}
+                />
+                <div className="flex flex-col">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] font-semibold text-body">
+                      {state === "ready"
+                        ? "Live Agent Ready"
+                        : state === "provider_connecting"
+                        ? "Connecting to Model..."
+                        : state === "closed"
+                        ? "Session Disconnected"
+                        : state === "error"
+                        ? errorMsg || "Session Error"
+                        : reconnectAttempt
+                        ? `Reconnecting (${reconnectAttempt}/${MAX_AUTO_RECONNECT_ATTEMPTS})`
+                        : "Initializing Transport..."}
+                    </span>
+                    {cfgRef.current?.provider && (
+                      <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-mono text-dim border border-line">
+                        {cfgRef.current.provider === "gemini" ? "Gemini 2.5 Live" : "OpenAI Realtime"}
+                      </span>
+                    )}
+                  </div>
+                </div>
               </div>
+
               <div className="flex items-center gap-2">
-                {(state === "error" || state === "closed") && <Button variant="secondary" onClick={() => connect(false)}>Reconnect</Button>}
-                <Button variant="secondary" onClick={isRecording ? stopVoice : startVoice} disabled={state !== "ready"}>
-                  {isRecording ? <MicOff size={14} className="text-bad" /> : <Mic size={14} />}
-                  {isRecording ? "Stop Session" : "Start Session"}
+                <Button
+                  variant="ghost"
+                  className="px-2.5 py-1.5 text-xs text-muted hover:text-body"
+                  onClick={() => setShowTelemetry((v) => !v)}
+                  title="Toggle Telemetry Drawer"
+                >
+                  <Activity size={14} className={showTelemetry ? "text-[var(--accent)]" : ""} />
+                  <span className="hidden sm:inline">Telemetry</span>
+                </Button>
+
+                {msgs.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    className="px-2.5 py-1.5 text-xs text-muted hover:text-bad"
+                    onClick={clearSessionHistory}
+                    title="Clear Conversation History"
+                  >
+                    <Trash2 size={14} />
+                  </Button>
+                )}
+
+                {(state === "error" || state === "closed") && (
+                  <Button variant="secondary" onClick={() => connect(false)}>
+                    Reconnect
+                  </Button>
+                )}
+
+                <Button
+                  variant={isRecording ? "danger" : "primary"}
+                  onClick={isRecording ? stopVoice : startVoice}
+                  disabled={state !== "ready"}
+                  className="px-4 py-1.5"
+                >
+                  {isRecording ? <MicOff size={14} /> : <Mic size={14} />}
+                  <span>{isRecording ? "End Call" : "Start Live Voice"}</span>
                 </Button>
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5 space-y-4 relative">
+            {/* Active Tool Execution Banner */}
+            {activeTool && (
+              <div className="flex items-center gap-2 bg-[var(--accent)]/10 border-b border-[var(--accent)]/20 px-5 py-2 text-[12px] text-body animate-pulse">
+                <Wrench size={14} className="text-[var(--accent)]" />
+                <span className="font-medium">Executing Tool:</span>
+                <code className="font-mono text-[var(--accent)] font-semibold">{activeTool}</code>
+              </div>
+            )}
+
+            {/* Message Timeline */}
+            <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-5 space-y-4 relative bg-surface-2/30">
               {msgs.length === 0 && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center text-muted">
-                  <Mic size={32} className="mb-2 opacity-50" />
-                  <p className="text-[14px]">Click Start Session and begin speaking.</p>
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-muted select-none p-6 text-center">
+                  <div className="rounded-full bg-surface-2 p-4 border border-line mb-3 shadow-inner">
+                    <Sparkles size={28} className="text-[var(--accent)] opacity-80" />
+                  </div>
+                  <h3 className="font-semibold text-body text-[15px]">Bidirectional Voice Agent</h3>
+                  <p className="text-[13px] text-muted max-w-sm mt-1 leading-relaxed">
+                    Click <strong>Start Live Voice</strong> to begin. Speak naturally in English to query metrics, KPIs, or converse with the AI model.
+                  </p>
                 </div>
               )}
-              {msgs.map((m) => (
-                <div key={m.id} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                  <div className={`max-w-[80%] rounded-xl px-4 py-2 text-[14px] leading-relaxed shadow-sm ${m.role === "user" ? "bg-[var(--accent)] text-white rounded-br-sm" : m.role === "tool" ? "bg-surface-2 text-dim border border-line rounded-bl-sm text-[12px] italic" : "bg-surface-2 text-body border border-line rounded-bl-sm"}`}>
-                    {m.text}
+
+              {msgs.map((m) => {
+                if (m.role === "tool") {
+                  return <ToolMessageCard key={m.id} msg={m} />;
+                }
+
+                const isUser = m.role === "user";
+                return (
+                  <div key={m.id} className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
+                    {!isUser && (
+                      <div className="h-8 w-8 rounded-full bg-[var(--accent)]/15 border border-[var(--accent)]/30 flex items-center justify-center shrink-0 text-[var(--accent)] mt-0.5">
+                        <Bot size={16} />
+                      </div>
+                    )}
+
+                    <div className={`flex flex-col max-w-[78%] ${isUser ? "items-end" : "items-start"}`}>
+                      <div className="flex items-center gap-2 mb-1 px-1">
+                        <span className="text-[11px] font-medium text-muted">{isUser ? "You" : "VoiceFlow Assistant"}</span>
+                        <span className="text-[10px] text-dim">{new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                        {m.interrupted && (
+                          <span className="rounded bg-bad/10 border border-bad/20 px-1.5 py-0.2 text-[9px] text-bad font-medium">
+                            Interrupted
+                          </span>
+                        )}
+                      </div>
+
+                      <div
+                        className={`rounded-2xl px-4 py-2.5 text-[14px] leading-relaxed shadow-sm transition-all ${
+                          isUser
+                            ? "bg-[var(--accent)] text-white rounded-tr-sm"
+                            : "bg-surface text-body border border-line rounded-tl-sm shadow-card"
+                        }`}
+                      >
+                        <p className="whitespace-pre-wrap">{m.text}</p>
+                        {m.isStreaming && !isUser && (
+                          <span className="inline-block w-1.5 h-3.5 bg-[var(--accent)] ml-1 animate-pulse align-middle" />
+                        )}
+                      </div>
+                    </div>
+
+                    {isUser && (
+                      <div className="h-8 w-8 rounded-full bg-surface border border-line flex items-center justify-center shrink-0 text-muted mt-0.5 shadow-sm">
+                        <User size={16} />
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
-            <div className="border-t border-line bg-surface-2 px-5 py-3 flex items-center justify-between gap-4">
+            {/* Bottom Audio Activity & Live Visualizer Bar */}
+            <div className="border-t border-line bg-surface px-5 py-3 flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className="flex gap-1 h-3 items-end">
-                  {[...Array(5)].map((_, i) => (
-                    <div key={i} className="w-1 bg-[var(--accent)] rounded-t-sm transition-all duration-75" style={{ height: `${Math.max(20, (agentSpeaking ? Math.random() : volume) * 100)}%`, opacity: agentSpeaking || volume > 0.05 ? 1 : 0.3 }} />
-                  ))}
+                {/* Visualizer bars */}
+                <div className="flex gap-1 h-4 items-end">
+                  {[...Array(6)].map((_, i) => {
+                    const active = agentSpeaking || volume > 0.03;
+                    const h = active ? Math.max(15, (agentSpeaking ? 0.3 + Math.random() * 0.7 : volume * 1.5) * 100) : 12;
+                    return (
+                      <div
+                        key={i}
+                        className="w-1.5 bg-[var(--accent)] rounded-t-sm transition-all duration-75"
+                        style={{
+                          height: `${Math.min(100, h)}%`,
+                          opacity: active ? 1 : 0.25,
+                        }}
+                      />
+                    );
+                  })}
                 </div>
-                <span className="text-[12px] text-muted font-medium">{agentSpeaking ? "Agent speaking" : volume > 0.03 ? "You are speaking" : isRecording ? "Listening" : "Idle"}</span>
+
+                <span className="text-[12px] font-medium text-body">
+                  {agentSpeaking ? (
+                    <span className="text-[var(--accent)] flex items-center gap-1.5">
+                      <Sparkles size={13} className="animate-spin" />
+                      Agent Speaking
+                    </span>
+                  ) : activeTool ? (
+                    <span className="text-warn flex items-center gap-1.5">
+                      <Wrench size={13} />
+                      Calling Agent Tool
+                    </span>
+                  ) : volume > 0.03 ? (
+                    <span className="text-ok flex items-center gap-1.5">
+                      <Mic size={13} />
+                      Listening to you...
+                    </span>
+                  ) : isRecording ? (
+                    <span className="text-muted">Listening</span>
+                  ) : (
+                    <span className="text-dim">Voice Idle</span>
+                  )}
+                </span>
               </div>
+
+              {/* Quick Telemetry Pill */}
               <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted">
-                <Activity size={13} />
-                <span className="truncate">{metrics.slice(-4).map((m) => `${m.event}: ${m.elapsed_ms}ms`).join(" | ") || "Waiting for metrics"}</span>
+                <Clock size={12} className="text-dim" />
+                <span className="truncate font-mono">
+                  {metrics.length > 0
+                    ? metrics
+                        .slice(-3)
+                        .map((m) => `${m.event}: ${m.elapsed_ms}ms`)
+                        .join(" · ")
+                    : "No latency metrics yet"}
+                </span>
               </div>
             </div>
           </Card>
+
+          {/* Collapsible Telemetry & Event Inspector Panel */}
+          {showTelemetry && (
+            <Card className="w-80 flex flex-col p-0 overflow-hidden shadow-card border-line animate-in slide-in-from-right duration-200">
+              <div className="flex items-center justify-between border-b border-line px-4 py-3 bg-surface">
+                <div className="flex items-center gap-2">
+                  <Terminal size={15} className="text-[var(--accent)]" />
+                  <span className="text-[13px] font-semibold text-body">Live Telemetry & Logs</span>
+                </div>
+                <Button variant="ghost" className="p-1 h-6 w-6 text-muted hover:text-body" onClick={() => setShowTelemetry(false)}>
+                  ✕
+                </Button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-4 text-[12px]">
+                {/* Session Config */}
+                <div className="space-y-1.5">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-muted flex items-center gap-1">
+                    <Wifi size={11} /> Connection Metadata
+                  </div>
+                  <div className="rounded-lg bg-surface-2 p-2.5 border border-line font-mono text-[11px] space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-muted">Provider:</span>
+                      <span className="text-body font-semibold">{cfgRef.current?.provider || "gemini"}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted">Session ID:</span>
+                      <span className="text-body truncate max-w-[120px]">{getSessionId()}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted">State:</span>
+                      <span className={state === "ready" ? "text-ok" : "text-warn"}>{state}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Latency Benchmarks */}
+                <div className="space-y-1.5">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-muted flex items-center gap-1">
+                    <Activity size={11} /> Latency Breakdown
+                  </div>
+                  <div className="rounded-lg bg-surface-2 p-2.5 border border-line font-mono text-[11px] space-y-1">
+                    {metrics.length === 0 ? (
+                      <div className="text-muted text-[11px] py-1 text-center">Awaiting turn metrics...</div>
+                    ) : (
+                      metrics.slice(-6).map((m, i) => (
+                        <div key={i} className="flex justify-between">
+                          <span className="text-muted">{m.event}:</span>
+                          <span className="text-body font-medium">{m.elapsed_ms}ms</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Live Event Stream */}
+                <div className="space-y-1.5">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-muted flex items-center gap-1">
+                    <Layers size={11} /> Event Stream ({events.length})
+                  </div>
+                  <div className="rounded-lg bg-surface-2 p-2 border border-line font-mono text-[10px] space-y-1.5 max-h-64 overflow-y-auto">
+                    {events.length === 0 ? (
+                      <div className="text-muted text-center py-2">No events recorded</div>
+                    ) : (
+                      events.map((e) => {
+                        const color =
+                          e.level === "success"
+                            ? "text-ok"
+                            : e.level === "warn"
+                            ? "text-warn"
+                            : e.level === "error"
+                            ? "text-bad"
+                            : "text-muted";
+                        return (
+                          <div key={e.id} className="border-b border-line/50 pb-1 last:border-0 last:pb-0">
+                            <div className="flex justify-between items-center">
+                              <span className={`font-semibold ${color}`}>{e.type}</span>
+                              <span className="text-[9px] text-dim">{new Date(e.timestamp).toLocaleTimeString([], { hour12: false, minute: "2-digit", second: "2-digit" })}</span>
+                            </div>
+                            {e.detail && <div className="text-dim truncate">{e.detail}</div>}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Dedicated structured card for tool execution events in the chat timeline.
+ */
+function ToolMessageCard({ msg }: { msg: Msg }) {
+  const [expanded, setExpanded] = useState(false);
+  const tool = msg.toolData;
+  if (!tool) return null;
+
+  const isCompleted = tool.status === "completed";
+  const isFailed = tool.status === "failed";
+
+  return (
+    <div className="flex justify-center my-2">
+      <div className="w-full max-w-lg rounded-xl border border-line bg-surface p-3 shadow-sm text-[12px]">
+        <div className="flex items-center justify-between cursor-pointer select-none" onClick={() => setExpanded((v) => !v)}>
+          <div className="flex items-center gap-2.5">
+            <div
+              className={`h-6 w-6 rounded-lg flex items-center justify-center ${
+                isCompleted ? "bg-ok/10 text-ok" : isFailed ? "bg-bad/10 text-bad" : "bg-[var(--accent)]/10 text-[var(--accent)] animate-pulse"
+              }`}
+            >
+              {isCompleted ? <CheckCircle2 size={14} /> : isFailed ? <XCircle size={14} /> : <Wrench size={14} />}
+            </div>
+
+            <div className="flex flex-col">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-body">Tool Execution:</span>
+                <code className="font-mono font-bold text-[var(--accent)]">{tool.name}</code>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {tool.durationMs !== undefined && (
+              <span className="rounded bg-surface-2 border border-line px-1.5 py-0.5 text-[10px] font-mono text-muted">
+                {tool.durationMs}ms
+              </span>
+            )}
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                isCompleted
+                  ? "bg-ok/10 text-ok"
+                  : isFailed
+                  ? "bg-bad/10 text-bad"
+                  : "bg-warn/10 text-warn animate-pulse"
+              }`}
+            >
+              {tool.status}
+            </span>
+            {expanded ? <ChevronDown size={14} className="text-muted" /> : <ChevronRight size={14} className="text-muted" />}
+          </div>
+        </div>
+
+        {/* Collapsible Arguments & Output Inspector */}
+        {expanded && (
+          <div className="mt-3 pt-2.5 border-t border-line space-y-2 font-mono text-[11px]">
+            {tool.args && Object.keys(tool.args).length > 0 && (
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-muted font-sans font-bold">Arguments</span>
+                <pre className="mt-1 rounded bg-surface-2 p-2 text-dim overflow-x-auto border border-line">
+                  {JSON.stringify(tool.args, null, 2)}
+                </pre>
+              </div>
+            )}
+
+            {tool.result !== undefined && (
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-muted font-sans font-bold">Output Result</span>
+                <pre className="mt-1 rounded bg-surface-2 p-2 text-body overflow-x-auto border border-line max-h-48">
+                  {typeof tool.result === "string" ? tool.result : JSON.stringify(tool.result, null, 2)}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
