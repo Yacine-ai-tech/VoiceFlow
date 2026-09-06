@@ -69,6 +69,19 @@ _cache: Dict[str, Any] = {
 }
 
 _result_cache: Dict[str, Dict[str, Any]] = {}
+_shared_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_shared_client() -> httpx.AsyncClient:
+    """Return a shared httpx.AsyncClient with persistent keep-alive connection pooling."""
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        timeout = float(__import__("os").getenv("AGENT_TOOLS_HTTP_TIMEOUT_SECONDS", "8"))
+        _shared_client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=30.0),
+        )
+    return _shared_client
 
 
 def _cache_key(name: str, arguments: Optional[Dict[str, Any]]) -> str:
@@ -134,8 +147,8 @@ async def _refresh_cache(force: bool = False) -> None:
         return
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{base}/api/tools", headers=_auth_headers())
+        client = _get_shared_client()
+        resp = await client.get(f"{base}/api/tools", headers=_auth_headers())
         resp.raise_for_status()
         data = resp.json()
 
@@ -379,18 +392,18 @@ async def call_tool(
 
     try:
         async def _request() -> httpx.Response:
-            async with httpx.AsyncClient(timeout=float(__import__("os").getenv("AGENT_TOOLS_HTTP_TIMEOUT_SECONDS", "8"))) as client:
-                if effect in ("write", "destructive"):
-                    body: Dict[str, Any] = {**args}
-                    if dry_run:
-                        body["dry_run"] = True
-                    if approval_token:
-                        body["approval_token"] = approval_token
-                    return await client.post(url, json=body, headers=_auth_headers())
-                params = dict(args)
+            client = _get_shared_client()
+            if effect in ("write", "destructive"):
+                body: Dict[str, Any] = {**args}
                 if dry_run:
-                    params["dry_run"] = "true"
-                return await client.get(url, params=params, headers=_auth_headers())
+                    body["dry_run"] = True
+                if approval_token:
+                    body["approval_token"] = approval_token
+                return await client.post(url, json=body, headers=_auth_headers())
+            params = dict(args)
+            if dry_run:
+                params["dry_run"] = "true"
+            return await client.get(url, params=params, headers=_auth_headers())
 
         resp = await asyncio.wait_for(
             _request(),
@@ -434,12 +447,12 @@ async def fetch_resource(uri: str) -> Dict[str, Any]:
         return {"error": "agent_tools_url_not_configured"}
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                f"{base}/api/resources",
-                params={"uri": uri},  # httpx URL-encodes query params itself
-                headers=_auth_headers(),
-            )
+        client = _get_shared_client()
+        resp = await client.get(
+            f"{base}/api/resources",
+            params={"uri": uri},  # httpx URL-encodes query params itself
+            headers=_auth_headers(),
+        )
         if resp.status_code >= 400:
             return {"error": f"resource_fetch_error_{resp.status_code}", "uri": uri}
         return resp.json()
@@ -469,12 +482,12 @@ async def invoke_prompt(name: str, arguments: Optional[Dict[str, Any]] = None) -
 
     params = {k: v for k, v in (arguments or {}).items() if v is not None}
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                f"{base}/api/prompts/{name}",
-                params=params,
-                headers=_auth_headers(),
-            )
+        client = _get_shared_client()
+        resp = await client.get(
+            f"{base}/api/prompts/{name}",
+            params=params,
+            headers=_auth_headers(),
+        )
         if resp.status_code >= 400:
             return {"error": f"prompt_invoke_error_{resp.status_code}", "name": name}
         return resp.json()
