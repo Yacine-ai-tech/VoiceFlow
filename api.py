@@ -1110,6 +1110,9 @@ async def ws_realtime(ws: WebSocket):
                 # session so no two coroutines can be mid-`send` on it at once.
                 session_send_lock = asyncio.Lock()
 
+                import base64
+                import audioop
+
                 async def _client_to_gemini():
                     """Forward browser audio/text frames to Gemini session."""
                     try:
@@ -1119,6 +1122,8 @@ async def ws_realtime(ws: WebSocket):
                             msg_bytes = msg.get("bytes")
                             try:
                                 if msg_bytes:
+                                    if is_tool_active[0]:
+                                        continue  # gate audio while tool execution is in progress
                                     await trace.first("first_input_audio")
                                     async with session_send_lock:
                                         await session.send_realtime_input(
@@ -1132,19 +1137,13 @@ async def ws_realtime(ws: WebSocket):
                                 evt = data.get("type", "")
 
                                 if evt == "input_audio_buffer.append":
+                                    if is_tool_active[0]:
+                                        continue  # gate audio while tool execution is in progress
                                     b64 = data.get("audio")
                                     if b64:
-                                        import audioop
-                                        import base64
                                         pcm_24k = base64.b64decode(b64)
                                         sample_rate = int(data.get("sample_rate") or 24000)
                                         pcm_16k = pcm_24k if sample_rate == 16000 else audioop.ratecv(pcm_24k, 2, 1, sample_rate, 16000, None)[0]
-                                        # session.send(input=...) is deprecated (removal "not before
-                                        # Q3 2025" per the SDK itself) and routes audio through the
-                                        # legacy realtime_input.media_chunks field, which the Live API
-                                        # now silently drops — the session stays open and connected but
-                                        # no audio ever reaches the model. send_realtime_input(audio=...)
-                                        # is the current, supported path for streamed audio chunks.
                                         async with session_send_lock:
                                             await session.send_realtime_input(
                                                 audio=_gtypes.Blob(data=pcm_16k, mime_type="audio/pcm;rate=16000")
@@ -1152,22 +1151,6 @@ async def ws_realtime(ws: WebSocket):
                                         await trace.first("first_input_audio", mode="json_base64")
 
                                 elif evt == "input_audio_buffer.commit":
-                                    # Sending audio_stream_end while a previous turn is still
-                                    # active is fine and expected for a genuine barge-in —
-                                    # Gemini's own server-side VAD treats fresh audio input as
-                                    # an interrupt of whatever it was generating and reports it
-                                    # back via server_content.interrupted (handled below, in
-                                    # _gemini_to_client), which is what actually closes out the
-                                    # stale turn. An earlier version of this handler tried to
-                                    # pre-empt that by dropping a commit whenever turn_active
-                                    # was still True, but turn_active only clears once
-                                    # _gemini_to_client has *processed* the interruption
-                                    # asynchronously — a legitimate barge-in commit sent right
-                                    # after client.speech_started routinely arrived before that
-                                    # happened, so the drop silently ate real turns and left the
-                                    # session hanging until it died with a 1011 Internal error
-                                    # (confirmed live, 2026-09-01). Always forward the commit;
-                                    # turn_active is tracked only as telemetry now.
                                     async with session_send_lock:
                                         await session.send_realtime_input(audio_stream_end=True)
                                     cancel_flag[0] = False
@@ -1203,14 +1186,6 @@ async def ws_realtime(ws: WebSocket):
                         while True:
                             turn = session.receive()
                             async for response in turn:
-                                # Gemini's own server-side VAD can interrupt generation
-                                # independently of our client-driven cancel_flag (e.g. it
-                                # notices the user talking again before the browser's local
-                                # VAD/`client.speech_started` message even arrives here) —
-                                # server_content.interrupted is the authoritative signal for
-                                # that. Treat it the same as a client-initiated cancel so a
-                                # server-only interruption still closes the frontend's open
-                                # turn instead of leaving it dangling.
                                 if response.server_content and getattr(response.server_content, "interrupted", False):
                                     cancel_flag[0] = True
                                     pending_cancel_notice[0] = True
@@ -1223,7 +1198,6 @@ async def ws_realtime(ws: WebSocket):
                                     continue
 
                                 if response.data:
-                                    import base64
                                     await trace.first("first_output_audio")
                                     await ws.send_json({
                                         "type": "response.audio.delta",
