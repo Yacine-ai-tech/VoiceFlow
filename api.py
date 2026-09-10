@@ -475,7 +475,10 @@ async def tts_voices_endpoint() -> Dict[str, Any]:
     try:
         voices = await tts_service.list_elevenlabs_voices()
     except RuntimeError as e:
-        return {"voices": [], "error": str(e)}
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        log.exception("failed to list ElevenLabs voices")
+        raise HTTPException(status_code=502, detail="ElevenLabs voice service unavailable") from e
     return {"voices": voices}
 
 
