@@ -961,10 +961,6 @@ async def ws_realtime(ws: WebSocket):
         # several dozen on the prior model.
         GEMINI_LIVE_MODEL = _os.getenv("GEMINI_LIVE_MODEL", "models/gemini-2.5-flash-native-audio-preview-09-2025")
 
-        _client = _genai.Client(
-            http_options={"api_version": "v1beta"},
-            api_key=gemini_key,
-        )
         try:
             _external_tools = agent_tools_bridge.gemini_tool_declarations_from_snapshot()
             if not _external_tools and settings.AGENT_TOOLS_URL:
@@ -992,38 +988,18 @@ async def ws_realtime(ws: WebSocket):
         # shapes from sibling tools in the list instead of reading each tool's
         # actual schema — this is the fix, not a workaround in the frontend.
         _system_instruction = (
-            "You are VoiceFlow's voice agent. Answer directly from what you already "
-            "know whenever that's enough. Only call a tool when the user is asking "
-            "for their own current data, metrics, KPIs, revenue, or business "
-            "performance — something you cannot know without looking it up. Do NOT "
-            "call a tool for a greeting, small talk, a question about how you are "
-            "doing, a general knowledge question, or anything you can already answer "
-            "conversationally. When you are unsure whether a tool applies, prefer "
-            "answering conversationally over guessing and calling one anyway.\n\n"
-            "Call at most one tool per distinct piece of information you need. Never "
-            "call the same tool again for the same question in the same turn — if a "
-            "call fails or returns nothing useful, say so plainly instead of retrying "
-            "it or trying a different tool as a guess.\n\n"
-            "The tools are internal plumbing, not something to narrate. Never tell "
-            "the user you are 'calling a tool', 'connecting to an agent', 'checking a "
-            "system', or name any tool, API, or backend service. A brief, natural "
-            "preamble like 'Checking that now' is fine right before you call one; "
-            "otherwise just speak the answer as if you already knew it.\n\n"
-            "When a tool's own declared parameters truly require information you "
-            "don't have, ask the user for it — never assume a tool needs a parameter "
-            "(or an enum of allowed values) that isn't in its actual declared schema, "
-            "even if a *different* tool in the list happens to take that parameter. "
-            "If a parameter is optional and the user hasn't specified a value, omit "
-            "it or use the most sensible default (e.g. 'all' for an optional domain) "
-            "instead of stopping to ask.\n\n"
-            "You are speaking out loud, not writing text. Every number you say must be "
-            "pronounced the way a person would say it in conversation: read a decimal "
-            "point as 'point' (e.g. 37.96 is 'thirty-seven point nine-six', never "
-            "'thirty-seven ninety-six' or two separate numbers), and read percentages "
-            "and currency amounts as whole phrases (e.g. '2.14 percent' is 'two point "
-            "one-four percent', '$37.96 million' is 'thirty-seven point nine-six "
-            "million dollars'). Never speak a raw number's digits one group at a time "
-            "as if they were two unrelated figures."
+            "You are VoiceFlow's voice agent, an intelligent, natural, and concise spoken AI assistant. "
+            "Speak fluently and empathetically in whatever language the caller uses (French, English, Korean, etc.). "
+            "Handle general conversation, greetings (such as 'What's up?', 'Bonjour', 'Hello', 'How are you?'), "
+            "opinions, small talk, and open questions directly and warmly without calling any tools. "
+            "Never call 'get_executive_summary' or any other data tool on casual speech, greetings, or simply because "
+            "the user mentioned words like 'execution' or 'summary' in passing. "
+            "Only invoke a tool when the user explicitly and unmistakably asks for live company metrics, KPI data, "
+            "revenue numbers, or business reports. When in doubt, always reply conversationally rather than guessing a tool call.\n\n"
+            "Call at most one tool per distinct inquiry. Never narrate or disclose your internal plumbing to the user — "
+            "never say 'I am calling a tool', 'Connecting to an agent', or name internal APIs. Simply speak the answer directly.\n\n"
+            "You are speaking aloud over audio, not writing text. Keep answers brief and conversational (1-3 sentences). "
+            "Pronounce all numbers, currency amounts, and percentages naturally for spoken delivery."
         )
 
         _config = _gtypes.LiveConnectConfig(
@@ -1062,8 +1038,8 @@ async def ws_realtime(ws: WebSocket):
             session_resumption=_gtypes.SessionResumptionConfig(handle=_resume_handle),
         )
 
-        try:
-            async with _client.aio.live.connect(model=GEMINI_LIVE_MODEL, config=_config) as session:
+        async def _run_gemini_session(client):
+            async with client.aio.live.connect(model=GEMINI_LIVE_MODEL, config=_config) as session:
                 await trace.mark("provider_ready", provider="gemini", model=GEMINI_LIVE_MODEL)
                 await ws.send_json({"type": "provider_ready", "provider": "gemini", "message": f"Connected to Gemini Multimodal Live ({GEMINI_LIVE_MODEL})"})
 
@@ -1293,22 +1269,52 @@ async def ws_realtime(ws: WebSocket):
                         # sign anything had gone wrong server-side — indistinguishable from
                         # a hang until its own transport-level keepalive eventually gave up.
                         log.warning("Gemini _gemini_to_client relay died mid-turn: %s", e)
-                        try:
-                            await ws.send_json({"type": "error", "message": f"Gemini relay error: {e}"})
-                        except Exception:
-                            pass
+                        raise e
 
                 await asyncio.gather(_client_to_gemini(), _gemini_to_client())
 
-        except WebSocketDisconnect:
-            log.info("realtime gemini client disconnected")
-        except Exception as e:
-            log.warning("realtime gemini error: %s", e)
+        gemini_keys = settings.GEMINI_API_KEYS or [gemini_key]
+        for key_idx, current_gemini_key in enumerate(gemini_keys):
+            _client = _genai.Client(
+                http_options={"api_version": "v1beta"},
+                api_key=current_gemini_key,
+            )
             try:
-                await ws.send_json({"type": "error", "message": f"Gemini Live relay failed: {e}"})
-            except Exception:
-                pass
-        return
+                await _run_gemini_session(_client)
+                return
+            except WebSocketDisconnect:
+                log.info("realtime gemini client disconnected")
+                return
+            except Exception as e:
+                err_str = str(e).lower()
+                is_quota = (
+                    "1011" in err_str
+                    or "quota" in err_str
+                    or "429" in err_str
+                    or "resource_exhausted" in err_str
+                    or "rate_limit" in err_str
+                )
+                if is_quota and key_idx + 1 < len(gemini_keys):
+                    log.warning(
+                        "Gemini Live quota or 1011 on key %d (%s...). Rotating to next available key...",
+                        key_idx,
+                        current_gemini_key[:8] if current_gemini_key else "",
+                    )
+                    continue
+                else:
+                    log.warning("realtime gemini error: %s", e)
+                    try:
+                        if is_quota:
+                            await ws.send_json({
+                                "type": "error",
+                                "error_code": "quota_exceeded",
+                                "message": "Gemini Live quota limit reached. Please wait a moment or switch to OpenAI Realtime.",
+                            })
+                        else:
+                            await ws.send_json({"type": "error", "message": f"Gemini Live relay failed: {e}"})
+                    except Exception:
+                        pass
+                    return
 
     elif provider == "openai":
         openai_key = api_key

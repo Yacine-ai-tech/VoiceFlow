@@ -76,6 +76,15 @@ class Settings:
         return os.getenv("GEMINI_API_KEY", "").strip() or (os.getenv("REALTIME_API_KEY", "").strip() if self.REALTIME_PROVIDER == "gemini" else "")
 
     @property
+    def GEMINI_API_KEYS(self) -> list[str]:
+        keys: list[str] = []
+        for k in ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "REALTIME_API_KEY"]:
+            val = os.getenv(k, "").strip()
+            if val and val not in keys:
+                keys.append(val)
+        return keys
+
+    @property
     def PYANNOTE_TOKEN(self) -> str:
         return os.getenv("PYANNOTE_TOKEN", "").strip()
 
