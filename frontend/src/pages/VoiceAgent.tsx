@@ -475,6 +475,10 @@ export default function VoiceAgent() {
     if (type === "error") {
       responsePendingRef.current = false;
       const msg = String(data.message || "Unknown error");
+      const errCode = String(data.error_code || "");
+      if (errCode === "quota_exceeded") {
+        wasReadyRef.current = false;
+      }
       setErrorMsg(msg);
       setState(wasReadyRef.current ? "error" : "unconfigured");
       addTelemetryLog("error", msg, "error");
@@ -766,10 +770,16 @@ export default function VoiceAgent() {
       workletNode.port.onmessage = (e) => {
         const data = e.data;
         if (data.type === "volume") setVolume(data.vol);
-        if (data.type === "speech_started" && (isPlayingRef.current || responsePendingRef.current)) {
-          stopAudioPlayback();
-          responsePendingRef.current = false;
-          transportRef.current?.cancel();
+        if (data.type === "speech_started") {
+          lastClosedRef.current.user = { id: null, text: "", at: 0 };
+          lastClosedRef.current.assistant = { id: null, text: "", at: 0 };
+          closeTurn("assistant", agentOpenIdRef, agentDraftRef);
+          closeTurn("user", userOpenIdRef, userDraftRef);
+          if (isPlayingRef.current || responsePendingRef.current) {
+            stopAudioPlayback();
+            responsePendingRef.current = false;
+            transportRef.current?.cancel();
+          }
         }
         if (data.type === "speech_stopped" && !responsePendingRef.current) {
           responsePendingRef.current = true;
@@ -791,9 +801,13 @@ export default function VoiceAgent() {
       playbackCtxRef.current?.close();
       playbackCtxRef.current = null;
       setIsRecording(false);
-      setErrorMsg(err.message || String(err));
+      let userNotice = err.message || String(err);
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        userNotice = "Microphone access was denied. On mobile, tap the lock/settings icon in your browser address bar to enable microphone permissions for this site, then try again.";
+      }
+      setErrorMsg(userNotice);
       setState("error");
-      addTelemetryLog("audio.error", err.message || String(err), "error");
+      addTelemetryLog("audio.error", userNotice, "error");
     }
   };
 
