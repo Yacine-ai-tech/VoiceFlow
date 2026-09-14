@@ -407,7 +407,7 @@ async def call_tool(
 
         resp = await asyncio.wait_for(
             _request(),
-            timeout=float(__import__("os").getenv("AGENT_TOOLS_CALL_BUDGET_SECONDS", "2.0")),
+            timeout=float(__import__("os").getenv("AGENT_TOOLS_CALL_BUDGET_SECONDS", "8.0")),
         )
 
         if resp.status_code >= 400:
@@ -421,7 +421,7 @@ async def call_tool(
         return value
 
     except asyncio.TimeoutError:
-        return {"error": "agent_tool_timeout", "detail": f"tool exceeded {__import__('os').getenv('AGENT_TOOLS_CALL_BUDGET_SECONDS', '2.0')}s budget"}
+        return {"error": "agent_tool_timeout", "detail": f"tool exceeded {__import__('os').getenv('AGENT_TOOLS_CALL_BUDGET_SECONDS', '8.0')}s budget"}
     except httpx.RequestError as exc:
         log.warning("agent tool call %r failed: %s", name, exc)
         return {"error": "agent_tools_unreachable", "detail": str(exc), "url": base}
