@@ -308,7 +308,7 @@ class VADProcessor extends AudioWorkletProcessor {
     const vol = Math.sqrt(sum / channelData.length);
     this.port.postMessage({ type: 'volume', vol });
     const now = Date.now();
-    if (vol > 0.025) {
+    if (vol > 0.032) {
       this.lastAudioTime = now;
       if (this.aboveThresholdSince === null) this.aboveThresholdSince = now;
       if (this.isSilent && now - this.aboveThresholdSince >= MIN_SPEECH_CONFIRM_MS) {
@@ -486,11 +486,12 @@ export default function VoiceAgent() {
     }
 
     if (type === "response.text.delta" || type === "response.audio_transcript.delta") {
+      closeTurn("user", userOpenIdRef, userDraftRef);
       appendTurnDelta("assistant", String(data.delta || ""), agentOpenIdRef, agentDraftRef, true);
     }
 
     if (type === "response.user_transcript.delta") {
-      appendTurnDelta("user", String(data.delta || ""), userOpenIdRef, userDraftRef, true);
+      appendTurnDelta("user", String(data.delta || ""), userOpenIdRef, userDraftRef, false);
       if (data.finished) {
         addTelemetryLog("user_transcript.finished", undefined, "info");
         closeTurn("user", userOpenIdRef, userDraftRef);
@@ -499,7 +500,8 @@ export default function VoiceAgent() {
 
     if (type === "input_audio_buffer.committed") {
       addTelemetryLog("audio_buffer.committed", undefined, "info");
-      // Allow late transcription deltas to attach before hard closing turn
+      // Seal user turn so each spoken input creates its own distinct message box
+      closeTurn("user", userOpenIdRef, userDraftRef);
     }
 
     if (type === "assistant.cancelled") {
@@ -775,7 +777,8 @@ export default function VoiceAgent() {
           lastClosedRef.current.assistant = { id: null, text: "", at: 0 };
           closeTurn("assistant", agentOpenIdRef, agentDraftRef);
           closeTurn("user", userOpenIdRef, userDraftRef);
-          if (isPlayingRef.current || responsePendingRef.current) {
+          // Only trigger cancellation/barge-in when the assistant is actively playing audio
+          if (isPlayingRef.current) {
             stopAudioPlayback();
             responsePendingRef.current = false;
             transportRef.current?.cancel();
