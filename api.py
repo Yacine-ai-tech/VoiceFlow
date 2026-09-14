@@ -1154,6 +1154,9 @@ async def ws_realtime(ws: WebSocket):
                                     cancel_flag[0] = True
                                     pending_cancel_notice[0] = True
 
+                                elif evt == "ping":
+                                    await ws.send_json({"type": "pong"})
+
                             except Exception:
                                 log.exception("Gemini client_to_gemini error")
                     except Exception:
