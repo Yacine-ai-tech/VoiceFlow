@@ -268,23 +268,30 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
       args = {};
     }
     this.cb.onEvent({ type: "tool_call", name, arguments: args });
-    const headers: HeadersInit = { "Content-Type": "application/json", "X-VoiceFlow-Session": getSessionId() };
-    const token = authToken();
-    if (token) headers["X-VoiceFlow-Internal-Token"] = token;
-    const res = await fetch(BASE + withAuth("/realtime/tool-call"), {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ name, arguments: args }),
-    });
-    const result = await res.json();
-    this.cb.onEvent({ type: "tool_result", name, result });
-    this.dc.send(
-      JSON.stringify({
-        type: "conversation.item.create",
-        item: { type: "function_call_output", call_id: data.call_id, output: JSON.stringify(result) },
-      })
-    );
-    this.dc.send(JSON.stringify({ type: "response.create" }));
+    // Gate microphone track during tool execution to prevent acoustic feedback / false interruptions
+    const audioTracks = this.stream?.getAudioTracks() || [];
+    audioTracks.forEach((t) => { t.enabled = false; });
+    try {
+      const headers: HeadersInit = { "Content-Type": "application/json", "X-VoiceFlow-Session": getSessionId() };
+      const token = authToken();
+      if (token) headers["X-VoiceFlow-Internal-Token"] = token;
+      const res = await fetch(BASE + withAuth("/realtime/tool-call"), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ name, arguments: args }),
+      });
+      const result = await res.json();
+      this.cb.onEvent({ type: "tool_result", name, result });
+      this.dc.send(
+        JSON.stringify({
+          type: "conversation.item.create",
+          item: { type: "function_call_output", call_id: data.call_id, output: JSON.stringify(result) },
+        })
+      );
+      this.dc.send(JSON.stringify({ type: "response.create" }));
+    } finally {
+      audioTracks.forEach((t) => { t.enabled = true; });
+    }
   }
 }
 
