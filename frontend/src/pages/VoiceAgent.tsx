@@ -141,6 +141,8 @@ function mergeTranscriptText(current: string, delta: string): string {
 class GeminiWebSocketTransport implements RealtimeTransport {
   private ws: WebSocket | null = null;
   private resumeHandle: string | null = null;
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
+  private pongTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private cfg: RealtimeConfig, private cb: TransportCallbacks) {}
 
@@ -148,11 +150,29 @@ class GeminiWebSocketTransport implements RealtimeTransport {
     const resume = this.resumeHandle ? `?resume=${encodeURIComponent(this.resumeHandle)}` : "";
     this.ws = new WebSocket(WS_BASE + withAuth(this.cfg.gemini_ws_path + resume));
     this.ws.binaryType = "arraybuffer";
+
+    this.ws.onopen = () => {
+      this.pingInterval = setInterval(() => {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ type: "ping" }));
+          this.pongTimeout = setTimeout(() => {
+            if (this.ws?.readyState === WebSocket.OPEN) {
+              this.ws.close();
+            }
+          }, 5000);
+        }
+      }, 15000);
+    };
+
     this.ws.onmessage = (m) => {
       let data: Record<string, unknown>;
       try {
         data = JSON.parse(m.data);
       } catch {
+        return;
+      }
+      if (data.type === "pong") {
+        if (this.pongTimeout) clearTimeout(this.pongTimeout);
         return;
       }
       if (data.type === "session.resumption_handle") {
@@ -163,7 +183,11 @@ class GeminiWebSocketTransport implements RealtimeTransport {
       }
       this.cb.onEvent(data);
     };
-    this.ws.onclose = this.cb.onClose;
+    this.ws.onclose = () => {
+      if (this.pingInterval) clearInterval(this.pingInterval);
+      if (this.pongTimeout) clearTimeout(this.pongTimeout);
+      this.cb.onClose();
+    };
     this.ws.onerror = () => this.cb.onError("Gemini WebSocket connection failed");
   }
 
@@ -185,6 +209,8 @@ class GeminiWebSocketTransport implements RealtimeTransport {
     }
   }
   close() {
+    if (this.pingInterval) clearInterval(this.pingInterval);
+    if (this.pongTimeout) clearTimeout(this.pongTimeout);
     this.ws?.close();
     this.ws = null;
   }
@@ -458,6 +484,36 @@ export default function VoiceAgent() {
     draftRef.current = "";
   };
 
+  const playToolLatencyCue = () => {
+    try {
+      const ctx = ensurePlaybackContext();
+      if (!ctx || ctx.state === "closed") return;
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+
+      osc1.type = "sine";
+      osc2.type = "sine";
+      osc1.frequency.setValueAtTime(440, ctx.currentTime);
+      osc2.frequency.setValueAtTime(554.37, ctx.currentTime);
+
+      gainNode.gain.setValueAtTime(0, ctx.currentTime);
+      gainNode.gain.linearRampToValueAtTime(0.05, ctx.currentTime + 0.1);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+
+      osc1.connect(gainNode);
+      osc2.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      osc1.start(ctx.currentTime);
+      osc2.start(ctx.currentTime);
+      osc1.stop(ctx.currentTime + 0.6);
+      osc2.stop(ctx.currentTime + 0.6);
+    } catch (e) {
+      // Ignore audio errors for cue
+    }
+  };
+
   const handleEvent = (data: Record<string, unknown>) => {
     const type = String(data.type || "");
 
@@ -528,6 +584,7 @@ export default function VoiceAgent() {
       const toolName = String(data.name || "tool");
       setActiveTool(toolName);
       addTelemetryLog("tool_call:start", toolName, "info");
+      playToolLatencyCue();
       const toolData: ToolCallData = {
         name: toolName,
         callId: String(data.call_id || ""),
