@@ -848,15 +848,17 @@ async def openai_webrtc_session(request: Request):
         "type": "realtime",
         "model": settings.OPENAI_REALTIME_MODEL,
         "instructions": (
-            "You are VoiceFlow's realtime voice agent. Keep spoken answers brief. "
-            "Answer directly from what you already know whenever that's enough — "
-            "only use a tool when the user is asking for their own current data, "
-            "metrics, or business performance that you cannot know without looking "
-            "it up. Never call a tool for small talk or a general question, never "
-            "call the same tool twice for the same question, and never tell the "
-            "user you are calling a tool, connecting to an agent, or checking a "
-            "system — a brief natural preamble like 'Checking that now' is fine "
-            "right before you use one; otherwise just speak the answer."
+            "You are VoiceFlow's realtime voice agent — an intelligent, natural, and concise spoken AI assistant. "
+            "Speak fluently and empathetically in whatever language the caller uses. "
+            "Handle general conversation, greetings, opinions, and open questions directly and warmly without calling any tools. "
+            "When tools are available, read each tool's description carefully and invoke the most appropriate one "
+            "only when the user's request clearly requires live data or an action you cannot fulfill from general knowledge. "
+            "Never invoke a tool for small talk or vague references — only when the user is unambiguously asking "
+            "for something that specific tool is designed to provide. "
+            "Never call the same tool twice for the same question. "
+            "Never tell the user you are calling a tool, connecting to an agent, or checking a system — "
+            "a brief natural preamble like 'Checking that now' is fine right before you use one; otherwise just speak the answer. "
+            "Keep answers brief and conversational (1-3 sentences)."
         ),
         "audio": {
             "input": {
@@ -977,27 +979,24 @@ async def ws_realtime(ws: WebSocket):
         # "start a new session" — the normal case for a first connect.
         _resume_handle = ws.query_params.get("resume") or None
 
-        # Live testing against production found the model reliably asking an
-        # unnecessary clarifying question (inventing a required `domain` param
-        # with made-up enum values) for open-ended questions like "check my
-        # metrics" — even for get_executive_summary, whose real schema (see
-        # AgentKit's TOOL_META) takes NO parameters at all. The tool call
-        # itself works fine once the model is told to just make it (verified
-        # live: get_executive_summary returned real data). With no
-        # system_instruction at all, the model was left to guess at tool
-        # shapes from sibling tools in the list instead of reading each tool's
-        # actual schema — this is the fix, not a workaround in the frontend.
+        # The system instruction is intentionally domain-agnostic: it must not bias
+        # the model toward any specific tool category (KPIs, finance, etc.) because
+        # the available tools are discovered dynamically from agent_tools_bridge and
+        # can be anything — BI, task management, communication, or custom workflows.
+        # The model reads each tool's own description to determine when to invoke it.
         _system_instruction = (
-            "You are VoiceFlow's voice agent, an intelligent, natural, and concise spoken AI assistant. "
+            "You are VoiceFlow's voice agent — an intelligent, natural, and concise spoken AI assistant. "
             "Speak fluently and empathetically in whatever language the caller uses (French, English, Korean, etc.). "
-            "Handle general conversation, greetings (such as 'What's up?', 'Bonjour', 'Hello', 'How are you?'), "
-            "opinions, small talk, and open questions directly and warmly without calling any tools. "
-            "Never call 'get_executive_summary' or any other data tool on casual speech, greetings, or simply because "
-            "the user mentioned words like 'execution' or 'summary' in passing. "
-            "Only invoke a tool when the user explicitly and unmistakably asks for live company metrics, KPI data, "
-            "revenue numbers, or business reports. When in doubt, always reply conversationally rather than guessing a tool call.\n\n"
-            "Call at most one tool per distinct inquiry. Never narrate or disclose your internal plumbing to the user — "
-            "never say 'I am calling a tool', 'Connecting to an agent', or name internal APIs. Simply speak the answer directly.\n\n"
+            "Handle general conversation, greetings, opinions, and open questions directly and warmly without calling any tools. "
+            "When tools are available, read each tool's description carefully and invoke the most appropriate one "
+            "only when the user's request clearly requires live data or an action that you cannot fulfill from general knowledge. "
+            "Never invoke a tool for small talk, greetings, or vague references — only when the user is unambiguously asking "
+            "for something that specific tool is designed to provide.\n\n"
+            "Call at most one tool per distinct inquiry. Read each tool's parameter schema and fill parameters "
+            "directly from the user's request without inventing values or asking for clarification unless a required "
+            "parameter is genuinely missing. Never narrate your internal process — no 'I am calling a tool', "
+            "'Connecting to an agent', or API names. A brief natural preamble like 'Let me check that' is fine right "
+            "before invoking a tool; otherwise speak the answer directly.\n\n"
             "You are speaking aloud over audio, not writing text. Keep answers brief and conversational (1-3 sentences). "
             "Pronounce all numbers, currency amounts, and percentages naturally for spoken delivery."
         )
@@ -1090,7 +1089,41 @@ async def ws_realtime(ws: WebSocket):
                 session_send_lock = asyncio.Lock()
 
                 import base64
-                import audioop
+
+                # audioop was removed in Python 3.13; use soxr for high-quality
+                # anti-aliased resampling (simple decimation introduces aliasing).
+                # Falls back to a scipy-based implementation if soxr is not installed.
+                def _resample_pcm(pcm_bytes: bytes, src_rate: int, dst_rate: int) -> bytes:
+                    """Resample 16-bit mono PCM from src_rate to dst_rate."""
+                    if src_rate == dst_rate:
+                        return pcm_bytes
+                    try:
+                        import soxr
+                        import numpy as np
+                        arr = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                        resampled = soxr.resample(arr, src_rate, dst_rate, quality="HQ")
+                        return (np.clip(resampled, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+                    except ImportError:
+                        pass
+                    try:
+                        from scipy.signal import resample_poly
+                        import numpy as np
+                        from math import gcd
+                        arr = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+                        g = gcd(src_rate, dst_rate)
+                        resampled = resample_poly(arr, dst_rate // g, src_rate // g)
+                        return np.clip(resampled, -32768, 32767).astype(np.int16).tobytes()
+                    except ImportError:
+                        pass
+                    # Last-resort: integer decimation / zero-insertion (low quality,
+                    # avoid if soxr or scipy are available)
+                    import numpy as np
+                    arr = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+                    import math
+                    n_samples = int(math.ceil(len(arr) * dst_rate / src_rate))
+                    indices = np.round(np.linspace(0, len(arr) - 1, n_samples)).astype(int)
+                    return arr[indices].astype(np.int16).tobytes()
+
 
                 async def _client_to_gemini():
                     """Forward browser audio/text frames to Gemini session."""
@@ -1122,7 +1155,7 @@ async def ws_realtime(ws: WebSocket):
                                     if b64:
                                         pcm_24k = base64.b64decode(b64)
                                         sample_rate = int(data.get("sample_rate") or 24000)
-                                        pcm_16k = pcm_24k if sample_rate == 16000 else audioop.ratecv(pcm_24k, 2, 1, sample_rate, 16000, None)[0]
+                                        pcm_16k = _resample_pcm(pcm_24k, sample_rate, 16000)
                                         async with session_send_lock:
                                             await session.send_realtime_input(
                                                 audio=_gtypes.Blob(data=pcm_16k, mime_type="audio/pcm;rate=16000")
