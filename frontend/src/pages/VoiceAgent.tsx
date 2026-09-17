@@ -82,7 +82,9 @@ interface RealtimeTransport {
 }
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "";
-const WS_BASE = BASE ? BASE.replace(/^http/, "ws") : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
+const WS_BASE = BASE
+  ? (location.protocol === "https:" ? BASE.replace(/^https?:\/\//, "wss://") : BASE.replace(/^http:\/\//, "ws://"))
+  : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
 const TOKEN_KEY = "voiceflow.internal_token";
 const MAX_AUTO_RECONNECT_ATTEMPTS = 6;
 const CLOSED_TURN_MERGE_WINDOW_MS = 3000;
@@ -797,20 +799,31 @@ export default function VoiceAgent() {
     setErrorMsg("");
     let stream: MediaStream | null = null;
     try {
+      // Synchronously prepare and unlock playback context on user gesture
+      ensurePlaybackContext();
+
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) throw new Error("Audio capture is not supported in this browser.");
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error("Microphone access is not available in this browser.");
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Microphone access is unavailable. Please ensure you are connected securely over HTTPS.");
+      }
 
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-        },
-      });
+      // First attempt full audio constraints, fallback to basic audio if mobile browser rejects strict config
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1,
+          },
+        });
+      } catch (constraintErr) {
+        console.warn("Advanced audio constraints failed, falling back to basic audio stream:", constraintErr);
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+
       streamRef.current = stream;
-      ensurePlaybackContext();
 
       if (cfgRef.current?.provider === "openai" && transportRef.current instanceof OpenAIWebRTCTransport) {
         await transportRef.current.attachMic(stream);
@@ -821,7 +834,9 @@ export default function VoiceAgent() {
 
       const audioCtx = new AudioCtx();
       audioCtxRef.current = audioCtx;
-      if (audioCtx.state === "suspended") await audioCtx.resume();
+      if (audioCtx.state === "suspended") {
+        await audioCtx.resume();
+      }
       if (!audioCtx.audioWorklet) throw new Error("AudioWorklet is not supported in this browser.");
 
       const blob = new Blob([workletCode], { type: "application/javascript" });
@@ -829,7 +844,12 @@ export default function VoiceAgent() {
       try {
         await audioCtx.audioWorklet.addModule(workletUrl);
       } finally {
-        URL.revokeObjectURL(workletUrl);
+        // Crucial for iOS Safari WebKit: Delay URL revocation so the asynchronous audio thread finishes loading the script
+        setTimeout(() => {
+          try {
+            URL.revokeObjectURL(workletUrl);
+          } catch (_) {}
+        }, 10000);
       }
       const source = audioCtx.createMediaStreamSource(stream);
       const workletNode = new AudioWorkletNode(audioCtx, "vad-processor");
