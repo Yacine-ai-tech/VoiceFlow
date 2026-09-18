@@ -39,7 +39,9 @@ def main():
 
     print(f"\nWER benchmark — LibriSpeech test-clean — model={a.model} device={dev} N={a.n}")
     # decode=False → get raw FLAC bytes and decode with soundfile (avoids torchcodec/ffmpeg dep)
-    ds = load_dataset("librispeech_asr", "clean", split="test", streaming=True)
+    # openslr/librispeech_asr, not the bare "librispeech_asr" — HF now requires a
+    # namespaced repo id; the old bare-name loader script is deprecated/removed.
+    ds = load_dataset("openslr/librispeech_asr", "clean", split="test", streaming=True)
     ds = ds.cast_column("audio", Audio(decode=False))
     m = WhisperModel(a.model, device=dev, compute_type=ct)
 
