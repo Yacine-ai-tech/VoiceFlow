@@ -123,9 +123,9 @@ class MeetingAnalyzer:
         sent_transcript, truncated, original_length = _truncate(transcript)
         if not sent_transcript.strip():
             # A genuinely empty user-message content (not just a short one) is rejected
-            # outright by some OpenAI-compatible endpoints — confirmed live against the
-            # Lightning Model API proxy ("messages.1.user.content: Field required" for a
-            # literal ""). A real no-speech/silent-audio transcript is a legitimate,
+            # outright by some OpenAI-compatible endpoints — confirmed live
+            # ("messages.1.user.content: Field required" for a literal ""). A real
+            # no-speech/silent-audio transcript is a legitimate,
             # honestly-reported input, not an error — send a minimal, truthful placeholder
             # instead of the bare empty string so the request is well-formed.
             sent_transcript = "[no speech detected in this audio]"
