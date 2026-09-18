@@ -36,3 +36,17 @@ Canary-Qwen-2.5B (~1.6% WER on LibriSpeech clean) — a different model family t
 VoiceFlow's current provider chain (VoiceFlow's own NeMo Canary option is the much smaller
 `nvidia/canary-180m-flash`, not the leaderboard-topping 2.5B variant), noted here as an honest
 point of reference rather than a claim VoiceFlow matches or exceeds it.
+
+## Update — whisper-base on CPU, N=500 (2026-09-18)
+
+| Model | Device | N | WER | CER |
+|-------|--------|---|-----|-----|
+| base | CPU | 20 | 2.9% | 0.9% |
+| large-v3 | T4 GPU | 150 | 2.2% | 0.8% |
+| **base** | **CPU** | **500** | **6.4%** | **2.6%** |
+
+The full N≥500 run (`openslr/librispeech_asr` — the bare "librispeech_asr" repo id used by the
+old script is deprecated/removed on current `datasets`, fixed as part of this run) lands almost
+exactly on whisper-`base`'s published ~5-6% WER on full test-clean — confirming the earlier N=20
+number (2.9%) genuinely was the small-sample optimism the original caveat predicted, not a real
+model advantage. This is the statistically credible number going forward for the `base` CPU route.
