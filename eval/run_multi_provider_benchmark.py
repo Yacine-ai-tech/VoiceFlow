@@ -9,6 +9,7 @@ does against real LibriSpeech data. See WER_BENCHMARK.md for that methodology.
 
 Any provider without an API key set is skipped, not scored as a failure.
 """
+import argparse
 import asyncio
 import base64
 import math
@@ -156,11 +157,15 @@ class MultiProviderBenchmark:
 
 
 async def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--samples", type=int, default=25, help="attempts per provider")
+    args = ap.parse_args()
+
     print("=== VoiceFlow Multi-Provider ASR Latency Benchmark ===")
-    print("Testing across OpenAI, Gemini, and Groq providers (whichever have API keys set)")
+    print(f"Testing across OpenAI, Gemini, and Groq providers (whichever have API keys set), N={args.samples}")
 
     benchmark = MultiProviderBenchmark()
-    results = await benchmark.run_benchmark(n_iterations=5)
+    results = await benchmark.run_benchmark(n_iterations=args.samples)
 
     md_path = Path(__file__).resolve().parent / "MULTI_PROVIDER_BENCHMARK.md"
 
@@ -196,7 +201,7 @@ actual reference text.
 
 ## Setup
 - Audio: a generated 2s mono 16kHz sine-wave WAV (real, valid audio — not fake bytes)
-- Providers: OpenAI Whisper, Google Gemini, Groq Whisper — each tried {5} times
+- Providers: OpenAI Whisper, Google Gemini, Groq Whisper — each tried {args.samples} times
 - Metrics: average latency, success rate
 
 ## Results (this run)

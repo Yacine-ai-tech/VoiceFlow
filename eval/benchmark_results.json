@@ -1,11 +1,35 @@
 {
-  "benchmark": "VoiceFlow realtime audio downsampling latency (real audioop.ratecv call)",
-  "resample_24k_to_16k": {
-    "iterations": 1000,
-    "avg_ms": 0.03288,
-    "p50_ms": 0.03165,
-    "p99_ms": 0.05765
-  },
-  "note": "Frame-gating fidelity and end-to-end realtime voice latency are intentionally not reported by this script \u2014 see the module docstring for why, and eval/run_realtime_benchmark.py / REALTIME_BENCHMARK.md for a live-measured latency number.",
-  "timestamp": "2026-08-16T07:40:41Z"
+  "benchmark": "VoiceFlow realtime audio downsampling latency (24kHz\u219216kHz PCM)",
+  "active_backend": "scipy-resample_poly",
+  "backends": [
+    {
+      "backend": "soxr-HQ",
+      "available": false,
+      "note": "soxr not installed"
+    },
+    {
+      "backend": "scipy-resample_poly",
+      "available": true,
+      "iterations": 1000,
+      "avg_ms": 0.53574,
+      "p50_ms": 0.52251,
+      "p95_ms": 0.67933,
+      "p99_ms": 0.95029,
+      "min_ms": 0.41808,
+      "max_ms": 1.38335
+    },
+    {
+      "backend": "numpy-linear-interp",
+      "available": true,
+      "iterations": 1000,
+      "avg_ms": 0.03972,
+      "p50_ms": 0.03095,
+      "p95_ms": 0.04371,
+      "p99_ms": 0.06274,
+      "min_ms": 0.0244,
+      "max_ms": 7.64965
+    }
+  ],
+  "note": "Frame-gating fidelity and end-to-end realtime voice latency are intentionally not reported here \u2014 see run_realtime_benchmark.py / REALTIME_BENCHMARK.md for live-measured latency numbers.",
+  "timestamp": "2026-09-18T12:23:49Z"
 }
