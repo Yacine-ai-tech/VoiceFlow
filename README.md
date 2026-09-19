@@ -101,7 +101,8 @@ applicable, with no synthetic or fabricated numbers:
 python3 eval/run_wer_benchmark.py --n 20 --model base    # ASR word error rate (LibriSpeech)
 python3 eval/run_multi_provider_benchmark.py             # cross-provider ASR latency/success
 python3 eval/run_scenario_benchmark.py                   # named-scenario latency/success
-python3 eval/run_realtime_benchmark.py                   # realtime WS connection/latency
+python3 eval/run_realtime_benchmark.py                   # realtime WS connection/latency (single turn)
+python3 eval/run_realtime_turns_benchmark.py              # realtime WS handshake/completion across N turns
 python3 eval/run_action_item_benchmark.py                # full TTS→ASR→LLM action-item extraction
 python3 eval/run_benchmarks.py                           # realtime audio downsampling latency
 ```
