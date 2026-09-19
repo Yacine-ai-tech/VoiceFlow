@@ -167,13 +167,15 @@ real-world meeting accuracy.
   pyannote/NeMo integration specifically — §1's DER figures are the
   published model numbers, not a VoiceFlow-run evaluation.
 - The action-item benchmark's source corpus is synthetic (see §3).
-- No end-to-end realtime-latency breakdown (mic → network → provider →
-  speaker) has been measured and published for VoiceFlow's own deployment.
-  `REALTIME_BENCHMARK.md` now has real committed numbers for the Gemini
-  path (4.26s connection, 1.45s TTFB, in-process `TestClient` harness —
-  no real network hop), but that harness still can't measure a genuine
-  mic-to-speaker, network-inclusive breakdown; the OpenAI path remains
-  untested pending a working `REALTIME_API_KEY` for that provider.
+- A real, network-inclusive handshake and turn-completion measurement for
+  the Gemini path now exists at N=25 (`BENCHMARK.md` §4,
+  `eval/REALTIME_TURNS_BENCHMARK.md`): 1.157s mean handshake, 100% turn
+  completion, run against the live production deployment over a real
+  WebSocket rather than an in-process test harness. What remains
+  unmeasured is the full mic-to-speaker path (microphone capture and
+  speaker playback are outside the server boundary this benchmark can
+  reach), and the OpenAI Realtime path, which remains untested pending a
+  working `REALTIME_API_KEY` for that provider.
 
 ## 5. Natural next steps
 
@@ -188,6 +190,6 @@ sensible directions given the gaps in §4, not a roadmap:
 - A direct DER measurement of VoiceFlow's own pyannote/NeMo diarization
   paths against a labeled multi-speaker set, rather than citing published
   model-card numbers as a proxy.
-- An end-to-end realtime-latency study (mic capture → network → provider
-  → speaker output) broken down by stage, to identify where time actually
-  goes in the realtime voice path.
+- A microphone-to-speaker latency study broken down by stage (capture,
+  network, provider processing, playback) to identify where time goes
+  beyond the server-boundary measurement §4 already covers.
