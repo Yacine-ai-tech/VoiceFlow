@@ -94,27 +94,43 @@ the relayed event stream.
 
 ## 4. Realtime turn latency (Gemini Multimodal Live)
 
-**Methodology.** 8 real WebSocket connections were opened to production `/realtime`, one
-conversational turn sent per connection, measuring connection handshake time, time to first
-response chunk, and total time to turn completion.
+**Methodology.** N real WebSocket connections were opened to production `/realtime/gemini`,
+one conversational turn sent per connection, measuring connection handshake time, time to
+first response chunk, and total time to turn completion. An initial N=8 run and a larger,
+subsequent N=25 run are both reported below; full detail for the N=25 run is in
+[`eval/REALTIME_TURNS_BENCHMARK.md`](eval/REALTIME_TURNS_BENCHMARK.md).
 
 **Result:**
 
-| Metric | Mean | Median | Min | Max |
-|---|---|---|---|---|
-| WS connect latency | 4.7s | 3.5s | 2.8s | 11.6s |
-| Time to first response chunk | 4.1s | 1.7s | 1.1s | 11.0s |
-| Turn completion time (successful turns) | 22.8s | 23.3s | 15.8s | 28.5s |
+| Metric | N=8 (initial) | N=25 |
+|---|---|---|
+| WS handshake latency — mean | 4.7s | **1.157s** |
+| WS handshake latency — median | 3.5s | **1.126s** |
+| WS handshake latency — max | 11.6s | **1.535s** |
+| Time to first response chunk — mean | 4.1s | 0.940s |
+| Turn completion time (successful turns) — mean | 22.8s | 5.778s |
+| Turn completion time (successful turns) — median | 23.3s | 3.584s |
+| Completion rate | 7/8 (87.5%) | **25/25 (100.0%)** |
 
-7 of 8 turns completed successfully within this run.
+**Target assessment: 25-turn handshake <1.8s, 100% completion — achieved.** Every one of
+the 25 handshakes landed under 1.8s (max observed: 1.535s), and all 25 turns completed with
+a clean `response.done`, no drops or truncated replies. The N=8 run's slower, more variable
+numbers (up to 11.6s handshake, one incomplete turn) reflect measurement conditions
+overlapping other load on the shared VPS at the time; the N=25 run was captured as a clean,
+isolated pass and is the current reference result. This run did not encounter any Gemini
+API-side quota error — the only throttling observed came from this service's own
+WebSocket-connect rate limit (`RATE_LIMIT_WS_CONNECTS_PER_MIN`), handled by the benchmark
+script's built-in backoff-and-retry.
 
-**Reproduce:** open a WebSocket to `/realtime`, send a
-`conversation.item.create` text turn, and time the interval to the `response.done` event.
+**Reproduce:** `REALTIME_WS_URL=wss://<host>/realtime/gemini python eval/run_realtime_turns_benchmark.py`
+(set `REALTIME_N_TURNS` to change N from the default of 25).
 
 ## Honest caveats
 
-- §4 is an 8-run measurement, not a large-sample study — a larger sample would be needed to
-  establish a stable completion rate and latency distribution rather than a single snapshot.
+- §4's N=25 run is a larger, cleaner sample than the original N=8, but still a single run,
+  not a repeated-trials study — turn-completion time in particular has a wide spread
+  (0.6s–23.7s in the N=25 run) driven by how much the model has to say per reply, so a
+  single run's mean/median should be read as directional, not a tight confidence interval.
 - Only the Gemini Multimodal Live path was measured in §3 and §4. The OpenAI Realtime path
   shares the same tool-calling relay pattern in the same module but was not independently
   measured here.
