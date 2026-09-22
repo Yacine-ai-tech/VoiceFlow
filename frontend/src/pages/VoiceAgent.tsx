@@ -254,8 +254,11 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
   async attachMic(stream: MediaStream) {
     if (!this.pc) throw new Error("OpenAI transport not connected");
     this.stream = stream;
+    // addTrack() alone creates one sendrecv audio transceiver (mic out, model's
+    // voice back on the same m-line via ontrack). A separate addTransceiver()
+    // here used to add a second, recvonly-only audio m-line to the same offer —
+    // two audio sections in one SDP offer instead of one bidirectional one.
     stream.getAudioTracks().forEach((track) => this.pc!.addTrack(track, stream));
-    this.pc.addTransceiver("audio", { direction: "recvonly" });
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
     const headers: HeadersInit = { "Content-Type": "application/sdp", "X-VoiceFlow-Session": getSessionId() };
