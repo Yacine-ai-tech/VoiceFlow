@@ -27,9 +27,8 @@ provider than the one the scenario asked for, not a bug.
 
 > **Fixes that unblocked `accurate`/`streaming` since the previous run.** Two real, separate
 > issues were found and fixed while getting this run to a genuine pass, not just a config change:
-> 1. `LLM_REASONING`'s calls were routing through an inference-proxy account credential that
->    turned out to be the wrong one of two similarly-purposed Lightning AI credentials for this
->    specific endpoint — corrected to the right one.
+> 1. `LLM_REASONING`'s calls were routing through the wrong one of two similarly-purposed
+>    inference-proxy credentials for this specific endpoint — corrected to the right one.
 > 2. Once auth was fixed, both scenarios still failed with a `400` from the proxy
 >    (`messages.1.user.content: Field required`) because the test audio is a synthetic tone with
 >    no speech — Deepgram/AssemblyAI correctly transcribe that as an **empty string**, and this
