@@ -38,7 +38,7 @@ instructions: [SELF_HOSTING.md](SELF_HOSTING.md).
   [AgentKit](https://github.com/Yacine-ai-tech/AgentKit) ("talk to your business analyst" —
   ask about revenue, anomalies, or a forecast), but the bridge carries no AgentKit-specific
   code; any compliant service works.
-- **32 tests** across smoke, API, analyzer, voice, end-to-end, WebSocket, and real-time paths.
+- **35 tests** across smoke, API, analyzer, voice, end-to-end, WebSocket, and real-time paths.
 
 ## Quick Start
 
@@ -81,7 +81,7 @@ Then open http://localhost:8002/.
 
 ## Tests
 
-32 test functions across smoke, API, analyzer, voice, end-to-end, WebSocket, and real-time
+35 test functions across smoke, API, analyzer, voice, end-to-end, WebSocket, and real-time
 paths:
 
 ```bash
