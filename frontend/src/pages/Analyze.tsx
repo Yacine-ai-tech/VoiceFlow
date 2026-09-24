@@ -34,7 +34,7 @@ export default function Analyze() {
     setBusy(true); setErr(""); setResult(null); setActiveStage(0);
     const timer = setInterval(() => setActiveStage(s => Math.min(s + 1, tab === "audio" ? 3 : 2)), 1800);
     // The audio path runs transcription on a GPU-tier orchestrator capability
-    // (whisper) — a cold Studio can take well past a bare spinner's patience to
+    // (whisper) — a cold backend can take well past a bare spinner's patience to
     // wake and load the model. A running elapsed-time counter is the honest
     // signal for that path; the text path is a plain fast LLM call.
     const startedAt = Date.now();
