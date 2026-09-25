@@ -146,12 +146,10 @@ class Settings:
     @property
     def TELEMETRY_ENDPOINT(self) -> str:
         """Where the anonymous startup ping and periodic usage snapshot are sent
-        (see README.md's Telemetry section for the exact payloads). Blank by
-        default — no-op unless this or TELEMETRY_URL is set. Both the startup
-        ping and the periodic usage snapshot are skipped entirely when
-        TELEMETRY_OPT_OUT=true.
+        (see README.md's Telemetry section for the exact payloads). Defaults to the project
+        gateway URL — disable entirely with TELEMETRY_OPT_OUT=true or DO_NOT_TRACK=1.
         """
-        return os.getenv("TELEMETRY_ENDPOINT", os.environ.get("TELEMETRY_URL", "")).strip()
+        return os.getenv("TELEMETRY_ENDPOINT", os.environ.get("TELEMETRY_URL", "https://gateway.ysiddo-ai-projects.app/telemetry")).strip()
 
     @property
     def INTERNAL_TOKEN(self) -> str:
