@@ -36,6 +36,10 @@ class Settings:
     # Override via env if you're fronting these with your own OpenAI-compatible gateway.
     LLM_REASONING = os.getenv("LLM_REASONING", "anthropic/claude-sonnet-4-6")
     LLM_JUDGE = os.getenv("LLM_JUDGE", "anthropic/claude-haiku-4-5")
+    # Fallback models — set ONLY in VPS .env when the primary provider key is unavailable.
+    # Leave empty to preserve primary behaviour for all cloners with valid keys.
+    LLM_REASONING_FALLBACK = os.getenv("LLM_REASONING_FALLBACK", "")
+    LLM_JUDGE_FALLBACK = os.getenv("LLM_JUDGE_FALLBACK", "")
 
     @property
     def GROQ_API_KEY(self) -> str:
