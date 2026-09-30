@@ -47,6 +47,8 @@ STATUS.md
 # commentary ("fixed this session", live-verification notes) that belongs in
 # a local reference doc, not the public repo history.
 ARCHITECTURE.md
+architecture.md
+Architecture.md
 
 # Writing drafts (publish later, not in repo)
 drafts/
@@ -63,3 +65,5 @@ frontend/node_modules/
 frontend/playwright-report/
 frontend/test-results/
 PROJECT_OVERVIEW.md
+project_overview.md
+Project_Overview.md
