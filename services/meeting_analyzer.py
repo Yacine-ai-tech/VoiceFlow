@@ -29,6 +29,28 @@ try:
 except ImportError:
     _LITELLM = False
 
+_AUTH_SIGNALS = ("AuthenticationError", "PermissionDeniedError", "401", "403",
+                 "invalid_api_key", "invalid api key")
+
+
+async def _llm_with_fallback(model: str, messages: list, fallback: str = "", **kwargs) -> Any:
+    """acompletion wrapper with auth-error fallback to a provider override model.
+
+    ``fallback`` comes from settings.LLM_REASONING_FALLBACK / LLM_JUDGE_FALLBACK —
+    only set in the VPS .env when the primary provider key is unavailable. Never
+    hardcoded; cloners with valid keys always use the primary model.
+    """
+    try:
+        return await acompletion(model=model, messages=messages, **kwargs)
+    except Exception as exc:
+        is_auth = any(s.lower() in str(exc).lower() or s.lower() in type(exc).__name__.lower()
+                      for s in _AUTH_SIGNALS)
+        if is_auth and fallback and fallback != model:
+            log.warning("model=%s auth failed — retrying with fallback %s", model, fallback)
+            return await acompletion(model=fallback, messages=messages, **kwargs)
+        raise
+
+
 # Ceiling on a single LLM call. Without this, a rate-limited or slow
 # upstream provider (litellm retries 429s internally with its own backoff,
 # not bounded by anything the caller can see) can hold a request open
@@ -130,13 +152,15 @@ class MeetingAnalyzer:
             # instead of the bare empty string so the request is well-formed.
             sent_transcript = "[no speech detected in this audio]"
         try:
+            fallback = settings.LLM_REASONING_FALLBACK if "reasoning" in model.lower() or model == settings.LLM_REASONING else settings.LLM_JUDGE_FALLBACK
             resp = await asyncio.wait_for(
-                acompletion(
+                _llm_with_fallback(
                     model=model,
                     messages=[
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": sent_transcript},
                     ],
+                    fallback=fallback,
                     temperature=0.2,
                 ),
                 timeout=ANALYSIS_TIMEOUT_SECONDS,
@@ -170,12 +194,13 @@ class MeetingAnalyzer:
         sent_transcript, truncated, original_length = _truncate(transcript)
         try:
             resp = await asyncio.wait_for(
-                acompletion(
+                _llm_with_fallback(
                     model=settings.LLM_REASONING,
                     messages=[
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": sent_transcript},
                     ],
+                    fallback=settings.LLM_REASONING_FALLBACK,
                     temperature=0.1,
                 ),
                 timeout=ANALYSIS_TIMEOUT_SECONDS,
