@@ -9,12 +9,27 @@ import { ANALYSIS_TYPES, api, getSessionId, PipelineResult, saveHistory } from "
 
 type Phase = "idle" | "recording" | "processing" | "done" | "error";
 
+const ASR_PROVIDERS = [
+  { value: "GROQ_WHISPER", label: "Groq Whisper" },
+  { value: "DEEPGRAM", label: "Deepgram" },
+  { value: "ASSEMBLYAI", label: "AssemblyAI" },
+  { value: "LOCAL_WHISPERX", label: "WhisperX" },
+];
+
+const LANGUAGES = [
+  { value: "auto", label: "Auto" },
+  { value: "en", label: "English" },
+  { value: "fr", label: "French" },
+];
+
 /* Live transcription is REAL now: audio chunks stream to WS /stream, which re-transcribes
    the growing buffer via the provider router and returns partial + final transcripts. */
 
 export default function Record() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [mode, setMode] = useState("meeting");
+  const [provider, setProvider] = useState("GROQ_WHISPER");
+  const [language, setLanguage] = useState("auto");
   const [elapsed, setElapsed] = useState(0);
   const [err, setErr] = useState("");
   const [result, setResult] = useState<PipelineResult | null>(null);
@@ -54,11 +69,7 @@ export default function Record() {
         const proto = location.protocol === "https:" ? "wss" : "ws";
         wsUrl = `${proto}://${location.host}/stream`;
       }
-      // Browsers can't set custom headers on a WS handshake, so the session
-      // ID (same one every HTTP call sends via X-VoiceFlow-Session) travels
-      // as a query param here instead — keeps /analytics scoped to this
-      // browser either way.
-      wsUrl += `?session=${encodeURIComponent(getSessionId())}`;
+      wsUrl += `?session=${encodeURIComponent(getSessionId())}&provider=${encodeURIComponent(provider)}&language=${encodeURIComponent(language)}`;
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -149,7 +160,7 @@ export default function Record() {
     setPhase("processing"); setErr(""); setActiveStage(0);
     const timer = setInterval(() => setActiveStage(s => Math.min(s + 1, 3)), 2000);
     try {
-      const res = await api.pipeline(b, "recording.webm", mode);
+      const res = await api.pipeline(b, "recording.webm", mode, provider, language);
       setResult(res);
       setPhase("done");
       saveHistory({ ts: Date.now(), kind: mode, title: `Recording · ${fmt(elapsed)}`, durationSec: elapsed, result: res });
@@ -172,9 +183,19 @@ export default function Record() {
 
       <Card>
         <div className="flex flex-col items-center gap-5 py-6">
-          <div>
-            <Label>Intelligence mode</Label>
-            <Segmented value={mode} onChange={setMode} options={ANALYSIS_TYPES.map((t) => ({ value: t.value, label: t.label }))} />
+          <div className="flex flex-wrap items-center justify-center gap-6">
+            <div>
+              <Label>Intelligence mode</Label>
+              <Segmented value={mode} onChange={setMode} options={ANALYSIS_TYPES.map((t) => ({ value: t.value, label: t.label }))} />
+            </div>
+            <div>
+              <Label>ASR Engine</Label>
+              <Segmented value={provider} onChange={setProvider} options={ASR_PROVIDERS} />
+            </div>
+            <div>
+              <Label>Language</Label>
+              <Segmented value={language} onChange={setLanguage} options={LANGUAGES} />
+            </div>
           </div>
 
           {phase === "recording" ? (
