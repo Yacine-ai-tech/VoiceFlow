@@ -13,10 +13,10 @@ const SAMPLE =
   "Sarah: Agreed. Also — the onboarding revamp slipped a week; new target is August 3rd. Tom owns the rollout comms.";
 
 const ASR_PROVIDERS = [
-  { value: "GROQ_WHISPER", label: "Groq Whisper" },
   { value: "DEEPGRAM", label: "Deepgram Nova-3" },
   { value: "ASSEMBLYAI", label: "AssemblyAI" },
-  { value: "LOCAL_WHISPERX", label: "WhisperX" },
+  { value: "GROQ_WHISPER", label: "Groq Whisper" },
+  { value: "LOCAL_WHISPER", label: "Local Whisper (CPU)" },
 ];
 
 const LANGUAGES = [
@@ -99,7 +99,7 @@ export default function Analyze() {
       <div className="grid gap-4 lg:grid-cols-[420px_1fr]">
         <Card title="Input">
           <div className="space-y-4">
-            <Segmented value={tab} onChange={(t) => { setTab(t); setErr(""); }} options={[{ value: "text", label: "Transcript text" }, { value: "audio", label: "Audio file" }]} />
+            <Segmented value={tab} onChange={(t) => { setTab(t); setErr(""); }} options={[{ value: "text", label: "Transcript text" }, { value: "audio", label: "Audio file (Deepgram / AssemblyAI)" }]} />
             <div>
               <Label>Intelligence mode</Label>
               <Segmented value={mode} onChange={setMode} options={[...ANALYSIS_TYPES.map((t) => ({ value: t.value, label: t.label })), { value: "custom", label: "Custom schema" }]} />
