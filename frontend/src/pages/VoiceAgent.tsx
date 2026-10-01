@@ -429,6 +429,7 @@ export default function VoiceAgent() {
   const [showTelemetry, setShowTelemetry] = useState(false);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [activeTool, setActiveTool] = useState<string | null>(null);
+  const [showPermissionModal, setShowPermissionModal] = useState(false);
 
   const cfgRef = useRef<RealtimeConfig | null>(null);
   const transportRef = useRef<RealtimeTransport | null>(null);
@@ -974,11 +975,23 @@ export default function VoiceAgent() {
       playbackCtxRef.current = null;
       setIsRecording(false);
       let userNotice = err.message || String(err);
-      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-        userNotice = "Microphone access was denied. On mobile, tap the lock/settings icon in your browser address bar to enable microphone permissions for this site, then try again.";
+      const isDenied =
+        err.name === "NotAllowedError" ||
+        err.name === "PermissionDeniedError" ||
+        (err.message && err.message.toLowerCase().includes("permission")) ||
+        (err.message && err.message.toLowerCase().includes("denied"));
+
+      if (isDenied) {
+        userNotice = "Microphone access was denied. Tap here to grant permission.";
+        setShowPermissionModal(true);
       }
       setErrorMsg(userNotice);
-      setState("error");
+      // If the transport connection was already established, keep state as "ready" so the user can retry
+      if (wasReadyRef.current) {
+        setState("ready");
+      } else {
+        setState("error");
+      }
       addTelemetryLog("audio.error", userNotice, "error");
     }
   };
@@ -1007,14 +1020,14 @@ export default function VoiceAgent() {
           </div>
         </Card>
       ) : (
-        <div className="flex flex-1 gap-4 overflow-hidden min-h-0">
+        <div className="flex flex-1 flex-col md:flex-row gap-3 sm:gap-4 overflow-hidden min-h-0 relative">
           {/* Main Chat & Voice Interaction Area */}
           <Card className="flex flex-1 flex-col p-0 overflow-hidden shadow-card">
             {/* Session Status Header */}
-            <div className="flex items-center justify-between border-b border-line px-5 py-3 bg-surface">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-line px-3.5 py-2.5 sm:px-5 sm:py-3 gap-2.5 bg-surface">
               <div className="flex items-center gap-3">
                 <div
-                  className={`h-2.5 w-2.5 rounded-full ${
+                  className={`h-2.5 w-2.5 rounded-full shrink-0 ${
                     state === "ready"
                       ? "bg-ok ring-4 ring-ok/20"
                       : state === "error" || state === "closed"
@@ -1023,7 +1036,7 @@ export default function VoiceAgent() {
                   }`}
                 />
                 <div className="flex flex-col">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-[13px] font-semibold text-body">
                       {state === "ready"
                         ? "Live Agent Ready"
@@ -1046,7 +1059,7 @@ export default function VoiceAgent() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
                 <Button
                   variant="ghost"
                   className="px-2.5 py-1.5 text-xs text-muted hover:text-body"
@@ -1054,7 +1067,7 @@ export default function VoiceAgent() {
                   title="Toggle Telemetry Drawer"
                 >
                   <Activity size={14} className={showTelemetry ? "text-[var(--accent)]" : ""} />
-                  <span className="hidden sm:inline">Telemetry</span>
+                  <span className="hidden xs:inline sm:inline">Telemetry</span>
                 </Button>
 
                 {msgs.length > 0 && (
@@ -1069,7 +1082,7 @@ export default function VoiceAgent() {
                 )}
 
                 {(state === "error" || state === "closed") && (
-                  <Button variant="secondary" onClick={() => connect(false)}>
+                  <Button variant="secondary" onClick={() => connect(false)} className="text-xs py-1.5 px-3">
                     Reconnect
                   </Button>
                 )}
@@ -1077,18 +1090,32 @@ export default function VoiceAgent() {
                 <Button
                   variant={isRecording ? "danger" : "primary"}
                   onClick={isRecording ? stopVoice : startVoice}
-                  disabled={state !== "ready"}
-                  className="px-4 py-1.5"
+                  disabled={state !== "ready" && state !== "error"}
+                  className="px-3.5 sm:px-4 py-1.5 text-xs sm:text-sm font-semibold shadow-sm"
                 >
-                  {isRecording ? <MicOff size={14} /> : <Mic size={14} />}
+                  {isRecording ? <MicOff size={15} /> : <Mic size={15} />}
                   <span>{isRecording ? "End Call" : "Start Live Voice"}</span>
                 </Button>
               </div>
             </div>
 
+            {/* Tap-to-fix Permission & Warning Banner */}
+            {errorMsg && !isRecording && (
+              <div
+                onClick={() => setShowPermissionModal(true)}
+                className="flex items-center justify-between gap-2 bg-warn/10 border-b border-warn/25 px-3.5 sm:px-5 py-2 text-[12px] text-body cursor-pointer hover:bg-warn/15 transition-colors"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <AlertTriangle size={14} className="text-warn shrink-0" />
+                  <span className="truncate">{errorMsg}</span>
+                </div>
+                <span className="text-[11px] font-semibold text-warn shrink-0 underline ml-2">Tap for setup</span>
+              </div>
+            )}
+
             {/* Active Tool Execution Banner */}
             {activeTool && (
-              <div className="flex items-center gap-2 bg-[var(--accent)]/10 border-b border-[var(--accent)]/20 px-5 py-2 text-[12px] text-body animate-pulse">
+              <div className="flex items-center gap-2 bg-[var(--accent)]/10 border-b border-[var(--accent)]/20 px-3.5 sm:px-5 py-2 text-[12px] text-body animate-pulse">
                 <Wrench size={14} className="text-[var(--accent)]" />
                 <span className="font-medium">Executing Tool:</span>
                 <code className="font-mono text-[var(--accent)] font-semibold">{activeTool}</code>
@@ -1096,15 +1123,15 @@ export default function VoiceAgent() {
             )}
 
             {/* Message Timeline */}
-            <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-5 space-y-4 relative bg-surface-2/30">
+            <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-3.5 sm:p-5 space-y-3 sm:space-y-4 relative bg-surface-2/30">
               {msgs.length === 0 && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center text-muted select-none p-6 text-center">
-                  <div className="rounded-full bg-surface-2 p-4 border border-line mb-3 shadow-inner">
-                    <Sparkles size={28} className="text-[var(--accent)] opacity-80" />
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-muted select-none p-4 sm:p-6 text-center">
+                  <div className="rounded-full bg-surface-2 p-3 sm:p-4 border border-line mb-3 shadow-inner">
+                    <Sparkles size={26} className="text-[var(--accent)] opacity-80" />
                   </div>
                   <h3 className="font-semibold text-body text-[15px]">Bidirectional Voice Agent</h3>
                   <p className="text-[13px] text-muted max-w-sm mt-1 leading-relaxed">
-                    Click <strong>Start Live Voice</strong> to begin. Speak naturally in English to query metrics, KPIs, or converse with the AI model.
+                    Click <strong>Start Live Voice</strong> to begin. Speak naturally in your preferred language to converse in real time with the AI voice agent.
                   </p>
                 </div>
               )}
@@ -1159,7 +1186,7 @@ export default function VoiceAgent() {
             </div>
 
             {/* Bottom Audio Activity & Live Visualizer Bar */}
-            <div className="border-t border-line bg-surface px-5 py-3 flex items-center justify-between gap-4">
+            <div className="border-t border-line bg-surface px-3.5 sm:px-5 py-2.5 sm:py-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 sm:gap-4">
               <div className="flex items-center gap-3">
                 {/* Visualizer bars */}
                 <div className="flex gap-1 h-4 items-end">
@@ -1204,8 +1231,8 @@ export default function VoiceAgent() {
               </div>
 
               {/* Quick Telemetry Pill */}
-              <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted">
-                <Clock size={12} className="text-dim" />
+              <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted overflow-hidden">
+                <Clock size={12} className="text-dim shrink-0" />
                 <span className="truncate font-mono">
                   {metrics.length > 0
                     ? metrics
@@ -1220,92 +1247,172 @@ export default function VoiceAgent() {
 
           {/* Collapsible Telemetry & Event Inspector Panel */}
           {showTelemetry && (
-            <Card className="w-80 flex flex-col p-0 overflow-hidden shadow-card border-line animate-in slide-in-from-right duration-200">
-              <div className="flex items-center justify-between border-b border-line px-4 py-3 bg-surface">
-                <div className="flex items-center gap-2">
-                  <Terminal size={15} className="text-[var(--accent)]" />
-                  <span className="text-[13px] font-semibold text-body">Live Telemetry & Logs</span>
-                </div>
-                <Button variant="ghost" className="p-1 h-6 w-6 text-muted hover:text-body" onClick={() => setShowTelemetry(false)}>
-                  ✕
-                </Button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-4 space-y-4 text-[12px]">
-                {/* Session Config */}
-                <div className="space-y-1.5">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-muted flex items-center gap-1">
-                    <Wifi size={11} /> Connection Metadata
+            <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60 backdrop-blur-sm md:static md:z-auto md:bg-transparent md:flex-row md:w-80 md:shrink-0 animate-in fade-in">
+              <Card className="w-full max-h-[85vh] md:max-h-none md:w-80 flex flex-col p-0 overflow-hidden shadow-2xl md:shadow-card border-line rounded-t-2xl md:rounded-xl">
+                <div className="flex items-center justify-between border-b border-line px-4 py-3 bg-surface">
+                  <div className="flex items-center gap-2">
+                    <Terminal size={15} className="text-[var(--accent)]" />
+                    <span className="text-[13px] font-semibold text-body">Live Telemetry & Logs</span>
                   </div>
-                  <div className="rounded-lg bg-surface-2 p-2.5 border border-line font-mono text-[11px] space-y-1">
-                    <div className="flex justify-between">
-                      <span className="text-muted">Provider:</span>
-                      <span className="text-body font-semibold">{cfgRef.current?.provider || "gemini"}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted">Session ID:</span>
-                      <span className="text-body truncate max-w-[120px]">{getSessionId()}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted">State:</span>
-                      <span className={state === "ready" ? "text-ok" : "text-warn"}>{state}</span>
-                    </div>
-                  </div>
+                  <Button variant="ghost" className="p-1 h-7 w-7 text-muted hover:text-body rounded-full" onClick={() => setShowTelemetry(false)}>
+                    ✕
+                  </Button>
                 </div>
 
-                {/* Latency Benchmarks */}
-                <div className="space-y-1.5">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-muted flex items-center gap-1">
-                    <Activity size={11} /> Latency Breakdown
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 text-[12px]">
+                  {/* Session Config */}
+                  <div className="space-y-1.5">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-muted flex items-center gap-1">
+                      <Wifi size={11} /> Connection Metadata
+                    </div>
+                    <div className="rounded-lg bg-surface-2 p-2.5 border border-line font-mono text-[11px] space-y-1">
+                      <div className="flex justify-between">
+                        <span className="text-muted">Provider:</span>
+                        <span className="text-body font-semibold">{cfgRef.current?.provider || "gemini"}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted">Session ID:</span>
+                        <span className="text-body truncate max-w-[120px]">{getSessionId()}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted">State:</span>
+                        <span className={state === "ready" ? "text-ok" : "text-warn"}>{state}</span>
+                      </div>
+                    </div>
                   </div>
-                  <div className="rounded-lg bg-surface-2 p-2.5 border border-line font-mono text-[11px] space-y-1">
-                    {metrics.length === 0 ? (
-                      <div className="text-muted text-[11px] py-1 text-center">Awaiting turn metrics...</div>
-                    ) : (
-                      metrics.slice(-6).map((m, i) => (
-                        <div key={i} className="flex justify-between">
-                          <span className="text-muted">{m.event}:</span>
-                          <span className="text-body font-medium">{m.elapsed_ms}ms</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
 
-                {/* Live Event Stream */}
-                <div className="space-y-1.5">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-muted flex items-center gap-1">
-                    <Layers size={11} /> Event Stream ({events.length})
-                  </div>
-                  <div className="rounded-lg bg-surface-2 p-2 border border-line font-mono text-[10px] space-y-1.5 max-h-64 overflow-y-auto">
-                    {events.length === 0 ? (
-                      <div className="text-muted text-center py-2">No events recorded</div>
-                    ) : (
-                      events.map((e) => {
-                        const color =
-                          e.level === "success"
-                            ? "text-ok"
-                            : e.level === "warn"
-                            ? "text-warn"
-                            : e.level === "error"
-                            ? "text-bad"
-                            : "text-muted";
-                        return (
-                          <div key={e.id} className="border-b border-line/50 pb-1 last:border-0 last:pb-0">
-                            <div className="flex justify-between items-center">
-                              <span className={`font-semibold ${color}`}>{e.type}</span>
-                              <span className="text-[9px] text-dim">{new Date(e.timestamp).toLocaleTimeString([], { hour12: false, minute: "2-digit", second: "2-digit" })}</span>
-                            </div>
-                            {e.detail && <div className="text-dim truncate">{e.detail}</div>}
+                  {/* Latency Benchmarks */}
+                  <div className="space-y-1.5">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-muted flex items-center gap-1">
+                      <Activity size={11} /> Latency Breakdown
+                    </div>
+                    <div className="rounded-lg bg-surface-2 p-2.5 border border-line font-mono text-[11px] space-y-1">
+                      {metrics.length === 0 ? (
+                        <div className="text-muted text-[11px] py-1 text-center">Awaiting turn metrics...</div>
+                      ) : (
+                        metrics.slice(-6).map((m, i) => (
+                          <div key={i} className="flex justify-between">
+                            <span className="text-muted">{m.event}:</span>
+                            <span className="text-body font-medium">{m.elapsed_ms}ms</span>
                           </div>
-                        );
-                      })
-                    )}
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Live Event Stream */}
+                  <div className="space-y-1.5">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-muted flex items-center gap-1">
+                      <Layers size={11} /> Event Stream ({events.length})
+                    </div>
+                    <div className="rounded-lg bg-surface-2 p-2 border border-line font-mono text-[10px] space-y-1.5 max-h-64 overflow-y-auto">
+                      {events.length === 0 ? (
+                        <div className="text-muted text-center py-2">No events recorded</div>
+                      ) : (
+                        events.map((e) => {
+                          const color =
+                            e.level === "success"
+                              ? "text-ok"
+                              : e.level === "warn"
+                              ? "text-warn"
+                              : e.level === "error"
+                              ? "text-bad"
+                              : "text-muted";
+                          return (
+                            <div key={e.id} className="border-b border-line/50 pb-1 last:border-0 last:pb-0">
+                              <div className="flex justify-between items-center">
+                                <span className={`font-semibold ${color}`}>{e.type}</span>
+                                <span className="text-[9px] text-dim">{new Date(e.timestamp).toLocaleTimeString([], { hour12: false, minute: "2-digit", second: "2-digit" })}</span>
+                              </div>
+                              {e.detail && <div className="text-dim truncate">{e.detail}</div>}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            </Card>
+              </Card>
+            </div>
           )}
+        </div>
+      )}
+
+      {/* Interactive Microphone Permission Modal */}
+      {showPermissionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="w-full max-w-md rounded-2xl bg-surface border border-line shadow-2xl p-5 sm:p-6 text-body space-y-4">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-xl bg-warn/15 border border-warn/30 flex items-center justify-center text-warn shrink-0">
+                  <Mic size={22} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-body">Microphone Access Needed</h3>
+                  <p className="text-xs text-muted">Grant permission to enable live voice conversation</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPermissionModal(false)}
+                className="text-muted hover:text-body p-1 rounded-lg text-lg leading-none"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-muted leading-relaxed">
+              Your browser blocked microphone access. To talk with the voice agent in real time, please tap the button below to allow access or follow the instructions for your device.
+            </p>
+
+            {/* Direct Action Button (user tap initiates getUserMedia) */}
+            <div className="pt-1">
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setShowPermissionModal(false);
+                  startVoice();
+                }}
+                className="w-full py-2.5 text-sm font-semibold flex items-center justify-center gap-2 shadow-lg"
+              >
+                <Mic size={16} />
+                <span>Grant Permission & Start Call</span>
+              </Button>
+            </div>
+
+            {/* Mobile Browser Step-by-Step Instructions */}
+            <div className="rounded-xl bg-surface-2 p-3.5 border border-line space-y-2.5 text-xs">
+              <div className="flex items-center gap-2 border-b border-line pb-2">
+                <span className="font-semibold text-body text-[11px] uppercase tracking-wider">How to enable on mobile:</span>
+              </div>
+
+              <div className="space-y-2.5 text-dim text-[11px] leading-relaxed">
+                <div>
+                  <strong className="text-body block mb-0.5">📱 Apple iOS Safari (iPhone / iPad):</strong>
+                  1. Tap the <span className="font-mono bg-surface px-1 py-0.5 rounded border border-line">aA</span> or <span className="font-mono bg-surface px-1 py-0.5 rounded border border-line">Website Settings</span> button in the address bar.<br/>
+                  2. Tap <strong>Website Settings</strong> &gt; <strong>Microphone</strong> &gt; choose <strong>Allow</strong>.<br/>
+                  3. Tap <strong>Done</strong>, then tap <strong>Grant Permission & Start Call</strong> above.
+                </div>
+
+                <div className="pt-2 border-t border-line/60">
+                  <strong className="text-body block mb-0.5">🤖 Android Chrome / Edge:</strong>
+                  1. Tap the <strong>Lock 🔒 / Tune</strong> icon next to the address bar.<br/>
+                  2. Tap <strong>Permissions</strong> &gt; <strong>Microphone</strong> &gt; choose <strong>Allow</strong>.<br/>
+                  3. Tap <strong>Grant Permission & Start Call</strong> above.
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-1">
+              <Button
+                variant="ghost"
+                onClick={() => setShowPermissionModal(false)}
+                className="text-xs text-muted hover:text-body py-1.5 px-3"
+              >
+                Dismiss
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

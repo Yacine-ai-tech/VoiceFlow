@@ -93,10 +93,18 @@ def _cache_key(name: str, arguments: Optional[Dict[str, Any]]) -> str:
 
 def _auth_headers() -> Dict[str, str]:
     """Return the auth header dict for requests to AGENT_TOOLS_URL.
-    Uses X-AgentKit-Internal-Token when a token is configured; empty otherwise.
+    Sends standard Authorization Bearer header as well as common token headers
+    so any compliant external agent service can authenticate requests.
     """
     token = settings.AGENT_TOOLS_TOKEN
-    return {"X-AgentKit-Internal-Token": token} if token else {}
+    if not token:
+        return {}
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Agent-Tools-Token": token,
+        "X-Internal-Token": token,
+        "X-AgentKit-Internal-Token": token,
+    }
 
 
 def _params_to_json_schema(params: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -121,9 +129,9 @@ def _params_to_json_schema(params: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _effect_suffix(effect: str) -> str:
     """Human-readable suffix appended to tool descriptions for non-read tools."""
     if effect == "write":
-        return " [ACTION: writes data — requires AGENTKIT_ALLOW_WRITES on the service]"
+        return " [ACTION: writes/modifies data on external service]"
     if effect == "destructive":
-        return " [ACTION: destructive — requires human approval_token]"
+        return " [ACTION: destructive action — requires explicit approval]"
     return ""
 
 
@@ -170,7 +178,7 @@ async def _refresh_cache(force: bool = False) -> None:
     except Exception as exc:
         log.warning("agent-tools discovery failed (%s) — continuing without tools", exc)
         # If we had a previous good discovery, keep serving it. A transient
-        # AgentKit/Render cold start should not remove tools from live sessions.
+        # downstream service cold start should not remove tools from live sessions.
         if _cache["tools"] is None:
             _cache.update({"tools": [], "resources": [], "prompts": [], "gemini_tools": [], "fetched_at": time.time()})
 
