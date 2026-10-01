@@ -164,9 +164,14 @@ PROMPTS: Dict[str, str] = {
 
 
 def _strip_fences(text: str) -> str:
-    text = re.sub(r"^```(?:json)?\s*", "", text.strip())
-    text = re.sub(r"\s*```$", "", text)
-    return text.strip()
+    text = text.strip()
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+    if match:
+        return match.group(1).strip()
+    brace_match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
+    if brace_match:
+        return brace_match.group(1).strip()
+    return text
 
 
 class MeetingAnalyzer:
