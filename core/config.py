@@ -78,7 +78,7 @@ class Settings:
     @property
     def GEMINI_API_KEYS(self) -> list[str]:
         keys: list[str] = []
-        for k in ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "REALTIME_API_KEY"]:
+        for k in ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "GEMINI_API_KEY_4", "REALTIME_API_KEY"]:
             val = os.getenv(k, "").strip()
             if val and val not in keys:
                 keys.append(val)
