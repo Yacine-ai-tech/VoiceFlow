@@ -21,6 +21,9 @@ export default function Speech() {
   const [err, setErr] = useState("");
   const [url, setUrl] = useState<string | null>(null);
   const [isWav, setIsWav] = useState(false);
+  const [actualProvider, setActualProvider] = useState<string | null>(null);
+  const [wasTranslated, setWasTranslated] = useState(false);
+  const [translatedText, setTranslatedText] = useState<string | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
 
   // ElevenLabs voices — stock library voices + real cloned ones.
@@ -73,9 +76,12 @@ export default function Speech() {
     setElapsedMs(0);
     const elapsedTimer = window.setInterval(() => setElapsedMs(Date.now() - startedAt), 250);
     try {
-      const { url: u, isWav: wav } = await api.tts(text, lang, gender, provider, provider === "elevenlabs" ? voiceId || undefined : undefined);
-      setIsWav(wav);
-      setUrl((old) => { if (old) URL.revokeObjectURL(old); return u; });
+      const res = await api.tts(text, lang, gender, provider, provider === "elevenlabs" ? voiceId || undefined : undefined);
+      setIsWav(res.isWav);
+      setActualProvider(res.actualProvider);
+      setWasTranslated(res.translated);
+      setTranslatedText(res.translatedText || null);
+      setUrl((old) => { if (old) URL.revokeObjectURL(old); return res.url; });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally { window.clearInterval(elapsedTimer); setBusy(false); }
@@ -195,6 +201,24 @@ export default function Speech() {
         <Card title="Audio">
           {url ? (
             <div className="space-y-3">
+              {actualProvider && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Chip tone={actualProvider === "elevenlabs" ? "ok" : actualProvider === "kokoro" ? "accent" : "default"}>
+                    Provider: {actualProvider.toUpperCase()}
+                  </Chip>
+                  {actualProvider !== provider && (
+                    <span className="text-[12px] text-muted">
+                      (Requested {provider}, fell back to {actualProvider})
+                    </span>
+                  )}
+                </div>
+              )}
+              {wasTranslated && translatedText && (
+                <div className="rounded-lg border border-line bg-surface-2 p-2.5 text-xs text-dim">
+                  <span className="font-semibold text-body">Translated to French: </span>
+                  <span className="italic">{translatedText}</span>
+                </div>
+              )}
               <audio controls autoPlay src={url} className="w-full" />
               <a
                 href={url}

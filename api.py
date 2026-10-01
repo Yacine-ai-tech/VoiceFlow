@@ -48,7 +48,7 @@ from services import agent_tools_bridge, relay_formatting, scenarios
 from services.meeting_analyzer import MeetingAnalyzer
 from services.transcription_router import transcribe as route_transcribe
 from services import tts_service
-from services.tts_service import generate_speech
+from services.tts_service import generate_speech, generate_speech_with_meta
 
 log = get_logger(__name__)
 
@@ -364,6 +364,7 @@ def _check_diarization_available(settings) -> dict:
 class AnalyzeRequest(BaseModel):
     text: str
     analysis_type: str = "meeting"
+    language: Optional[str] = "auto"
 
 
 class TTSRequest(BaseModel):
@@ -424,21 +425,17 @@ async def tts_endpoint(req: TTSRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text required")
 
-    # On-the-fly translation (simple heuristic: if target language is 'fr', translate first using configured LLM)
+    # On-the-fly translation: if target voice language is 'fr', translate English text first
     text_to_speak = req.text
+    was_translated = False
     if req.language == "fr":
         try:
-            from litellm import acompletion
-            # settings.LLM_REASONING/LLM_DEFAULT already resolve to this project's real
-            # configured tiers (e.g. anthropic/claude-sonnet-4-6) even when the matching
-            # env var isn't literally set — os.getenv() against the raw env would miss
-            # that code-level default and silently fall through to an unconfigured
-            # "gpt-4o-mini" (no OPENAI_API_KEY here), making translation a silent no-op.
-            model = settings.LLM_REASONING or settings.LLM_DEFAULT
-            resp = await acompletion(
+            from services.meeting_analyzer import _llm_with_fallback
+            model = settings.LLM_DEFAULT or "groq/openai/gpt-oss-120b"
+            resp = await _llm_with_fallback(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "You are a professional translator. Translate the given text to French. Only return the translated text without any quotes or explanations."},
+                    {"role": "system", "content": "You are a professional translator. Translate the given text to natural, fluent French for speech synthesis. Only return the translated French text without any quotes, preambles, notes, or explanations."},
                     {"role": "user", "content": text_to_speak}
                 ],
                 max_tokens=1024,
@@ -446,25 +443,36 @@ async def tts_endpoint(req: TTSRequest):
             )
             if resp.choices and resp.choices[0].message.content:
                 text_to_speak = resp.choices[0].message.content.strip()
+                was_translated = True
         except Exception as e:
             log.warning("On-the-fly translation to French failed, proceeding with original text: %s", e)
 
     try:
-        audio = await generate_speech(text_to_speak, language=req.language,
-                                      voice_gender=req.voice_gender, provider=req.provider,
-                                      voice_id=req.voice_id)
+        audio, actual_provider = await generate_speech_with_meta(
+            text_to_speak, language=req.language,
+            voice_gender=req.voice_gender, provider=req.provider,
+            voice_id=req.voice_id
+        )
     except RuntimeError as e:  # edge-tts not installed
         raise HTTPException(status_code=501, detail=str(e))
     except Exception as e:
         log.exception("tts failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
-    is_wav = (req.provider or "").strip().lower() == "kokoro" and audio[:4] == b"RIFF"
+    is_wav = (actual_provider == "kokoro") and audio[:4] == b"RIFF"
     media_type = "audio/wav" if is_wav else "audio/mpeg"
+    headers = {
+        "Content-Disposition": f'inline; filename="speech.{"wav" if is_wav else "mp3"}"',
+        "X-VoiceFlow-TTS-Provider": actual_provider,
+        "X-VoiceFlow-Translated": "true" if was_translated else "false",
+    }
+    if was_translated:
+        import urllib.parse
+        headers["X-VoiceFlow-Translated-Text"] = urllib.parse.quote(text_to_speak)
     return Response(
         content=audio,
         media_type=media_type,
-        headers={"Content-Disposition": f'inline; filename="speech.{"wav" if is_wav else "mp3"}"'}
+        headers=headers
     )
 
 
@@ -474,12 +482,10 @@ async def tts_voices_endpoint() -> Dict[str, Any]:
     falls back to, plus any you've cloned via POST /tts/voices/clone."""
     try:
         voices = await tts_service.list_elevenlabs_voices()
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        return {"voices": voices}
     except Exception as e:
-        log.exception("failed to list ElevenLabs voices")
-        raise HTTPException(status_code=502, detail="ElevenLabs voice service unavailable") from e
-    return {"voices": voices}
+        log.warning("ElevenLabs list_voices fallback: %s", e)
+        return {"voices": [], "error": str(e)}
 
 
 @app.post("/tts/voices/clone")
@@ -520,13 +526,14 @@ async def tts_voices_delete_endpoint(voice_id: str) -> Dict[str, Any]:
 @app.post("/analyze")
 async def analyze_endpoint(req: AnalyzeRequest, request: Request) -> Dict[str, Any]:
     _session_stats(request)[f"analyze:{req.analysis_type}"] += 1
-    return await analyzer.analyze(req.text, analysis_type=req.analysis_type)
+    return await analyzer.analyze(req.text, analysis_type=req.analysis_type, language=req.language)
 
 
 class CustomAnalyzeRequest(BaseModel):
     text: str
     fields: list[str]
     instructions: str = ""
+    language: Optional[str] = "auto"
 
 
 @app.post("/analyze/custom")
@@ -535,7 +542,7 @@ async def analyze_custom_endpoint(req: CustomAnalyzeRequest, request: Request) -
     if not req.fields:
         raise HTTPException(status_code=400, detail="fields required")
     _session_stats(request)["analyze:custom"] += 1
-    return await analyzer.analyze_custom(req.text, req.fields, req.instructions)
+    return await analyzer.analyze_custom(req.text, req.fields, req.instructions, language=req.language)
 
 
 class RelayRequest(BaseModel):
@@ -648,10 +655,10 @@ async def pipeline_endpoint(
         trans = await route_transcribe(audio, provider=spec["transcription_provider"],
                                        language=language, diarize=spec["diarize"], strict=True)
         model = scenarios.resolve_analysis_model(settings, spec)
-        analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type, model=model)
+        analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type, model=model, language=language)
     else:
         trans = await route_transcribe(audio, provider=provider, language=language)
-        analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type)
+        analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type, language=language)
 
     stats = _session_stats(request)
     stats["pipeline"] += 1
@@ -752,10 +759,12 @@ async def ws_stream(ws: WebSocket):
     await ws.accept()
     session_stats = _stats[ws.query_params.get("session", "anonymous").strip() or "anonymous"]
     buf = bytearray()
-    provider = None
+    provider = ws.query_params.get("provider") or None
+    language = ws.query_params.get("language") or "auto"
     seq = 0
     try:
-        await ws.send_json({"type": "ready", "provider": settings.TRANSCRIPTION_PROVIDER,
+        await ws.send_json({"type": "ready", "provider": provider or settings.TRANSCRIPTION_PROVIDER,
+                            "language": language,
                             "message": "Send audio chunks (binary); {\"type\":\"stop\"} to finalize."})
         import asyncio
         from datetime import datetime, timezone
@@ -778,7 +787,7 @@ async def ws_stream(ws: WebSocket):
                 # Re-transcribe the accumulated buffer periodically (partial result).
                 if seq % 3 == 0 and len(buf) > 8000:
                     try:
-                        out = await route_transcribe(bytes(buf), provider=provider)
+                        out = await route_transcribe(bytes(buf), provider=provider, language=language)
                         await ws.send_json({"type": "partial", "text": out.get("text", ""),
                                             "seq": seq, "bytes": len(buf)})
                     except Exception as e:
@@ -790,11 +799,12 @@ async def ws_stream(ws: WebSocket):
                     cmd = {"type": text}
                 if cmd.get("type") == "config":
                     provider = cmd.get("provider") or provider
-                    await ws.send_json({"type": "ack", "provider": provider or settings.TRANSCRIPTION_PROVIDER})
+                    language = cmd.get("language") or language
+                    await ws.send_json({"type": "ack", "provider": provider or settings.TRANSCRIPTION_PROVIDER, "language": language})
                 elif cmd.get("type") == "stop":
-                    final = await route_transcribe(bytes(buf), provider=provider) if buf else {"text": ""}
+                    final = await route_transcribe(bytes(buf), provider=provider, language=language) if buf else {"text": ""}
                     await ws.send_json({"type": "final", "text": final.get("text", ""),
-                                        "bytes": len(buf), "language": final.get("language")})
+                                        "bytes": len(buf), "language": final.get("language") or language})
                     session_stats["stream_sessions"] += 1
                     buf = bytearray()
                     seq = 0
@@ -1166,6 +1176,7 @@ async def ws_realtime(ws: WebSocket):
                                     async with session_send_lock:
                                         await session.send_realtime_input(audio_stream_end=True)
                                     cancel_flag[0] = False
+                                    pending_cancel_notice[0] = False
                                     turn_active[0] = True
                                     await trace.first("first_commit")
 
@@ -1178,9 +1189,12 @@ async def ws_realtime(ws: WebSocket):
                                     if text:
                                         async with session_send_lock:
                                             await session.send_client_content(
-                                                turns=_gtypes.Content(role="user", parts=[_gtypes.Part(text=text)]),
+                                                turns=_gtypes.Content(role="user", parts=[_gtypes.Part.from_text(text=text)]),
                                                 turn_complete=True,
                                             )
+                                        cancel_flag[0] = False
+                                        pending_cancel_notice[0] = False
+                                        turn_active[0] = True
                                         await trace.first("first_commit", mode="text")
 
                                 elif evt == "client.speech_started":
@@ -1210,6 +1224,9 @@ async def ws_realtime(ws: WebSocket):
                                         is_tool_active[0] = False
                                         turn_active[0] = False
                                         await ws.send_json({"type": "response.done", "cancelled": True})
+                                    if response.server_content and getattr(response.server_content, "turn_complete", False):
+                                        cancel_flag[0] = False
+                                        turn_active[0] = False
                                     continue
 
                                 if response.data:
