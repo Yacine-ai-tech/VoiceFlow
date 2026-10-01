@@ -431,15 +431,17 @@ async def tts_endpoint(req: TTSRequest):
     if req.language == "fr":
         try:
             from services.meeting_analyzer import _llm_with_fallback
-            model = settings.LLM_DEFAULT or "groq/openai/gpt-oss-120b"
+            model = os.getenv("TTS_TRANSLATION_MODEL", settings.LLM_DEFAULT) or "groq/openai/gpt-oss-120b"
+            max_tokens = int(os.getenv("TTS_TRANSLATION_MAX_TOKENS", "1024"))
+            temperature = float(os.getenv("TTS_TRANSLATION_TEMPERATURE", "0.3"))
             resp = await _llm_with_fallback(
                 model=model,
                 messages=[
                     {"role": "system", "content": "You are a professional translator. Translate the given text to natural, fluent French for speech synthesis. Only return the translated French text without any quotes, preambles, notes, or explanations."},
                     {"role": "user", "content": text_to_speak}
                 ],
-                max_tokens=1024,
-                temperature=0.3
+                max_tokens=max_tokens,
+                temperature=temperature
             )
             if resp.choices and resp.choices[0].message.content:
                 text_to_speak = resp.choices[0].message.content.strip()
