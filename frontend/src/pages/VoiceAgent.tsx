@@ -327,15 +327,15 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
 }
 
 const workletCode = `
-const MIN_SPEECH_CONFIRM_MS = ${MIN_SPEECH_CONFIRM_MS};
 class VADProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.isSilent = true;
     this.lastAudioTime = Date.now();
-    this.aboveThresholdSince = null;
     this.targetRate = 16000;
     this.ratio = sampleRate / this.targetRate;
+    this.preBuffer = [];
+    this.preBufferMaxFrames = Math.ceil(0.3 * (sampleRate / 128));
   }
   process(inputs) {
     const input = inputs[0];
@@ -346,28 +346,41 @@ class VADProcessor extends AudioWorkletProcessor {
     const vol = Math.sqrt(sum / channelData.length);
     this.port.postMessage({ type: 'volume', vol });
     const now = Date.now();
-    if (vol > 0.032) {
+
+    const SPEECH_THRESHOLD = 0.012;
+    const PAUSE_THRESHOLD_MS = 550;
+
+    const outLen = Math.max(1, Math.floor(channelData.length / this.ratio));
+    const pcm16 = new Int16Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const sample = channelData[Math.min(channelData.length - 1, Math.floor(i * this.ratio))];
+      pcm16[i] = Math.max(-1, Math.min(1, sample)) * 32767;
+    }
+
+    if (vol > SPEECH_THRESHOLD) {
       this.lastAudioTime = now;
-      if (this.aboveThresholdSince === null) this.aboveThresholdSince = now;
-      if (this.isSilent && now - this.aboveThresholdSince >= MIN_SPEECH_CONFIRM_MS) {
+      if (this.isSilent) {
         this.isSilent = false;
         this.port.postMessage({ type: 'speech_started' });
-      }
-    } else {
-      this.aboveThresholdSince = null;
-      if (!this.isSilent && now - this.lastAudioTime > 350) {
-        this.isSilent = true;
-        this.port.postMessage({ type: 'speech_stopped' });
-      }
-    }
-    if (!this.isSilent) {
-      const outLen = Math.max(1, Math.floor(channelData.length / this.ratio));
-      const pcm16 = new Int16Array(outLen);
-      for (let i = 0; i < outLen; i++) {
-        const sample = channelData[Math.min(channelData.length - 1, Math.floor(i * this.ratio))];
-        pcm16[i] = Math.max(-1, Math.min(1, sample)) * 32767;
+        while (this.preBuffer.length > 0) {
+          const pre = this.preBuffer.shift();
+          this.port.postMessage({ type: 'audio', buffer: pre.buffer }, [pre.buffer]);
+        }
       }
       this.port.postMessage({ type: 'audio', buffer: pcm16.buffer }, [pcm16.buffer]);
+    } else {
+      if (!this.isSilent) {
+        this.port.postMessage({ type: 'audio', buffer: pcm16.buffer }, [pcm16.buffer]);
+        if (now - this.lastAudioTime > PAUSE_THRESHOLD_MS) {
+          this.isSilent = true;
+          this.port.postMessage({ type: 'speech_stopped' });
+        }
+      } else {
+        this.preBuffer.push(pcm16);
+        if (this.preBuffer.length > this.preBufferMaxFrames) {
+          this.preBuffer.shift();
+        }
+      }
     }
     return true;
   }
@@ -414,6 +427,7 @@ export default function VoiceAgent() {
   const isPlayingRef = useRef(false);
   const wasReadyRef = useRef(false);
   const responsePendingRef = useRef(false);
+  const watchdogTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
   const addTelemetryLog = (type: string, detail?: string, level: "info" | "success" | "warn" | "error" = "info") => {
@@ -541,6 +555,10 @@ export default function VoiceAgent() {
     }
 
     if (type === "error") {
+      if (watchdogTimerRef.current) {
+        clearTimeout(watchdogTimerRef.current);
+        watchdogTimerRef.current = null;
+      }
       responsePendingRef.current = false;
       const msg = String(data.message || "Unknown error");
       const errCode = String(data.error_code || "");
@@ -573,12 +591,20 @@ export default function VoiceAgent() {
     }
 
     if (type === "assistant.cancelled") {
+      if (watchdogTimerRef.current) {
+        clearTimeout(watchdogTimerRef.current);
+        watchdogTimerRef.current = null;
+      }
       responsePendingRef.current = false;
       addTelemetryLog("assistant.interrupted", "Speech barge-in triggered", "warn");
       closeTurn("assistant", agentOpenIdRef, agentDraftRef, true);
     }
 
     if (type === "response.done" || type === "response.audio.done") {
+      if (watchdogTimerRef.current) {
+        clearTimeout(watchdogTimerRef.current);
+        watchdogTimerRef.current = null;
+      }
       responsePendingRef.current = false;
       addTelemetryLog("response.completed", undefined, "success");
       closeTurn("assistant", agentOpenIdRef, agentDraftRef);
@@ -673,7 +699,7 @@ export default function VoiceAgent() {
     if (!audioCtx || playbackQueueRef.current.length === 0) return;
     isPlayingRef.current = true;
     setAgentSpeaking(true);
-    nextPlayTimeRef.current = Math.max(audioCtx.currentTime + 0.15, nextPlayTimeRef.current);
+    nextPlayTimeRef.current = Math.max(audioCtx.currentTime + 0.025, nextPlayTimeRef.current);
     while (playbackQueueRef.current.length > 0) {
       const float32 = playbackQueueRef.current.shift()!;
       const audioBuffer = audioCtx.createBuffer(1, float32.length, 24000);
@@ -708,6 +734,10 @@ export default function VoiceAgent() {
   };
 
   const stopVoice = () => {
+    if (watchdogTimerRef.current) {
+      clearTimeout(watchdogTimerRef.current);
+      watchdogTimerRef.current = null;
+    }
     responsePendingRef.current = false;
     closeTurn("assistant", agentOpenIdRef, agentDraftRef);
     closeTurn("user", userOpenIdRef, userDraftRef);
@@ -864,16 +894,27 @@ export default function VoiceAgent() {
           lastClosedRef.current.assistant = { id: null, text: "", at: 0 };
           closeTurn("assistant", agentOpenIdRef, agentDraftRef);
           closeTurn("user", userOpenIdRef, userDraftRef);
+          if (watchdogTimerRef.current) {
+            clearTimeout(watchdogTimerRef.current);
+            watchdogTimerRef.current = null;
+          }
+          responsePendingRef.current = false;
           // Only trigger cancellation/barge-in when the assistant is actively playing audio
           if (isPlayingRef.current) {
             stopAudioPlayback();
-            responsePendingRef.current = false;
             transportRef.current?.cancel();
           }
         }
         if (data.type === "speech_stopped" && !responsePendingRef.current) {
           responsePendingRef.current = true;
           transportRef.current?.commitTurn();
+          if (watchdogTimerRef.current) clearTimeout(watchdogTimerRef.current);
+          watchdogTimerRef.current = setTimeout(() => {
+            if (responsePendingRef.current) {
+              responsePendingRef.current = false;
+              addTelemetryLog("turn.watchdog_reset", "Watchdog reset ready state after 6s", "info");
+            }
+          }, 6000);
         }
         if (data.type === "audio") transportRef.current?.sendAudio(data.buffer);
       };

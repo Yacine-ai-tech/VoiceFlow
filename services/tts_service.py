@@ -387,6 +387,33 @@ async def generate_speech(
         raise
 
 
+async def generate_speech_with_meta(
+    text: str,
+    language: str = "en",
+    voice_gender: str = "default",
+    rate: str = "+0%",
+    volume: str = "+0%",
+    provider: str = "edge",
+    voice_id: Optional[str] = None,
+) -> tuple[bytes, str]:
+    """Generate speech and return a tuple of (audio_bytes, actual_provider_used)."""
+    p = (provider or "edge").strip().lower()
+    if p == "elevenlabs":
+        audio = await _generate_elevenlabs(text, language, voice_gender, voice_id)
+        if audio:
+            return audio, "elevenlabs"
+    elif p == "openai":
+        audio = await _generate_openai(text, voice_gender)
+        if audio:
+            return audio, "openai"
+    elif p == "kokoro":
+        audio = await _generate_kokoro(text, language, voice_gender)
+        if audio:
+            return audio, "kokoro"
+    audio = await generate_speech(text, language, voice_gender, rate, volume, provider="edge")
+    return audio, "edge"
+
+
 def generate_speech_sync(
     text: str,
     language: str = "en",
