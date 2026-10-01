@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { FileAudio, Sparkles, AlertTriangle } from "lucide-react";
 import { PageHeader } from "../kit/AppShell";
-import { Button, Card, EmptyState } from "../kit/primitives";
+import { Button, Card, Chip, EmptyState } from "../kit/primitives";
 import { ExecutionStages, Label, Segmented } from "../kit/misc";
 import { ResultView } from "../components/Results";
 import { Analysis, ANALYSIS_TYPES, api, saveHistory, Scenario, Transcript } from "../lib/api";
@@ -14,7 +14,7 @@ const SAMPLE =
 
 const ASR_PROVIDERS = [
   { value: "GROQ_WHISPER", label: "Groq Whisper" },
-  { value: "DEEPGRAM", label: "Deepgram" },
+  { value: "DEEPGRAM", label: "Deepgram Nova-3" },
   { value: "ASSEMBLYAI", label: "AssemblyAI" },
   { value: "LOCAL_WHISPERX", label: "WhisperX" },
 ];
@@ -82,6 +82,20 @@ export default function Analyze() {
         actions={<Button variant="secondary" onClick={() => { setTab("text"); setText(SAMPLE); setMode("meeting"); }}>Use sample transcript</Button>}
       />
 
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line bg-surface-2 px-4 py-2.5 text-[12.5px]">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-semibold text-body">Speech Recognition Engines:</span>
+          <Chip tone="accent">Deepgram Nova-3</Chip>
+          <Chip tone="default">AssemblyAI Conformer-2</Chip>
+          <Chip tone="default">Groq Whisper Large-v3</Chip>
+          <Chip tone="default">WhisperX Diarization</Chip>
+        </div>
+        <div className="flex items-center gap-2 text-muted">
+          <span>Multilingual:</span>
+          <span className="font-medium text-body">EN &middot; FR &middot; Auto</span>
+        </div>
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-[420px_1fr]">
         <Card title="Input">
           <div className="space-y-4">
@@ -113,13 +127,25 @@ export default function Analyze() {
             </div>
 
             {tab === "text" ? (
-              <textarea
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                rows={10}
-                placeholder="Paste a conversation transcript…"
-                className="w-full rounded-input border border-line-strong bg-surface-2 px-3 py-2 text-[13px] leading-6 text-body outline-none focus:border-[var(--accent)]"
-              />
+              <>
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  rows={9}
+                  placeholder="Paste a conversation transcript in English or French…"
+                  className="w-full rounded-input border border-line-strong bg-surface-2 px-3 py-2 text-[13px] leading-6 text-body outline-none focus:border-[var(--accent)]"
+                />
+                <div className="flex items-center justify-between rounded-lg border border-line bg-surface-1 p-2 text-xs text-dim">
+                  <span>Have an audio file to transcribe?</span>
+                  <button
+                    type="button"
+                    onClick={() => setTab("audio")}
+                    className="font-medium text-[var(--accent)] hover:underline"
+                  >
+                    Select Deepgram / AssemblyAI &rarr;
+                  </button>
+                </div>
+              </>
             ) : (
               <>
                 <div>

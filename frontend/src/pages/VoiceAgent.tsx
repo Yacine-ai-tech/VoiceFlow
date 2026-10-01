@@ -332,11 +332,24 @@ class VADProcessor extends AudioWorkletProcessor {
     super();
     this.isSilent = true;
     this.lastAudioTime = Date.now();
+    this.lastVolumePost = 0;
     this.targetRate = 16000;
     this.ratio = sampleRate / this.targetRate;
     this.preBuffer = [];
     this.preBufferMaxFrames = Math.ceil(0.3 * (sampleRate / 128));
+    this.CHUNK_SIZE = 800; // 50ms at 16kHz
+    this.accumulatedSamples = new Int16Array(this.CHUNK_SIZE);
+    this.accumulatedCount = 0;
   }
+
+  flushAccumulated() {
+    if (this.accumulatedCount > 0) {
+      const slice = this.accumulatedSamples.slice(0, this.accumulatedCount);
+      this.port.postMessage({ type: 'audio', buffer: slice.buffer }, [slice.buffer]);
+      this.accumulatedCount = 0;
+    }
+  }
+
   process(inputs) {
     const input = inputs[0];
     if (!input || !input[0]) return true;
@@ -344,8 +357,13 @@ class VADProcessor extends AudioWorkletProcessor {
     let sum = 0;
     for (let i = 0; i < channelData.length; i++) sum += channelData[i] * channelData[i];
     const vol = Math.sqrt(sum / channelData.length);
-    this.port.postMessage({ type: 'volume', vol });
     const now = Date.now();
+
+    // Throttle volume events to ~20Hz to prevent saturating React render loop
+    if (now - this.lastVolumePost > 50) {
+      this.lastVolumePost = now;
+      this.port.postMessage({ type: 'volume', vol });
+    }
 
     const SPEECH_THRESHOLD = 0.012;
     const PAUSE_THRESHOLD_MS = 550;
@@ -367,12 +385,23 @@ class VADProcessor extends AudioWorkletProcessor {
           this.port.postMessage({ type: 'audio', buffer: pre.buffer }, [pre.buffer]);
         }
       }
-      this.port.postMessage({ type: 'audio', buffer: pcm16.buffer }, [pcm16.buffer]);
+      for (let i = 0; i < pcm16.length; i++) {
+        this.accumulatedSamples[this.accumulatedCount++] = pcm16[i];
+        if (this.accumulatedCount >= this.CHUNK_SIZE) {
+          this.flushAccumulated();
+        }
+      }
     } else {
       if (!this.isSilent) {
-        this.port.postMessage({ type: 'audio', buffer: pcm16.buffer }, [pcm16.buffer]);
+        for (let i = 0; i < pcm16.length; i++) {
+          this.accumulatedSamples[this.accumulatedCount++] = pcm16[i];
+          if (this.accumulatedCount >= this.CHUNK_SIZE) {
+            this.flushAccumulated();
+          }
+        }
         if (now - this.lastAudioTime > PAUSE_THRESHOLD_MS) {
           this.isSilent = true;
+          this.flushAccumulated();
           this.port.postMessage({ type: 'speech_stopped' });
         }
       } else {
@@ -572,8 +601,13 @@ export default function VoiceAgent() {
     }
 
     if (type === "response.text.delta" || type === "response.audio_transcript.delta") {
+      responsePendingRef.current = false;
       closeTurn("user", userOpenIdRef, userDraftRef);
       appendTurnDelta("assistant", String(data.delta || ""), agentOpenIdRef, agentDraftRef, true);
+    }
+
+    if (type === "response.audio.delta") {
+      responsePendingRef.current = false;
     }
 
     if (type === "response.user_transcript.delta") {
@@ -674,6 +708,13 @@ export default function VoiceAgent() {
     if (playbackCtxRef.current.state === "suspended") {
       playbackCtxRef.current.resume().catch((err) => setErrorMsg(err.message || String(err)));
     }
+    try {
+      const silentBuf = playbackCtxRef.current.createBuffer(1, 1, 24000);
+      const src = playbackCtxRef.current.createBufferSource();
+      src.buffer = silentBuf;
+      src.connect(playbackCtxRef.current.destination);
+      src.start();
+    } catch (_) {}
     return playbackCtxRef.current;
   };
 
