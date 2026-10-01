@@ -6,8 +6,8 @@ import { Label, Segmented } from "../kit/misc";
 import { api, ElevenLabsVoice } from "../lib/api";
 
 const PROVIDERS = [
-  { value: "edge", label: "Edge (default)" },
-  { value: "elevenlabs", label: "ElevenLabs" },
+  { value: "edge", label: "Edge (Default)" },
+  { value: "elevenlabs", label: "ElevenLabs (Active)" },
   { value: "openai", label: "OpenAI tts-1-hd" },
   { value: "kokoro", label: "Kokoro" },
 ];
@@ -119,6 +119,13 @@ export default function Speech() {
                 <Volume2 size={14} /> {busy ? "Synthesizing…" : "Speak"}
               </Button>
             </div>
+
+            {lang === "fr" && (
+              <div className="flex items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs text-dim">
+                <Sparkles size={13} className="text-[var(--accent)] shrink-0" />
+                <span>Input text in English will automatically be translated into fluent French before voice synthesis.</span>
+              </div>
+            )}
 
             {busy && (
               <div className="flex items-center gap-2 text-xs text-muted">
