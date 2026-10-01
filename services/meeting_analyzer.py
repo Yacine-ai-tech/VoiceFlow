@@ -29,25 +29,48 @@ try:
 except ImportError:
     _LITELLM = False
 
-_AUTH_SIGNALS = ("AuthenticationError", "PermissionDeniedError", "401", "403",
-                 "invalid_api_key", "invalid api key")
+_AUTH_SIGNALS = (
+    "AuthenticationError", "PermissionDeniedError", "APIError", "RateLimitError",
+    "401", "402", "403", "429", "insufficient_balance", "invalid_api_key",
+    "invalid api key", "credit", "quota", "resource_exhausted", "billing", "unauthorized"
+)
+
+
+def _resolve_fallback(fallback: str = "") -> str:
+    """Resolve an operational fallback model dynamically if not explicitly specified."""
+    if fallback:
+        return fallback
+    if getattr(settings, "LLM_REASONING_FALLBACK", ""):
+        return settings.LLM_REASONING_FALLBACK
+    if getattr(settings, "GROQ_API_KEY", ""):
+        return "groq/moonshotai/kimi-k2-instruct"
+    if getattr(settings, "GEMINI_API_KEY", ""):
+        return "gemini/gemini-2.5-flash"
+    return ""
 
 
 async def _llm_with_fallback(model: str, messages: list, fallback: str = "", **kwargs) -> Any:
-    """acompletion wrapper with auth-error fallback to a provider override model.
+    """acompletion wrapper with auth/billing error fallback to a provider override model.
 
-    ``fallback`` comes from settings.LLM_REASONING_FALLBACK / LLM_JUDGE_FALLBACK —
-    only set in the VPS .env when the primary provider key is unavailable. Never
-    hardcoded; cloners with valid keys always use the primary model.
+    ``fallback`` comes from settings.LLM_REASONING_FALLBACK / LLM_JUDGE_FALLBACK, or
+    dynamically falls back to available high-speed providers (Groq/Gemini).
     """
+    resolved_fb = _resolve_fallback(fallback)
+    # Use bounded retries so 402/insufficient balance or auth errors fail fast to the fallback
+    call_kwargs = dict(kwargs)
+    if "num_retries" not in call_kwargs:
+        call_kwargs["num_retries"] = 1
+    if "timeout" not in call_kwargs:
+        call_kwargs["timeout"] = 15
+
     try:
-        return await acompletion(model=model, messages=messages, **kwargs)
+        return await acompletion(model=model, messages=messages, **call_kwargs)
     except Exception as exc:
-        is_auth = any(s.lower() in str(exc).lower() or s.lower() in type(exc).__name__.lower()
-                      for s in _AUTH_SIGNALS)
-        if is_auth and fallback and fallback != model:
-            log.warning("model=%s auth failed — retrying with fallback %s", model, fallback)
-            return await acompletion(model=fallback, messages=messages, **kwargs)
+        exc_str = (str(exc) + " " + type(exc).__name__).lower()
+        is_auth = any(s.lower() in exc_str for s in _AUTH_SIGNALS)
+        if is_auth and resolved_fb and resolved_fb != model:
+            log.warning("model=%s auth/quota error (%s) — retrying with fallback %s", model, type(exc).__name__, resolved_fb)
+            return await acompletion(model=resolved_fb, messages=messages, **kwargs)
         raise
 
 
@@ -85,12 +108,30 @@ ANALYSIS_MODELS: Dict[str, str] = {
 }
 
 
+MULTILINGUAL_DIRECTIVES: Dict[str, str] = {
+    "fr": (
+        "Vous êtes un analyste expert d'intelligence conversationnelle. "
+        "Rédigez l'ensemble des résumés, actions, descriptions, décisions et notes EN FRANÇAIS. "
+        "Conservez les noms propres originaux et produisez strictement du JSON valide."
+    ),
+    "en": (
+        "You are an expert conversational intelligence analyst. "
+        "Produce all summaries, action items, descriptions, decisions, and notes IN ENGLISH. "
+        "Preserve original proper nouns and output strictly valid JSON."
+    ),
+    "auto": (
+        "You are an expert multilingual conversational intelligence analyst. "
+        "Faithfully analyze the transcript in its primary language (e.g., French if the discussion was in French, English if in English). "
+        "Output strictly valid JSON conforming exactly to the requested schema."
+    ),
+}
+
 PROMPTS: Dict[str, str] = {
     "meeting": (
         "Extract from this meeting transcript as JSON: "
         "meeting_summary (3-5 sentences), duration_minutes (estimate from word count if absent), "
         "participants_mentioned, decisions, "
-        "action_items: [{owner, action, due (ISO YYYY-MM-DD or null), priority}], "
+        "action_items: [{owner, action, due (ISO YYYY-MM-DD or null), priority (low|medium|high)}], "
         "key_numbers, open_questions, next_steps, "
         "sentiment (positive|neutral|tense|mixed), topics_covered. JSON only."
     ),
@@ -99,23 +140,25 @@ PROMPTS: Dict[str, str] = {
         "call_summary, prospect_company, prospect_contact, prospect_role, "
         "pain_points, objections: [{type, content}], buying_signals, budget_mentioned, "
         "deal_stage (discovery|evaluation|negotiation|closing), "
-        "crm_notes (Salesforce/HubSpot-paste ready), overall_sentiment, "
-        "likelihood_to_close (0-1). JSON only."
+        "crm_notes (Salesforce/HubSpot-paste ready notes with next steps), overall_sentiment, "
+        "likelihood_to_close (float 0.0 to 1.0). JSON only."
     ),
     "support_call": (
         "Extract from this support-call transcript as JSON: "
         "customer_issue, severity (low|medium|high|critical), "
-        "resolution_summary, escalation_needed (true|false), "
-        "follow_ups: [{action, owner, due}], sentiment. JSON only."
+        "resolution_summary, escalation_needed (boolean true|false), "
+        "follow_ups: [{action, owner, due}], sentiment (positive|neutral|frustrated|satisfied). JSON only."
     ),
     "interview": (
         "Extract from this interview transcript as JSON: "
-        "candidate_name, role_discussed, strengths, gaps, "
-        "key_quotes (3-5), recommendation (hire|maybe|no_hire), reasoning. JSON only."
+        "candidate_name, role_discussed, strengths: [string], gaps: [string], "
+        "key_quotes: [string] (3-5 verbatim quotes), recommendation (hire|maybe|no_hire), reasoning. JSON only."
     ),
     "general": (
-        "Extract structured intelligence from this transcript as JSON. "
-        "Use whatever fields naturally describe the content. JSON only."
+        "Extract structured intelligence from this transcript as JSON: "
+        "summary (3-5 sentences), main_topics: [string], key_insights: [string], "
+        "decisions: [string], action_items: [{owner, action, due, priority}], "
+        "participants_mentioned: [string], sentiment (positive|neutral|negative|mixed). JSON only."
     ),
 }
 
@@ -130,26 +173,21 @@ class MeetingAnalyzer:
     """Multi-LLM analyzer for transcripts."""
 
     async def analyze(self, transcript: str, analysis_type: str = "meeting",
-                      model: Optional[str] = None) -> Dict[str, Any]:
+                      model: Optional[str] = None,
+                      language: Optional[str] = "auto") -> Dict[str, Any]:
         """`model` overrides the analysis_type's default tier — used by named
-        scenarios (services/scenarios.py) to pin an exact model for benchmarking."""
+        scenarios (services/scenarios.py) to pin an exact model for benchmarking.
+        `language` selects or guides the output language ('fr', 'en', or 'auto')."""
         if not _LITELLM:
             return {"error": "litellm_not_installed", "analysis_type": analysis_type}
-        # Defensive: a transcription provider can hand back an explicit None for a
-        # no-speech/near-silent clip (fixed at the source in transcription_adapter.py, but
-        # guard here too since a null message `content` is rejected outright by some
-        # OpenAI-compatible endpoints — better an empty-transcript analysis than a 400).
         transcript = transcript or ""
-        prompt = PROMPTS.get(analysis_type, PROMPTS["general"])
+        base_prompt = PROMPTS.get(analysis_type, PROMPTS["general"])
+        lang_key = (language or "auto").strip().lower()
+        directive = MULTILINGUAL_DIRECTIVES.get(lang_key, MULTILINGUAL_DIRECTIVES["auto"])
+        prompt = f"{directive}\n\n{base_prompt}"
         model = model or ANALYSIS_MODELS.get(analysis_type, settings.LLM_DEFAULT)
         sent_transcript, truncated, original_length = _truncate(transcript)
         if not sent_transcript.strip():
-            # A genuinely empty user-message content (not just a short one) is rejected
-            # outright by some OpenAI-compatible endpoints — confirmed live
-            # ("messages.1.user.content: Field required" for a literal ""). A real
-            # no-speech/silent-audio transcript is a legitimate,
-            # honestly-reported input, not an error — send a minimal, truthful placeholder
-            # instead of the bare empty string so the request is well-formed.
             sent_transcript = "[no speech detected in this audio]"
         try:
             fallback = settings.LLM_REASONING_FALLBACK if "reasoning" in model.lower() or model == settings.LLM_REASONING else settings.LLM_JUDGE_FALLBACK
@@ -180,12 +218,16 @@ class MeetingAnalyzer:
         return result
 
     async def analyze_custom(self, transcript: str, fields: List[str],
-                             instructions: str = "") -> Dict[str, Any]:
+                             instructions: str = "",
+                             language: Optional[str] = "auto") -> Dict[str, Any]:
         """Extract a caller-defined JSON schema from a transcript (v1 custom-schema ask)."""
         if not _LITELLM:
             return {"error": "litellm_not_installed"}
         field_list = ", ".join(f for f in fields if f.strip())
+        lang_key = (language or "auto").strip().lower()
+        directive = MULTILINGUAL_DIRECTIVES.get(lang_key, MULTILINGUAL_DIRECTIVES["auto"])
         prompt = (
+            f"{directive}\n\n"
             "Extract the following fields from this transcript as JSON: "
             f"{field_list}. "
             + (f"Additional instructions: {instructions}. " if instructions.strip() else "")
@@ -219,17 +261,18 @@ class MeetingAnalyzer:
             result["original_length"] = original_length
         return result
 
-    async def analyze_meeting(self, transcript: str) -> Dict[str, Any]:
-        return await self.analyze(transcript, "meeting")
+    async def analyze_meeting(self, transcript: str, language: Optional[str] = "auto") -> Dict[str, Any]:
+        return await self.analyze(transcript, "meeting", language=language)
 
-    async def analyze_sales_call(self, transcript: str) -> Dict[str, Any]:
-        return await self.analyze(transcript, "sales_call")
+    async def analyze_sales_call(self, transcript: str, language: Optional[str] = "auto") -> Dict[str, Any]:
+        return await self.analyze(transcript, "sales_call", language=language)
 
-    async def analyze_support_call(self, transcript: str) -> Dict[str, Any]:
-        return await self.analyze(transcript, "support_call")
+    async def analyze_support_call(self, transcript: str, language: Optional[str] = "auto") -> Dict[str, Any]:
+        return await self.analyze(transcript, "support_call", language=language)
 
-    async def analyze_interview(self, transcript: str) -> Dict[str, Any]:
-        return await self.analyze(transcript, "interview")
+    async def analyze_interview(self, transcript: str, language: Optional[str] = "auto") -> Dict[str, Any]:
+        return await self.analyze(transcript, "interview", language=language)
 
-    async def general_analysis(self, transcript: str) -> Dict[str, Any]:
-        return await self.analyze(transcript, "general")
+    async def general_analysis(self, transcript: str, language: Optional[str] = "auto") -> Dict[str, Any]:
+        return await self.analyze(transcript, "general", language=language)
+

@@ -79,18 +79,18 @@ async function req<T>(path: string, init?: RequestInit, retryCount = 0): Promise
 export const api = {
   health: () => req<{ status: string }>("/health"),
 
-  analyze: (text: string, analysisType: string) =>
+  analyze: (text: string, analysisType: string, language = "auto") =>
     req<Analysis>("/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, analysis_type: analysisType }),
+      body: JSON.stringify({ text, analysis_type: analysisType, language }),
     }),
 
-  analyzeCustom: (text: string, fields: string[], instructions = "") =>
+  analyzeCustom: (text: string, fields: string[], instructions = "", language = "auto") =>
     req<Analysis>("/analyze/custom", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, fields, instructions }),
+      body: JSON.stringify({ text, fields, instructions, language }),
     }),
 
   relay: (url: string, payload: unknown, target?: string, secret?: string, signatureHeader?: string) =>
@@ -109,27 +109,29 @@ export const api = {
   benchmarks: () =>
     req<{ docs: Record<string, { title: string; filename: string; content: string | null }> }>("/benchmarks"),
 
-  pipeline(file: Blob, filename: string, analysisType: string, provider = "GROQ_WHISPER", scenario?: string) {
+  pipeline(file: Blob, filename: string, analysisType: string, provider = "GROQ_WHISPER", language = "auto", scenario?: string) {
     const fd = new FormData();
     fd.append("file", file, filename);
     fd.append("analysis_type", analysisType);
     fd.append("provider", provider);
+    fd.append("language", language);
     if (scenario) fd.append("scenario", scenario);
     return req<PipelineResult>("/pipeline", { method: "POST", body: fd });
   },
 
-  transcribe(file: Blob, filename: string, provider = "GROQ_WHISPER") {
+  transcribe(file: Blob, filename: string, provider = "GROQ_WHISPER", language = "auto") {
     const fd = new FormData();
     fd.append("file", file, filename);
     fd.append("provider", provider);
+    fd.append("language", language);
     return req<Transcript>("/transcribe", { method: "POST", body: fd });
   },
 
   /** Returns an object URL for the synthesized audio, plus the *actual*
-   * format used — read from the real response, not assumed from what was
+   * format and provider used — read from the real response, not assumed from what was
    * requested, since a provider can silently fall back to edge-tts (MP3)
    * server-side even if you asked for kokoro (WAV). */
-  async tts(text: string, language: "en" | "fr", voiceGender: string, provider = "edge", voiceId?: string): Promise<{ url: string; isWav: boolean }> {
+  async tts(text: string, language: "en" | "fr", voiceGender: string, provider = "edge", voiceId?: string): Promise<{ url: string; isWav: boolean; actualProvider: string; translated: boolean; translatedText?: string }> {
     const res = await fetch(BASE + "/tts", withSessionHeader({
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -141,7 +143,14 @@ export const api = {
       throw new Error(`${res.status}: ${detail}`);
     }
     const isWav = (res.headers.get("Content-Type") || "").includes("audio/wav");
-    return { url: URL.createObjectURL(await res.blob()), isWav };
+    const actualProvider = res.headers.get("X-VoiceFlow-TTS-Provider") || provider;
+    const translated = res.headers.get("X-VoiceFlow-Translated") === "true";
+    let translatedText: string | undefined = undefined;
+    const rawTrans = res.headers.get("X-VoiceFlow-Translated-Text");
+    if (rawTrans) {
+      try { translatedText = decodeURIComponent(rawTrans); } catch {}
+    }
+    return { url: URL.createObjectURL(await res.blob()), isWav, actualProvider, translated, translatedText };
   },
 
   /** Every ElevenLabs voice on this account — 2 stock premade voices plus
