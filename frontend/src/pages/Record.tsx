@@ -10,10 +10,10 @@ import { ANALYSIS_TYPES, api, getSessionId, PipelineResult, saveHistory } from "
 type Phase = "idle" | "recording" | "processing" | "done" | "error";
 
 const ASR_PROVIDERS = [
-  { value: "GROQ_WHISPER", label: "Groq Whisper" },
   { value: "DEEPGRAM", label: "Deepgram Nova-3" },
   { value: "ASSEMBLYAI", label: "AssemblyAI" },
-  { value: "LOCAL_WHISPERX", label: "WhisperX" },
+  { value: "GROQ_WHISPER", label: "Groq Whisper" },
+  { value: "LOCAL_WHISPER", label: "Local Whisper (CPU)" },
 ];
 
 const LANGUAGES = [
