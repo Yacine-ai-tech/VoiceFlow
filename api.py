@@ -1173,8 +1173,8 @@ async def ws_realtime(ws: WebSocket):
                                         await trace.first("first_input_audio", mode="json_base64")
 
                                 elif evt == "input_audio_buffer.commit":
-                                    async with session_send_lock:
-                                        await session.send_realtime_input(audio_stream_end=True)
+                                    # Never send audio_stream_end=True into Gemini Multimodal Live, as that
+                                    # permanently terminates the audio stream channel and breaks subsequent turns.
                                     cancel_flag[0] = False
                                     pending_cancel_notice[0] = False
                                     turn_active[0] = True
@@ -1198,8 +1198,12 @@ async def ws_realtime(ws: WebSocket):
                                         await trace.first("first_commit", mode="text")
 
                                 elif evt == "client.speech_started":
-                                    cancel_flag[0] = True
-                                    pending_cancel_notice[0] = True
+                                    # Only cancel if the assistant is currently speaking or executing a tool (barge-in).
+                                    # Setting cancel_flag when turn_active is False causes the assistant's next response
+                                    # to be dropped silently by the cancel filter before it ever reaches the user.
+                                    if turn_active[0] or is_tool_active[0]:
+                                        cancel_flag[0] = True
+                                        pending_cancel_notice[0] = True
 
                                 elif evt == "ping":
                                     await ws.send_json({"type": "pong"})
@@ -1230,6 +1234,7 @@ async def ws_realtime(ws: WebSocket):
                                     continue
 
                                 if response.data:
+                                    turn_active[0] = True
                                     await trace.first("first_output_audio")
                                     await ws.send_json({
                                         "type": "response.audio.delta",
