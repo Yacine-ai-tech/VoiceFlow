@@ -11,7 +11,7 @@ type Phase = "idle" | "recording" | "processing" | "done" | "error";
 
 const ASR_PROVIDERS = [
   { value: "GROQ_WHISPER", label: "Groq Whisper" },
-  { value: "DEEPGRAM", label: "Deepgram" },
+  { value: "DEEPGRAM", label: "Deepgram Nova-3" },
   { value: "ASSEMBLYAI", label: "AssemblyAI" },
   { value: "LOCAL_WHISPERX", label: "WhisperX" },
 ];
