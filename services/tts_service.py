@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 from typing import Optional
 
 from core.config import settings
@@ -29,29 +30,90 @@ from core.logger import get_logger
 
 log = get_logger(__name__)
 
-# Voice mapping
-VOICES = {
-    "en": {
-        "female": "en-US-AriaNeural",
-        "male": "en-US-GuyNeural",
-        "default": "en-US-AriaNeural",
-    },
-    "fr": {
-        "female": "fr-FR-DeniseNeural",
-        "male": "fr-FR-HenriNeural",
-        "default": "fr-FR-DeniseNeural",
-    },
-}
 
-# Kokoro ships American-English voices by default; af_heart/am_michael are
-# its recommended female/male picks. Kokoro doesn't have French voices as
-# of the public checkpoint this targets — falls back to edge-tts for fr.
-_KOKORO_VOICES = {"female": "af_heart", "male": "am_michael", "default": "af_heart"}
+def get_edge_voices() -> dict[str, dict[str, str]]:
+    """Dynamic Edge-TTS voice mapping driven by environment variables."""
+    en_female = settings.EDGE_TTS_VOICE_EN_FEMALE
+    en_male = settings.EDGE_TTS_VOICE_EN_MALE
+    fr_female = settings.EDGE_TTS_VOICE_FR_FEMALE
+    fr_male = settings.EDGE_TTS_VOICE_FR_MALE
+    return {
+        "en": {
+            "female": en_female,
+            "male": en_male,
+            "default": en_female,
+        },
+        "fr": {
+            "female": fr_female,
+            "male": fr_male,
+            "default": fr_female,
+        },
+    }
 
-_kokoro_pipeline = None  # lazy-loaded, cached across calls. The Kokoro checkpoint
-# itself is ~300MB, but pip-installing this feature (requirements-ml.txt) also
-# pulls in PyTorch/CUDA, which is a multi-GB dependency chain on its own — don't
-# assume ~300MB covers the whole install.
+
+class _DynamicVoicesMapping(dict):
+    """Dynamic voice mapping that always resolves voices from environment/settings."""
+
+    def __getitem__(self, key: str):
+        voices = get_edge_voices()
+        return voices.get(key, voices["en"])
+
+    def get(self, key: str, default=None):
+        voices = get_edge_voices()
+        return voices.get(key, default or voices["en"])
+
+    def __contains__(self, key: object) -> bool:
+        return key in get_edge_voices()
+
+    def items(self):
+        return get_edge_voices().items()
+
+    def values(self):
+        return get_edge_voices().values()
+
+    def keys(self):
+        return get_edge_voices().keys()
+
+
+# Voice mapping — dynamically reflects environment variables
+VOICES = _DynamicVoicesMapping()
+
+
+def get_kokoro_voices() -> dict[str, str]:
+    """Dynamic Kokoro voice mapping driven by environment variables."""
+    female = settings.KOKORO_VOICE_FEMALE
+    male = settings.KOKORO_VOICE_MALE
+    default_voice = settings.KOKORO_VOICE_DEFAULT
+    return {"female": female, "male": male, "default": default_voice}
+
+
+class _DynamicKokoroVoicesMapping(dict):
+    """Dynamic Kokoro voice mapping resolved from environment/settings."""
+
+    def __getitem__(self, key: str):
+        voices = get_kokoro_voices()
+        return voices.get(key, voices["default"])
+
+    def get(self, key: str, default=None):
+        voices = get_kokoro_voices()
+        return voices.get(key, default or voices["default"])
+
+    def __contains__(self, key: object) -> bool:
+        return key in get_kokoro_voices()
+
+    def items(self):
+        return get_kokoro_voices().items()
+
+    def values(self):
+        return get_kokoro_voices().values()
+
+    def keys(self):
+        return get_kokoro_voices().keys()
+
+
+_KOKORO_VOICES = _DynamicKokoroVoicesMapping()
+
+_kokoro_pipeline = None  # lazy-loaded, cached across calls.
 
 
 async def _generate_elevenlabs(text: str, language: str, voice_gender: str, voice_id: Optional[str] = None) -> Optional[bytes]:
@@ -59,15 +121,14 @@ async def _generate_elevenlabs(text: str, language: str, voice_gender: str, voic
         return None
     try:
         import httpx
-        # Sarah / Daniel — current ElevenLabs premade voices, verified live
-        # against the real /v1/voices list (the old Rachel/Josh IDs some
-        # docs still reference no longer resolve on current accounts).
-        # Note: ElevenLabs requires a paid plan to use *any* premade/library
-        # voice via the API at all — on a free-tier account this call 402s
-        # regardless of which voice_id is used, and generate_speech() falls
-        # back to edge-tts, same as any other ElevenLabs failure.
-        el_voice = voice_id or ("EXAVITQu4vr4xnSDxMaL" if voice_gender == "female" else "onwK4e9ZLuTAKqWW03F9")
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{el_voice}"
+        default_voice = (
+            settings.ELEVENLABS_DEFAULT_VOICE_FEMALE
+            if voice_gender == "female"
+            else settings.ELEVENLABS_DEFAULT_VOICE_MALE
+        )
+        el_voice = voice_id or default_voice
+        base_url = settings.ELEVENLABS_BASE_URL
+        url = f"{base_url}/text-to-speech/{el_voice}"
         headers = {
             "Accept": "audio/mpeg",
             "Content-Type": "application/json",
@@ -75,10 +136,14 @@ async def _generate_elevenlabs(text: str, language: str, voice_gender: str, voic
         }
         data = {
             "text": text,
-            "model_id": "eleven_multilingual_v2",
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.5},
+            "model_id": settings.ELEVENLABS_MODEL_ID,
+            "voice_settings": {
+                "stability": settings.ELEVENLABS_STABILITY,
+                "similarity_boost": settings.ELEVENLABS_SIMILARITY_BOOST,
+            },
         }
-        async with httpx.AsyncClient(timeout=30) as client:
+        timeout = settings.ELEVENLABS_TIMEOUT_SECONDS
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, json=data, headers=headers)
             resp.raise_for_status()
             audio_bytes = resp.content
@@ -90,16 +155,15 @@ async def _generate_elevenlabs(text: str, language: str, voice_gender: str, voic
 
 
 async def list_elevenlabs_voices() -> list:
-    """Every voice on this ElevenLabs account — the 2 stock voices
-    /tts falls back to plus any cloned ones. Raises RuntimeError with the
-    real reason (no key, bad key, API error) rather than returning an
-    empty list that could be mistaken for "no voices exist"."""
+    """Every voice on this ElevenLabs account — stock voices plus cloned ones."""
     if not settings.ELEVENLABS_API_KEY:
         raise RuntimeError("ELEVENLABS_API_KEY not configured")
     import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    base_url = settings.ELEVENLABS_BASE_URL
+    timeout = settings.ELEVENLABS_TIMEOUT_SECONDS
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.get(
-            "https://api.elevenlabs.io/v1/voices",
+            f"{base_url}/voices",
             headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
         )
         resp.raise_for_status()
@@ -116,13 +180,7 @@ async def list_elevenlabs_voices() -> list:
 
 
 async def clone_elevenlabs_voice(name: str, samples: list[bytes], description: str = "") -> dict:
-    """Instant Voice Cloning — upload one or more real audio samples of a
-    voice and get back a usable voice_id for /tts's provider=elevenlabs.
-    This is ElevenLabs' actual differentiating feature, not
-    just picking between two stock voices. Raises RuntimeError (with
-    ElevenLabs' real error message) on failure — a plan that doesn't
-    support cloning, too few/short samples, etc. are never silently
-    swallowed into a fake success."""
+    """Instant Voice Cloning — upload real audio samples of a voice."""
     if not settings.ELEVENLABS_API_KEY:
         raise RuntimeError("ELEVENLABS_API_KEY not configured")
     if not samples:
@@ -132,9 +190,11 @@ async def clone_elevenlabs_voice(name: str, samples: list[bytes], description: s
     data = {"name": name}
     if description:
         data["description"] = description
-    async with httpx.AsyncClient(timeout=60) as client:
+    base_url = settings.ELEVENLABS_BASE_URL
+    timeout = settings.ELEVENLABS_TIMEOUT_SECONDS * 2
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(
-            "https://api.elevenlabs.io/v1/voices/add",
+            f"{base_url}/voices/add",
             headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
             data=data,
             files=files,
@@ -155,9 +215,11 @@ async def delete_elevenlabs_voice(voice_id: str) -> None:
     if not settings.ELEVENLABS_API_KEY:
         raise RuntimeError("ELEVENLABS_API_KEY not configured")
     import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    base_url = settings.ELEVENLABS_BASE_URL
+    timeout = settings.ELEVENLABS_TIMEOUT_SECONDS
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.delete(
-            f"https://api.elevenlabs.io/v1/voices/{voice_id}",
+            f"{base_url}/voices/{voice_id}",
             headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
         )
         resp.raise_for_status()
@@ -168,13 +230,20 @@ async def _generate_openai(text: str, voice_gender: str) -> Optional[bytes]:
         return None
     try:
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-        voice = "nova" if voice_gender == "female" else "onyx" if voice_gender == "male" else "alloy"
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, base_url=base_url)
+        voice = (
+            settings.OPENAI_TTS_VOICE_FEMALE
+            if voice_gender == "female"
+            else (settings.OPENAI_TTS_VOICE_MALE if voice_gender == "male" else settings.OPENAI_TTS_VOICE_DEFAULT)
+        )
+        model = settings.OPENAI_TTS_MODEL
+        response_format = settings.OPENAI_TTS_RESPONSE_FORMAT
         resp = await client.audio.speech.create(
-            model="tts-1-hd", voice=voice, input=text, response_format="mp3",
+            model=model, voice=voice, input=text, response_format=response_format,
         )
         audio_bytes = await resp.aread()
-        log.info("TTS (OpenAI tts-1-hd) generated: %d bytes", len(audio_bytes))
+        log.info("TTS (OpenAI %s) generated: %d bytes", model, len(audio_bytes))
         return audio_bytes
     except ImportError:
         log.warning("openai package not installed — falling back to edge-tts")
@@ -193,7 +262,10 @@ def _generate_kokoro_sync(text: str, voice_gender: str) -> Optional[bytes]:
         import soundfile as sf
         if _kokoro_pipeline is None:
             from kokoro import KPipeline
-            _kokoro_pipeline = KPipeline(lang_code="a")  # American English
+            _kokoro_pipeline = KPipeline(
+                lang_code=settings.KOKORO_LANG_CODE,
+                repo_id=settings.KOKORO_REPO_ID,
+            )
         voice = _KOKORO_VOICES.get(voice_gender, _KOKORO_VOICES["default"])
         chunks = []
         for _, _, audio in _kokoro_pipeline(text, voice=voice):
@@ -202,7 +274,8 @@ def _generate_kokoro_sync(text: str, voice_gender: str) -> Optional[bytes]:
             return None
         full_audio = np.concatenate(chunks)
         buf = io.BytesIO()
-        sf.write(buf, full_audio, 24000, format="WAV")
+        sample_rate = settings.KOKORO_SAMPLE_RATE
+        sf.write(buf, full_audio, sample_rate, format="WAV")
         return buf.getvalue()
     except ImportError as e:
         log.warning("kokoro not installed (%s) — falling back to edge-tts. "
@@ -213,22 +286,9 @@ def _generate_kokoro_sync(text: str, voice_gender: str) -> Optional[bytes]:
         return None
 
 
-async def _post_with_retries(client, url: str, json_body: dict, headers: dict, attempts: int = 4):
-    """A self-hosted remote inference backend that scales its compute down
-    to zero when idle (a common, cost-effective pattern for GPU-backed
-    endpoints) can return a transient failure on the first request after a
-    period of inactivity, while it wakes back up in the background — the
-    wake itself is normally non-blocking, so that first request doesn't
-    wait for it and can legitimately fail. A cold wake-up can take up to a
-    minute or two depending on the backend, which is too long for a single
-    HTTP request to block on for what should be a fast TTS call.
-
-    This retry loop is deliberately bounded and does not try to wait out a
-    full cold start — it only catches the tail end of a wake-up already in
-    progress from a recent previous request. On a fully cold backend, this
-    still correctly falls through to edge-tts on the first call (expected,
-    not a bug) while the remote backend keeps warming up independently of
-    this loop, so a follow-up call shortly after tends to succeed."""
+async def _post_with_retries(client, url: str, json_body: dict, headers: dict, attempts: Optional[int] = None):
+    if attempts is None:
+        attempts = settings.TTS_REMOTE_RETRIES
     last_exc = None
     for i in range(attempts):
         try:
@@ -243,22 +303,6 @@ async def _post_with_retries(client, url: str, json_body: dict, headers: dict, a
 
 
 async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[bytes]:
-    """Delegate Kokoro synthesis to a remote host instead of running it here
-    — same principle as VOICEFLOW_REMOTE_ENDPOINT for ASR: run the heavy
-    model on a host you choose, keep this app's own host lightweight.
-
-    Two contracts are tried, each with a bounded retry (see
-    _post_with_retries — it rides out a wake-up already in progress, not a
-    full cold start; see that docstring for why), since real Kokoro-serving
-    hosts speak either:
-      1. {endpoint}/tts/kokoro — {"text","voice_gender"} in, raw audio bytes
-         back. The originally-documented contract; tried first for anyone
-         who built a remote exactly to that spec.
-      2. {endpoint}/api/inference/tts — {"text","voice"} in (Kokoro's own
-         voice IDs, not a gender string), {"audio_b64","voice","sample_rate"}
-         JSON back. Same /api/inference/* convention as the /whisper and
-         /nemo ASR routes — a shape some self-hosted inference backends use.
-    """
     if not settings.TTS_REMOTE_ENDPOINT:
         return None
     import httpx
@@ -266,10 +310,12 @@ async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[byte
     if settings.TTS_REMOTE_TOKEN:
         headers["Authorization"] = f"Bearer {settings.TTS_REMOTE_TOKEN}"
 
+    endpoint = settings.TTS_REMOTE_ENDPOINT
+    timeout = settings.TTS_REMOTE_TIMEOUT
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await _post_with_retries(
-                client, f"{settings.TTS_REMOTE_ENDPOINT}/tts/kokoro",
+                client, f"{endpoint}/tts/kokoro",
                 {"text": text, "voice_gender": voice_gender}, headers,
             )
             audio_bytes = resp.content
@@ -281,9 +327,9 @@ async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[byte
     try:
         import base64
         voice = _KOKORO_VOICES.get(voice_gender, _KOKORO_VOICES["default"])
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await _post_with_retries(
-                client, f"{settings.TTS_REMOTE_ENDPOINT}/api/inference/tts",
+                client, f"{endpoint}/api/inference/tts",
                 {"text": text, "voice": voice}, headers,
             )
             data = resp.json()
@@ -299,57 +345,49 @@ async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[byte
 
 async def _generate_kokoro(text: str, language: str, voice_gender: str) -> Optional[bytes]:
     if language.startswith("fr"):
-        return None  # no French checkpoint in the default Kokoro release — fall back
+        return None  # no French checkpoint in default Kokoro release — fall back
 
+    # 1. Primary: Run local on-host Kokoro synthesis directly
+    try:
+        audio = await asyncio.to_thread(_generate_kokoro_sync, text, voice_gender)
+        if audio:
+            return audio
+    except Exception as e:
+        log.warning("Local Kokoro synthesis failed: %s", e)
+
+    # 2. Secondary fallback: remote endpoint only if explicitly configured
     if settings.TTS_REMOTE_ENDPOINT:
         audio = await _generate_kokoro_remote(text, voice_gender)
         if audio:
             return audio
-        # Remote failed — fall through and try running it locally instead,
-        # in case this host happens to have it installed too.
 
-    return await asyncio.to_thread(_generate_kokoro_sync, text, voice_gender)
+    return None
 
 
 async def generate_speech(
     text: str,
     language: str = "en",
     voice_gender: str = "default",
-    rate: str = "+0%",
-    volume: str = "+0%",
-    provider: str = "edge",
+    rate: Optional[str] = None,
+    volume: Optional[str] = None,
+    provider: Optional[str] = None,
     voice_id: Optional[str] = None,
 ) -> bytes:
     """
     Generate speech audio from text via the selected provider, falling back
     to edge-tts on any failure.
-
-    Args:
-        text: Text to convert to speech
-        language: 'en' or 'fr'
-        voice_gender: 'male', 'female', or 'default'
-        rate: Speech rate adjustment (e.g. '+10%', '-10%') — edge-tts only
-        volume: Volume adjustment (e.g. '+10%', '-10%') — edge-tts only
-        provider: 'edge' (default), 'elevenlabs', 'openai', or 'kokoro'
-        voice_id: ElevenLabs voice ID override — a cloned voice from
-            clone_elevenlabs_voice(), or any other voice ID on the account.
-            Ignored by every other provider. Falls back to the two stock
-            gender-mapped voices when not given.
-
-    Returns:
-        MP3 audio bytes (WAV for kokoro)
     """
-    provider = (provider or "edge").strip().lower()
+    p = (provider or settings.TTS_DEFAULT_PROVIDER or "edge").strip().lower()
 
-    if provider == "elevenlabs":
+    if p == "elevenlabs":
         audio = await _generate_elevenlabs(text, language, voice_gender, voice_id)
         if audio:
             return audio
-    elif provider == "openai":
+    elif p == "openai":
         audio = await _generate_openai(text, voice_gender)
         if audio:
             return audio
-    elif provider == "kokoro":
+    elif p == "kokoro":
         audio = await _generate_kokoro(text, language, voice_gender)
         if audio:
             return audio
@@ -358,6 +396,9 @@ async def generate_speech(
     try:
         import edge_tts
 
+        rate_val = rate if rate is not None else settings.EDGE_TTS_DEFAULT_RATE
+        volume_val = volume if volume is not None else settings.EDGE_TTS_DEFAULT_VOLUME
+
         lang = language[:2].lower() if language else "en"
         voice_map = VOICES.get(lang, VOICES["en"])
         voice = voice_map.get(voice_gender, voice_map["default"])
@@ -365,8 +406,8 @@ async def generate_speech(
         communicate = edge_tts.Communicate(
             text=text,
             voice=voice,
-            rate=rate,
-            volume=volume,
+            rate=rate_val,
+            volume=volume_val,
         )
 
         # Collect audio bytes
@@ -391,13 +432,13 @@ async def generate_speech_with_meta(
     text: str,
     language: str = "en",
     voice_gender: str = "default",
-    rate: str = "+0%",
-    volume: str = "+0%",
-    provider: str = "edge",
+    rate: Optional[str] = None,
+    volume: Optional[str] = None,
+    provider: Optional[str] = None,
     voice_id: Optional[str] = None,
 ) -> tuple[bytes, str]:
     """Generate speech and return a tuple of (audio_bytes, actual_provider_used)."""
-    p = (provider or "edge").strip().lower()
+    p = (provider or settings.TTS_DEFAULT_PROVIDER or "edge").strip().lower()
     if p == "elevenlabs":
         audio = await _generate_elevenlabs(text, language, voice_gender, voice_id)
         if audio:

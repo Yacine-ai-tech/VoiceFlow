@@ -2,14 +2,16 @@ FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg curl \
+    ffmpeg curl libsndfile1 espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --upgrade pip uv && \
-    uv pip install --system --no-cache-dir -r requirements.txt
+    uv pip install --system --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    uv pip install --system --no-cache-dir -r requirements.txt && \
+    uv pip install --system --no-cache-dir faster-whisper kokoro soundfile
 
 COPY . .
 
