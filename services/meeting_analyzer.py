@@ -32,7 +32,8 @@ except ImportError:
 _AUTH_SIGNALS = (
     "AuthenticationError", "PermissionDeniedError", "APIError", "RateLimitError",
     "401", "402", "403", "429", "insufficient_balance", "invalid_api_key",
-    "invalid api key", "credit", "quota", "resource_exhausted", "billing", "unauthorized"
+    "invalid api key", "credit", "quota", "resource_exhausted", "billing", "unauthorized",
+    "credit balance is too low", "credit_balance", "payment_required"
 )
 
 
@@ -43,35 +44,51 @@ def _resolve_fallback(fallback: str = "") -> str:
     if getattr(settings, "LLM_REASONING_FALLBACK", ""):
         return settings.LLM_REASONING_FALLBACK
     if getattr(settings, "GROQ_API_KEY", ""):
-        return "groq/moonshotai/kimi-k2-instruct"
+        return os.getenv("GROQ_FALLBACK_MODEL", "groq/openai/gpt-oss-120b")
     if getattr(settings, "GEMINI_API_KEY", ""):
-        return "gemini/gemini-2.5-flash"
+        return os.getenv("GEMINI_FALLBACK_MODEL", "gemini/gemini-2.5-flash")
     return ""
 
 
 async def _llm_with_fallback(model: str, messages: list, fallback: str = "", **kwargs) -> Any:
-    """acompletion wrapper with auth/billing error fallback to a provider override model.
-
-    ``fallback`` comes from settings.LLM_REASONING_FALLBACK / LLM_JUDGE_FALLBACK, or
-    dynamically falls back to available high-speed providers (Groq/Gemini).
-    """
-    resolved_fb = _resolve_fallback(fallback)
-    # Use bounded retries so 402/insufficient balance or auth errors fail fast to the fallback
+    """acompletion wrapper with chained auth/billing/credit error fallback to Groq & Gemini."""
     call_kwargs = dict(kwargs)
     if "num_retries" not in call_kwargs:
         call_kwargs["num_retries"] = 1
     if "timeout" not in call_kwargs:
         call_kwargs["timeout"] = 15
 
-    try:
-        return await acompletion(model=model, messages=messages, **call_kwargs)
-    except Exception as exc:
-        exc_str = (str(exc) + " " + type(exc).__name__).lower()
-        is_auth = any(s.lower() in exc_str for s in _AUTH_SIGNALS)
-        if is_auth and resolved_fb and resolved_fb != model:
-            log.warning("model=%s auth/quota error (%s) — retrying with fallback %s", model, type(exc).__name__, resolved_fb)
-            return await acompletion(model=resolved_fb, messages=messages, **kwargs)
-        raise
+    # Build prioritized candidate fallback chain
+    candidate_models: list[str] = [model]
+    explicit_fb = fallback or getattr(settings, "LLM_REASONING_FALLBACK", "")
+    if explicit_fb and explicit_fb not in candidate_models:
+        candidate_models.append(explicit_fb)
+    # Dynamic Groq fallback
+    groq_fb = os.getenv("GROQ_FALLBACK_MODEL", "groq/openai/gpt-oss-120b")
+    if getattr(settings, "GROQ_API_KEY", "") and groq_fb not in candidate_models:
+        candidate_models.append(groq_fb)
+    # Dynamic Gemini fallback
+    gemini_fb = os.getenv("GEMINI_FALLBACK_MODEL", "gemini/gemini-2.5-flash")
+    if getattr(settings, "GEMINI_API_KEY", "") and gemini_fb not in candidate_models:
+        candidate_models.append(gemini_fb)
+
+    last_exc = None
+    for idx, candidate in enumerate(candidate_models):
+        try:
+            return await acompletion(model=candidate, messages=messages, **call_kwargs)
+        except Exception as exc:
+            last_exc = exc
+            exc_str = (str(exc) + " " + type(exc).__name__).lower()
+            is_auth_or_quota = any(s.lower() in exc_str for s in _AUTH_SIGNALS)
+            if (is_auth_or_quota or idx == 0) and idx + 1 < len(candidate_models):
+                log.warning(
+                    "model=%s failed (%s) — retrying with fallback %s",
+                    candidate, type(exc).__name__, candidate_models[idx + 1]
+                )
+                continue
+            raise
+    if last_exc:
+        raise last_exc
 
 
 # Ceiling on a single LLM call. Without this, a rate-limited or slow

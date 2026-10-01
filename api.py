@@ -1151,7 +1151,7 @@ async def ws_realtime(ws: WebSocket):
                                     await trace.first("first_input_audio")
                                     async with session_send_lock:
                                         await session.send_realtime_input(
-                                            audio=_gtypes.Blob(data=msg_bytes, mime_type="audio/pcm;rate=16000")
+                                            media=_gtypes.Blob(data=msg_bytes, mime_type="audio/pcm;rate=16000")
                                         )
                                     continue
 
@@ -1170,16 +1170,19 @@ async def ws_realtime(ws: WebSocket):
                                         pcm_16k = _resample_pcm(pcm_24k, sample_rate, 16000)
                                         async with session_send_lock:
                                             await session.send_realtime_input(
-                                                audio=_gtypes.Blob(data=pcm_16k, mime_type="audio/pcm;rate=16000")
+                                                media=_gtypes.Blob(data=pcm_16k, mime_type="audio/pcm;rate=16000")
                                             )
                                         await trace.first("first_input_audio", mode="json_base64")
 
                                 elif evt == "input_audio_buffer.commit":
-                                    # Never send audio_stream_end=True into Gemini Multimodal Live, as that
-                                    # permanently terminates the audio stream channel and breaks subsequent turns.
                                     cancel_flag[0] = False
                                     pending_cancel_notice[0] = False
                                     turn_active[0] = True
+                                    try:
+                                        async with session_send_lock:
+                                            await session.send_realtime_input(activity_end=_gtypes.ActivityEnd())
+                                    except Exception as e:
+                                        log.debug("send activity_end notice: %s", e)
                                     await trace.first("first_commit")
 
                                 elif evt == "conversation.item.create":
@@ -1200,9 +1203,11 @@ async def ws_realtime(ws: WebSocket):
                                         await trace.first("first_commit", mode="text")
 
                                 elif evt == "client.speech_started":
-                                    # Only cancel if the assistant is currently speaking or executing a tool (barge-in).
-                                    # Setting cancel_flag when turn_active is False causes the assistant's next response
-                                    # to be dropped silently by the cancel filter before it ever reaches the user.
+                                    try:
+                                        async with session_send_lock:
+                                            await session.send_realtime_input(activity_start=_gtypes.ActivityStart())
+                                    except Exception:
+                                        pass
                                     if turn_active[0] or is_tool_active[0]:
                                         cancel_flag[0] = True
                                         pending_cancel_notice[0] = True
