@@ -81,10 +81,15 @@ def _use_local() -> bool:
         return True
     if mode == "remote":
         return False
-    # Auto: local if whisperx is installed and no remote endpoint is configured.
+    # Auto: local if faster_whisper or whisperx is installed
+    try:
+        import faster_whisper  # type: ignore  # noqa
+        return True
+    except ImportError:
+        pass
     try:
         import whisperx  # type: ignore  # noqa
-        return not _remote_endpoint()
+        return True
     except ImportError:
         return False
 
@@ -97,7 +102,7 @@ def _error_result(msg: str) -> Dict[str, Any]:
 # ("GROQ_WHISPER", "groq", "LOCAL_WHISPERX", ...) and maps them to the
 # canonical provider name used by the routing chain below.
 _PROVIDER_ALIASES = {
-    "local": "local", "local_whisperx": "local", "whisperx": "local",
+    "local": "local", "local_whisperx": "local", "local_whisper": "local", "whisperx": "local", "faster_whisper": "local",
     "groq": "groq", "groq_whisper": "groq",
     "deepgram": "deepgram", "deepgram_nova2": "deepgram",
     "assemblyai": "assemblyai",

@@ -125,6 +125,137 @@ class Settings:
     def TTS_REMOTE_TOKEN(self) -> str:
         return os.getenv("VOICEFLOW_TTS_REMOTE_TOKEN", "").strip()
 
+    # Dynamic env-driven Edge TTS defaults
+    @property
+    def EDGE_TTS_VOICE_EN_FEMALE(self) -> str:
+        return os.getenv("EDGE_TTS_VOICE_EN_FEMALE", "en-US-AriaNeural").strip()
+
+    @property
+    def EDGE_TTS_VOICE_EN_MALE(self) -> str:
+        return os.getenv("EDGE_TTS_VOICE_EN_MALE", "en-US-GuyNeural").strip()
+
+    @property
+    def EDGE_TTS_VOICE_FR_FEMALE(self) -> str:
+        return os.getenv("EDGE_TTS_VOICE_FR_FEMALE", "fr-FR-DeniseNeural").strip()
+
+    @property
+    def EDGE_TTS_VOICE_FR_MALE(self) -> str:
+        return os.getenv("EDGE_TTS_VOICE_FR_MALE", "fr-FR-HenriNeural").strip()
+
+    @property
+    def EDGE_TTS_DEFAULT_RATE(self) -> str:
+        return os.getenv("EDGE_TTS_DEFAULT_RATE", "+0%").strip()
+
+    @property
+    def EDGE_TTS_DEFAULT_VOLUME(self) -> str:
+        return os.getenv("EDGE_TTS_DEFAULT_VOLUME", "+0%").strip()
+
+    # Dynamic env-driven ElevenLabs defaults
+    @property
+    def ELEVENLABS_BASE_URL(self) -> str:
+        return os.getenv("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io/v1").rstrip("/")
+
+    @property
+    def ELEVENLABS_DEFAULT_VOICE_FEMALE(self) -> str:
+        return os.getenv("ELEVENLABS_DEFAULT_VOICE_FEMALE", "EXAVITQu4vr4xnSDxMaL").strip()
+
+    @property
+    def ELEVENLABS_DEFAULT_VOICE_MALE(self) -> str:
+        return os.getenv("ELEVENLABS_DEFAULT_VOICE_MALE", "onwK4e9ZLuTAKqWW03F9").strip()
+
+    @property
+    def ELEVENLABS_MODEL_ID(self) -> str:
+        return os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2").strip()
+
+    @property
+    def ELEVENLABS_STABILITY(self) -> float:
+        try:
+            return float(os.getenv("ELEVENLABS_STABILITY", "0.5"))
+        except ValueError:
+            return 0.5
+
+    @property
+    def ELEVENLABS_SIMILARITY_BOOST(self) -> float:
+        try:
+            return float(os.getenv("ELEVENLABS_SIMILARITY_BOOST", "0.5"))
+        except ValueError:
+            return 0.5
+
+    @property
+    def ELEVENLABS_TIMEOUT_SECONDS(self) -> float:
+        try:
+            return float(os.getenv("ELEVENLABS_TIMEOUT_SECONDS", "30.0"))
+        except ValueError:
+            return 30.0
+
+    # Dynamic env-driven Kokoro defaults
+    @property
+    def KOKORO_REPO_ID(self) -> str:
+        return os.getenv("KOKORO_REPO_ID", "hexgrad/Kokoro-82M").strip()
+
+    @property
+    def KOKORO_LANG_CODE(self) -> str:
+        return os.getenv("KOKORO_LANG_CODE", "a").strip()
+
+    @property
+    def KOKORO_VOICE_FEMALE(self) -> str:
+        return os.getenv("KOKORO_VOICE_FEMALE", "af_heart").strip()
+
+    @property
+    def KOKORO_VOICE_MALE(self) -> str:
+        return os.getenv("KOKORO_VOICE_MALE", "am_michael").strip()
+
+    @property
+    def KOKORO_VOICE_DEFAULT(self) -> str:
+        return os.getenv("KOKORO_VOICE_DEFAULT", self.KOKORO_VOICE_FEMALE).strip()
+
+    @property
+    def KOKORO_SAMPLE_RATE(self) -> int:
+        try:
+            return int(os.getenv("KOKORO_SAMPLE_RATE", "24000"))
+        except ValueError:
+            return 24000
+
+    # Dynamic env-driven OpenAI TTS defaults
+    @property
+    def OPENAI_TTS_MODEL(self) -> str:
+        return os.getenv("OPENAI_TTS_MODEL", "tts-1-hd").strip()
+
+    @property
+    def OPENAI_TTS_VOICE_FEMALE(self) -> str:
+        return os.getenv("OPENAI_TTS_VOICE_FEMALE", "nova").strip()
+
+    @property
+    def OPENAI_TTS_VOICE_MALE(self) -> str:
+        return os.getenv("OPENAI_TTS_VOICE_MALE", "onyx").strip()
+
+    @property
+    def OPENAI_TTS_VOICE_DEFAULT(self) -> str:
+        return os.getenv("OPENAI_TTS_VOICE_DEFAULT", "alloy").strip()
+
+    @property
+    def OPENAI_TTS_RESPONSE_FORMAT(self) -> str:
+        return os.getenv("OPENAI_TTS_RESPONSE_FORMAT", "mp3").strip()
+
+    # Dynamic env-driven TTS general defaults
+    @property
+    def TTS_DEFAULT_PROVIDER(self) -> str:
+        return os.getenv("TTS_PROVIDER", os.getenv("TTS_DEFAULT_PROVIDER", "edge")).strip().lower()
+
+    @property
+    def TTS_REMOTE_TIMEOUT(self) -> float:
+        try:
+            return float(os.getenv("TTS_REMOTE_TIMEOUT", "30.0"))
+        except ValueError:
+            return 30.0
+
+    @property
+    def TTS_REMOTE_RETRIES(self) -> int:
+        try:
+            return int(os.getenv("TTS_REMOTE_RETRIES", "4"))
+        except ValueError:
+            return 4
+
     OPENAI_REALTIME_MODEL = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1")
     OPENAI_REALTIME_VOICE = os.getenv("OPENAI_REALTIME_VOICE", "marin")
 
