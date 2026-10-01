@@ -33,7 +33,14 @@ try:
     _WHISPERX = True
 except ImportError:
     _WHISPERX = False
-    log.warning("whisperx not installed — WhisperXService stub mode")
+    log.info("whisperx not installed — checking for faster-whisper")
+
+try:
+    from faster_whisper import WhisperModel  # type: ignore
+    _FASTER_WHISPER = True
+except ImportError:
+    _FASTER_WHISPER = False
+    log.info("faster-whisper not installed")
 
 try:
     import nemo.collections.asr as _nemo_asr  # type: ignore
@@ -214,11 +221,14 @@ class WhisperXService:
         self._model = None
 
     def _ensure_loaded(self):
-        if not _WHISPERX:
+        if self._model is not None:
             return
-        if self._model is None:
+        if _WHISPERX:
             log.info("Loading WhisperX model: %s (%s)", self.model_name, self.device)
             self._model = whisperx.load_model(self.model_name, device=self.device, compute_type="int8")
+        elif _FASTER_WHISPER:
+            log.info("Loading Faster-Whisper model: %s (device=cpu, compute_type=int8)", self.model_name)
+            self._model = WhisperModel(self.model_name, device="cpu", compute_type="int8")
 
     def transcribe(
         self, audio_bytes: bytes, language: Optional[str] = None, diarize: bool = False
@@ -236,47 +246,62 @@ class WhisperXService:
         Returns:
             {"text", "language", "segments", "method", "diarized"}
         """
-        if not _WHISPERX:
-            return {"text": "", "method": "stub", "error": "whisperx_not_installed"}
+        if not (_WHISPERX or _FASTER_WHISPER):
+            return {"text": "", "method": "stub", "error": "whisper_not_installed"}
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(audio_bytes)
             path = f.name
         try:
             self._ensure_loaded()
-            # language=None lets Whisper auto-detect; a concrete code forces it.
-            result = self._model.transcribe(path, language=language)  # type: ignore
-            language = result.get("language", language or "en")
+            if _WHISPERX:
+                # language=None lets Whisper auto-detect; a concrete code forces it.
+                result = self._model.transcribe(path, language=language)  # type: ignore
+                language = result.get("language", language or "en")
 
-            # Forced alignment (optional)
-            try:
-                model_a, metadata = whisperx.load_align_model(language_code=language, device=self.device)
-                result = whisperx.align(result["segments"], model_a, metadata, path, self.device)
-            except Exception as e:
-                log.warning("alignment skipped: %s", e)
+                # Forced alignment (optional)
+                try:
+                    model_a, metadata = whisperx.load_align_model(language_code=language, device=self.device)
+                    result = whisperx.align(result["segments"], model_a, metadata, path, self.device)
+                except Exception as e:
+                    log.warning("alignment skipped: %s", e)
 
-            diarized = False
-            if diarize:
-                diar_segments = _run_diarization(path)
-                if diar_segments is not None:
-                    _assign_speakers_by_overlap(result.get("segments", []), diar_segments)
-                    diarized = True
-                else:
-                    log.info("diarization unavailable (%s engine, key/package missing, or it failed) "
-                             "— returning transcript without speaker labels",
-                             settings.LOCAL_DIARIZATION_ENGINE)
+                diarized = False
+                if diarize:
+                    diar_segments = _run_diarization(path)
+                    if diar_segments is not None:
+                        _assign_speakers_by_overlap(result.get("segments", []), diar_segments)
+                        diarized = True
+                    else:
+                        log.info("diarization unavailable (%s engine, key/package missing, or it failed) "
+                                 "— returning transcript without speaker labels",
+                                 settings.LOCAL_DIARIZATION_ENGINE)
 
-            text = " ".join(seg.get("text", "").strip() for seg in result.get("segments", []))
-            return {
-                "text": text,
-                "language": language,
-                "segments": result.get("segments", []),
-                "method": "whisperx",
-                "diarized": diarized,
-            }
+                text = " ".join(seg.get("text", "").strip() for seg in result.get("segments", []))
+                return {
+                    "text": text,
+                    "language": language,
+                    "segments": result.get("segments", []),
+                    "method": "whisperx",
+                    "diarized": diarized,
+                }
+            else:
+                # Native Faster-Whisper CPU path
+                segments_iter, info = self._model.transcribe(path, language=language)
+                seg_list = []
+                for s in segments_iter:
+                    seg_list.append({"start": float(s.start), "end": float(s.end), "text": s.text})
+                text = " ".join(s["text"].strip() for s in seg_list)
+                detected_lang = getattr(info, "language", language or "en")
+                return {
+                    "text": text,
+                    "language": detected_lang,
+                    "segments": seg_list,
+                    "method": "faster-whisper",
+                    "diarized": False,
+                }
         finally:
             try:
                 os.unlink(path)
             except Exception:
-                log.exception("Unexpected error")
                 pass
