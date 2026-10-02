@@ -2,8 +2,35 @@ export class ApiError extends Error { constructor(public status: number, message
 
 /** Typed client for the VoiceFlow API. */
 
-export type Transcript = Record<string, unknown> & { text?: string; error?: string };
-export type Analysis = Record<string, unknown> & { error?: string };
+export type AnnotationItem = {
+  time?: string | null;
+  speaker?: string | null;
+  type: "decision" | "action_item" | "objection" | "insight" | "question" | "quote" | string;
+  title: string;
+  note: string;
+  quote?: string | null;
+};
+
+export type TranscriptSegment = {
+  speaker?: string;
+  start?: number;
+  end?: number;
+  text?: string;
+};
+
+export type Transcript = Record<string, unknown> & {
+  text?: string;
+  diarized_text?: string;
+  diarized?: boolean;
+  speakers?: string[];
+  segments?: TranscriptSegment[];
+  error?: string;
+};
+
+export type Analysis = Record<string, unknown> & {
+  annotations?: AnnotationItem[];
+  error?: string;
+};
 
 export type PipelineResult = {
   transcript: Transcript;
@@ -86,6 +113,13 @@ export const api = {
       body: JSON.stringify({ text, analysis_type: analysisType, language }),
     }),
 
+  annotate: (text: string, language = "auto") =>
+    req<{ summary: string; annotations: AnnotationItem[]; counts: Record<string, number> }>("/annotate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, language }),
+    }),
+
   analyzeCustom: (text: string, fields: string[], instructions = "", language = "auto") =>
     req<Analysis>("/analyze/custom", {
       method: "POST",
@@ -109,21 +143,23 @@ export const api = {
   benchmarks: () =>
     req<{ docs: Record<string, { title: string; filename: string; content: string | null }> }>("/benchmarks"),
 
-  pipeline(file: Blob, filename: string, analysisType: string, provider = "GROQ_WHISPER", language = "auto", scenario?: string) {
+  pipeline(file: Blob, filename: string, analysisType: string, provider = "DEEPGRAM", language = "auto", scenario?: string, diarize = true) {
     const fd = new FormData();
     fd.append("file", file, filename);
     fd.append("analysis_type", analysisType);
     fd.append("provider", provider);
     fd.append("language", language);
+    fd.append("diarize", String(diarize));
     if (scenario) fd.append("scenario", scenario);
     return req<PipelineResult>("/pipeline", { method: "POST", body: fd });
   },
 
-  transcribe(file: Blob, filename: string, provider = "GROQ_WHISPER", language = "auto") {
+  transcribe(file: Blob, filename: string, provider = "DEEPGRAM", language = "auto", diarize = true) {
     const fd = new FormData();
     fd.append("file", file, filename);
     fd.append("provider", provider);
     fd.append("language", language);
+    fd.append("diarize", String(diarize));
     return req<Transcript>("/transcribe", { method: "POST", body: fd });
   },
 
