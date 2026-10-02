@@ -3,14 +3,22 @@ import {
   Activity,
   AlertTriangle,
   Bot,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Clock,
+  Database,
+  ExternalLink,
+  FileText,
+  Globe,
   Layers,
   Mic,
   MicOff,
+  RefreshCw,
+  Settings2,
   Sparkles,
+  Table,
   Terminal,
   Trash2,
   User,
@@ -64,6 +72,8 @@ type RealtimeConfig = {
   openai_webrtc_session_path: string;
   openai_webrtc_available: boolean;
   voice?: string;
+  agent_tools_url?: string;
+  tools_cached?: number;
 };
 
 type TransportCallbacks = {
@@ -153,6 +163,7 @@ class GeminiWebSocketTransport implements RealtimeTransport {
     const params = new URLSearchParams();
     if (this.resumeHandle) params.set("resume", this.resumeHandle);
     if (this.cfg.voice) params.set("voice", this.cfg.voice);
+    if (this.cfg.agent_tools_url) params.set("agent_tools_url", this.cfg.agent_tools_url);
     const qs = params.toString() ? `?${params.toString()}` : "";
     this.ws = new WebSocket(WS_BASE + withAuth(this.cfg.gemini_ws_path + qs));
     this.ws.binaryType = "arraybuffer";
@@ -311,10 +322,11 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
       const headers: HeadersInit = { "Content-Type": "application/json", "X-VoiceFlow-Session": getSessionId() };
       const token = authToken();
       if (token) headers["X-VoiceFlow-Internal-Token"] = token;
+      if (this.cfg.agent_tools_url) headers["X-Agent-Tools-Url"] = this.cfg.agent_tools_url;
       const res = await fetch(BASE + withAuth("/realtime/tool-call"), {
         method: "POST",
         headers,
-        body: JSON.stringify({ name, arguments: args }),
+        body: JSON.stringify({ name, arguments: args, agent_tools_url: this.cfg.agent_tools_url }),
       });
       const result = await res.json();
       this.cb.onEvent({ type: "tool_result", name, result });
@@ -438,6 +450,13 @@ export default function VoiceAgent() {
   const [selectedVoice, setSelectedVoice] = useState<string>(
     () => localStorage.getItem("voiceflow.gemini_voice") || "Zephyr"
   );
+  const [agentToolsUrl, setAgentToolsUrl] = useState<string>(
+    () => localStorage.getItem("voiceflow.agent_tools_url") || ""
+  );
+  const [customAgentInput, setCustomAgentInput] = useState(agentToolsUrl);
+  const [showAgentModal, setShowAgentModal] = useState(false);
+  const [testingAgent, setTestingAgent] = useState(false);
+  const [agentTestResult, setAgentTestResult] = useState<{ status: string; count?: number; message?: string; error?: string; url?: string } | null>(null);
 
   const cfgRef = useRef<RealtimeConfig | null>(null);
   const transportRef = useRef<RealtimeTransport | null>(null);
@@ -820,7 +839,7 @@ export default function VoiceAgent() {
     reconnectTimerRef.current = setTimeout(() => connect(false), Math.min(1000 * 2 ** attempt, 8000));
   };
 
-  const connect = async (reset = false, overrideVoice?: string) => {
+  const connect = async (reset = false, overrideVoice?: string, overrideAgentUrl?: string) => {
     setErrorMsg("");
     if (reset) {
       setMsgs([]);
@@ -836,9 +855,15 @@ export default function VoiceAgent() {
     setState("connecting");
     addTelemetryLog("transport.connecting", "Negotiating realtime session", "info");
     try {
-      const cfg = await fetch(BASE + "/realtime/config", { headers: { "X-VoiceFlow-Session": getSessionId() } }).then((r) => r.json());
+      const activeAgent = (overrideAgentUrl !== undefined ? overrideAgentUrl : agentToolsUrl).trim();
+      const qs = activeAgent ? `?agent_tools_url=${encodeURIComponent(activeAgent)}` : "";
+      const cfg = await fetch(BASE + withAuth("/realtime/config" + qs), { headers: { "X-VoiceFlow-Session": getSessionId() } }).then((r) => r.json());
       const voiceToUse = overrideVoice || selectedVoice;
-      const cfgWithVoice: RealtimeConfig = { ...cfg, voice: voiceToUse };
+      const cfgWithVoice: RealtimeConfig = {
+        ...cfg,
+        voice: voiceToUse,
+        agent_tools_url: activeAgent || cfg.agent_tools_url || "",
+      };
       cfgRef.current = cfgWithVoice;
       if (cfg.auth_required && !authToken()) {
         setErrorMsg("This deployment requires a WebSocket token. Set VITE_VOICEFLOW_INTERNAL_TOKEN or voiceflow.internal_token in localStorage.");
@@ -873,6 +898,36 @@ export default function VoiceAgent() {
     localStorage.setItem("voiceflow.gemini_voice", newVoice);
     if (cfgRef.current) {
       connect(false, newVoice);
+    }
+  };
+
+  const handleSaveAgentUrl = (newUrl: string) => {
+    const trimmed = newUrl.trim();
+    setAgentToolsUrl(trimmed);
+    localStorage.setItem("voiceflow.agent_tools_url", trimmed);
+    setShowAgentModal(false);
+    connect(false, undefined, trimmed);
+  };
+
+  const handleResetAgentUrl = () => {
+    setAgentToolsUrl("");
+    setCustomAgentInput("");
+    localStorage.removeItem("voiceflow.agent_tools_url");
+    setShowAgentModal(false);
+    connect(false, undefined, "");
+  };
+
+  const testAgentEndpoint = async (urlToTest: string) => {
+    setTestingAgent(true);
+    setAgentTestResult(null);
+    try {
+      const res = await fetch(BASE + withAuth(`/api/agent-tools/test?url=${encodeURIComponent(urlToTest.trim())}`));
+      const data = await res.json();
+      setAgentTestResult(data);
+    } catch (err: any) {
+      setAgentTestResult({ status: "error", error: err.message || "Failed to reach endpoint" });
+    } finally {
+      setTestingAgent(false);
     }
   };
 
@@ -1095,6 +1150,24 @@ export default function VoiceAgent() {
                         </select>
                       </div>
                     )}
+
+                    {/* Dynamic Agent Bridge Selector */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomAgentInput(agentToolsUrl);
+                        setAgentTestResult(null);
+                        setShowAgentModal(true);
+                      }}
+                      className="flex items-center gap-1.5 rounded bg-surface-2 hover:bg-surface px-2 py-0.5 text-[11px] font-medium text-body border border-line transition-colors ml-1"
+                      title="Configure external agent tools endpoint"
+                    >
+                      <Wrench size={11} className={agentToolsUrl ? "text-[var(--accent)]" : "text-muted"} />
+                      <span className="hidden sm:inline text-muted">Agent:</span>
+                      <span className="truncate max-w-[110px]">
+                        {agentToolsUrl ? "Custom" : cfgRef.current?.tools_cached ? `${cfgRef.current.tools_cached} tools` : "Default"}
+                      </span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1455,6 +1528,114 @@ export default function VoiceAgent() {
           </div>
         </div>
       )}
+
+      {/* Dynamic Agent Tools Bridge Modal */}
+      {showAgentModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="w-full max-w-lg rounded-2xl bg-surface border border-line shadow-2xl p-5 sm:p-6 text-body space-y-4">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-xl bg-[var(--accent)]/15 border border-[var(--accent)]/30 flex items-center justify-center text-[var(--accent)] shrink-0">
+                  <Wrench size={22} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-body">Agent Tools Bridge</h3>
+                  <p className="text-xs text-muted">Dynamically connect any external agent service</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAgentModal(false)}
+                className="text-muted hover:text-body p-1 rounded-lg text-lg leading-none"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-muted leading-relaxed">
+              VoiceFlow is completely agent-agnostic. Point this session to any service implementing the discovery contract (<code>/api/tools</code>). Its tools, resources, and actions will be dynamically exposed to the live voice agent.
+            </p>
+
+            <div className="space-y-2">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-muted block">
+                Agent Service Base URL
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="url"
+                  value={customAgentInput}
+                  onChange={(e) => setCustomAgentInput(e.target.value)}
+                  placeholder={cfgRef.current?.agent_tools_url || "https://api-agentkit.ysiddo-ai-projects.app"}
+                  className="flex-1 rounded-xl bg-surface-2 px-3 py-2 text-xs font-mono text-body border border-line outline-none focus:border-[var(--accent)]"
+                />
+                <Button
+                  variant="secondary"
+                  onClick={() => testAgentEndpoint(customAgentInput || cfgRef.current?.agent_tools_url || "")}
+                  disabled={testingAgent}
+                  className="text-xs px-3 py-2 flex items-center gap-1.5 shrink-0"
+                >
+                  <RefreshCw size={12} className={testingAgent ? "animate-spin" : ""} />
+                  <span>Test</span>
+                </Button>
+              </div>
+              <div className="text-[10px] text-dim flex justify-between">
+                <span>Default: <code className="font-mono">{cfgRef.current?.agent_tools_url || "Default server agent"}</code></span>
+                <span>Active: <code className="font-mono">{agentToolsUrl || "Default"}</code></span>
+              </div>
+            </div>
+
+            {/* Test Results Output */}
+            {agentTestResult && (
+              <div
+                className={`p-3 rounded-xl border text-xs font-mono space-y-1.5 ${
+                  agentTestResult.status === "ok"
+                    ? "bg-ok/10 text-ok border-ok/30"
+                    : "bg-bad/10 text-bad border-bad/30"
+                }`}
+              >
+                <div className="flex items-center justify-between font-bold">
+                  <span>Status: {agentTestResult.status.toUpperCase()}</span>
+                  {agentTestResult.count !== undefined && (
+                    <span>{agentTestResult.count} tool(s) discovered</span>
+                  )}
+                </div>
+                {agentTestResult.error && (
+                  <div className="text-[11px] text-bad font-sans">{agentTestResult.error}</div>
+                )}
+                {agentTestResult.message && (
+                  <div className="text-[11px] font-sans">{agentTestResult.message}</div>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between pt-2 border-t border-line">
+              <Button
+                variant="ghost"
+                onClick={handleResetAgentUrl}
+                className="text-xs text-muted hover:text-bad py-1.5 px-3"
+              >
+                Reset to Default
+              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => setShowAgentModal(false)}
+                  className="text-xs py-1.5 px-3"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  onClick={() => handleSaveAgentUrl(customAgentInput)}
+                  className="text-xs py-1.5 px-4 font-semibold shadow-sm"
+                >
+                  Save & Connect
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1517,7 +1698,7 @@ function ToolMessageCard({ msg }: { msg: Msg }) {
         {/* Visualized Structured Results */}
         {isCompleted && tool.result !== undefined && (
           <div className="pt-2 border-t border-line/60">
-            <KPIResultVisualizer result={tool.result} />
+            <DynamicToolResultVisualizer result={tool.result} toolName={tool.name} />
           </div>
         )}
 
@@ -1561,89 +1742,258 @@ function ToolMessageCard({ msg }: { msg: Msg }) {
 }
 
 /**
- * Visual Formatter for structured KPI & Tool Results.
+ * Helper to format keys into clean readable titles.
  */
-function KPIResultVisualizer({ result }: { result: any }) {
-  if (!result || typeof result !== "object") {
-    return <div className="text-body text-[13px]">{String(result)}</div>;
+function formatKey(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Format scalar values (numbers, currencies, percentages, dates, booleans) dynamically.
+ */
+function formatScalar(val: any, keyName = ""): string {
+  if (val === null || val === undefined) return "—";
+  if (typeof val === "boolean") return val ? "True" : "False";
+  if (typeof val === "number") {
+    const lower = keyName.toLowerCase();
+    if (
+      lower.includes("revenue") ||
+      lower.includes("amount") ||
+      lower.includes("cost") ||
+      lower.includes("cogs") ||
+      lower.includes("arr") ||
+      lower.includes("price") ||
+      lower.includes("spend") ||
+      lower.includes("budget") ||
+      lower.includes("balance")
+    ) {
+      if (Math.abs(val) >= 1_000_000) return `$${(val / 1_000_000).toFixed(2)}M`;
+      if (Math.abs(val) >= 1_000) return `$${(val / 1_000).toFixed(1)}k`;
+      return `$${val.toFixed(2)}`;
+    }
+    if (lower.includes("percent") || lower.includes("rate") || lower.includes("ratio") || lower.endsWith("%")) {
+      return `${val.toFixed(1)}%`;
+    }
+    if (lower.includes("months")) return `${val.toFixed(1)} mo`;
+    if (lower.includes("days")) return `${val.toFixed(1)} days`;
+    return Number.isInteger(val) ? val.toLocaleString() : val.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  }
+  if (typeof val === "string") {
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(val)) {
+      return new Date(val).toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    }
+    return val;
+  }
+  return JSON.stringify(val);
+}
+
+/**
+ * Returns dynamic color tokens based on status/state strings.
+ */
+function getStatusStyle(statusStr: string): string {
+  const s = statusStr.toLowerCase();
+  if (["ok", "healthy", "success", "completed", "active", "up", "true", "resolved", "passed"].includes(s)) {
+    return "bg-ok/10 text-ok border-ok/30";
+  }
+  if (["warn", "warning", "pending", "in_progress", "medium", "moderate"].includes(s)) {
+    return "bg-warn/10 text-warn border-warn/30";
+  }
+  if (["bad", "error", "failed", "critical", "high", "down", "false", "anomalous"].includes(s)) {
+    return "bg-bad/10 text-bad border-bad/30";
+  }
+  return "bg-surface-2 text-dim border-line";
+}
+
+/**
+ * Domain-Agnostic Dynamic Tool Result Visualizer.
+ * Intelligently visualizes ANY structured tool output:
+ * - Arrays/lists of entities (KPIs, tickets, tasks, messages, events, search hits, logs)
+ * - Single entity records with attributes and nested sub-objects
+ * - Numeric gauges / scores / health indexes
+ * - Status alerts (success, error, warning)
+ * - Markdown / plain text blocks
+ * - Interactive raw JSON payload inspector
+ */
+function DynamicToolResultVisualizer({ result, toolName }: { result: any; toolName?: string }) {
+  if (result === undefined || result === null) {
+    return <div className="text-dim text-[12px] italic">No output returned.</div>;
   }
 
-  // 1. KPI Records List (e.g. query_kpis)
-  if (Array.isArray(result.kpis) && result.kpis.length > 0) {
+  if (typeof result !== "object") {
     return (
-      <div className="space-y-2.5">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-            KPI Metrics Snapshot
-          </span>
-          <span className="rounded-full bg-[var(--accent)]/10 text-[var(--accent)] px-2 py-0.5 text-[10px] font-mono font-medium">
-            {result.total || result.kpis.length} metric{result.kpis.length > 1 ? "s" : ""}
-          </span>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {result.kpis.map((k: any, i: number) => {
-            let formattedVal = k.value;
-            if (typeof k.value === "number") {
-              if (
-                k.unit === "USD" ||
-                k.metric?.toLowerCase().includes("revenue") ||
-                k.metric?.toLowerCase().includes("arr") ||
-                k.metric?.toLowerCase().includes("cogs")
-              ) {
-                if (k.value >= 1_000_000) formattedVal = `$${(k.value / 1_000_000).toFixed(2)}M`;
-                else if (k.value >= 1_000) formattedVal = `$${(k.value / 1_000).toFixed(1)}k`;
-                else formattedVal = `$${k.value.toFixed(2)}`;
-              } else if (k.unit === "%") {
-                formattedVal = `${k.value.toFixed(1)}%`;
-              } else if (k.unit === "months") {
-                formattedVal = `${k.value.toFixed(1)} mo`;
-              } else if (k.unit === "days") {
-                formattedVal = `${k.value.toFixed(1)} days`;
-              } else {
-                formattedVal = k.value >= 1000 ? k.value.toLocaleString() : k.value;
-              }
-            }
+      <div className="rounded-lg bg-surface-2/60 p-2.5 text-[12px] text-body leading-relaxed whitespace-pre-wrap font-sans border border-line">
+        {String(result)}
+      </div>
+    );
+  }
 
-            return (
-              <div
-                key={i}
-                className="rounded-lg border border-line bg-surface-2/60 p-2.5 flex flex-col justify-between hover:border-[var(--accent)]/40 transition-colors"
-              >
-                <div className="flex items-start justify-between gap-1 mb-1">
-                  <span className="text-[12px] font-semibold text-body truncate" title={k.metric}>
-                    {k.metric}
-                  </span>
-                  {k.category && (
-                    <span className="rounded bg-surface px-1.5 py-0.5 text-[9px] font-medium text-dim border border-line shrink-0">
-                      {k.category}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-baseline justify-between mt-1">
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-[15px] font-bold text-body font-mono">
-                      {formattedVal}
-                    </span>
-                    {k.unit && !["USD", "%", "months", "days"].includes(k.unit) && (
-                      <span className="text-[10px] text-muted">{k.unit}</span>
-                    )}
-                  </div>
-                  {k.period && (
-                    <span className="text-[10px] text-dim font-mono">{k.period}</span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+  // 1. Check for error output
+  if (result.error) {
+    return (
+      <div className="flex items-start gap-2 p-2.5 rounded-lg bg-bad/10 text-bad text-[12px] border border-bad/25">
+        <XCircle size={15} className="shrink-0 mt-0.5" />
+        <div>
+          <span className="font-semibold capitalize">{String(result.error).replace(/_/g, " ")}</span>
+          {result.detail && <p className="text-[11px] text-dim mt-0.5 font-mono">{String(result.detail)}</p>}
         </div>
       </div>
     );
   }
 
-  // 2. Company Health Score (e.g. get_company_health)
-  if (result.score !== undefined && typeof result.score === "number") {
-    const score = result.score;
-    const interp = result.interpretation || "Stable";
+  // 2. Helper to detect if an array contains objects
+  const isObjectArray = (arr: any[]): boolean => arr.length > 0 && typeof arr[0] === "object" && arr[0] !== null;
+
+  // 3. Find primary array property if not a direct array
+  let itemsArray: any[] | null = null;
+  let arrayKeyName = "";
+
+  if (Array.isArray(result)) {
+    itemsArray = result;
+    arrayKeyName = toolName || "Items";
+  } else {
+    const candidateKeys = [
+      "items", "records", "results", "data", "kpis", "tasks", "users",
+      "tickets", "anomalies", "events", "files", "entries", "rows", "documents", "hits"
+    ];
+    for (const key of candidateKeys) {
+      if (Array.isArray(result[key])) {
+        itemsArray = result[key];
+        arrayKeyName = key;
+        break;
+      }
+    }
+    // If not found in candidate keys, check any key with an array value
+    if (!itemsArray) {
+      for (const [k, v] of Object.entries(result)) {
+        if (Array.isArray(v)) {
+          itemsArray = v;
+          arrayKeyName = k;
+          break;
+        }
+      }
+    }
+  }
+
+  // 4. Render Array of Items (Universal Cards Grid)
+  if (itemsArray !== null) {
+    if (itemsArray.length === 0) {
+      return (
+        <div className="flex items-center gap-2 p-2.5 rounded-lg bg-surface-2 text-muted text-[12px] border border-line">
+          <CheckCircle2 size={14} className="text-ok shrink-0" />
+          <span>No {arrayKeyName.replace(/_/g, " ") || "records"} returned.</span>
+        </div>
+      );
+    }
+
+    if (isObjectArray(itemsArray)) {
+      return (
+        <div className="space-y-2.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted flex items-center gap-1.5">
+              <Table size={12} className="text-[var(--accent)]" />
+              <span>{formatKey(arrayKeyName || "Results")}</span>
+            </span>
+            <span className="rounded-full bg-[var(--accent)]/10 text-[var(--accent)] px-2 py-0.5 text-[10px] font-mono font-medium">
+              {result.total || itemsArray.length} {itemsArray.length === 1 ? "entry" : "entries"}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {itemsArray.map((item: Record<string, any>, idx: number) => {
+              // Extract smart fields
+              const titleKey = ["name", "title", "metric", "subject", "label", "id", "filename", "code"].find(
+                (k) => item[k] !== undefined && typeof item[k] !== "object"
+              );
+              const title = titleKey ? String(item[titleKey]) : `Item #${idx + 1}`;
+
+              const badgeKey = ["status", "state", "category", "type", "priority", "severity", "direction", "level"].find(
+                (k) => item[k] !== undefined && typeof item[k] !== "object"
+              );
+              const badgeVal = badgeKey ? String(item[badgeKey]) : null;
+
+              const valKey = ["value", "amount", "score", "price", "total", "count", "balance", "cost"].find(
+                (k) => item[k] !== undefined && typeof item[k] === "number"
+              );
+              const primaryValue = valKey !== undefined ? item[valKey] : null;
+
+              const descKey = ["description", "summary", "text", "detail", "message", "snippet"].find(
+                (k) => item[k] !== undefined && typeof item[k] === "string" && k !== titleKey
+              );
+              const description = descKey ? String(item[descKey]) : null;
+
+              const secondaryKeys = Object.keys(item).filter(
+                (k) => ![titleKey, badgeKey, valKey, descKey].includes(k) && typeof item[k] !== "object"
+              ).slice(0, 3);
+
+              return (
+                <div
+                  key={idx}
+                  className="rounded-lg border border-line bg-surface-2/60 p-2.5 flex flex-col justify-between hover:border-[var(--accent)]/40 transition-colors"
+                >
+                  <div>
+                    <div className="flex items-start justify-between gap-1 mb-1">
+                      <span className="text-[12px] font-semibold text-body truncate" title={title}>
+                        {title}
+                      </span>
+                      {badgeVal && (
+                        <span className={`rounded px-1.5 py-0.5 text-[9px] font-medium border shrink-0 ${getStatusStyle(badgeVal)}`}>
+                          {badgeVal}
+                        </span>
+                      )}
+                    </div>
+
+                    {description && (
+                      <p className="text-[11px] text-dim line-clamp-2 mt-0.5 mb-1.5 leading-relaxed">
+                        {description}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-baseline justify-between mt-1 pt-1 border-t border-line/40">
+                    {primaryValue !== null ? (
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-[14px] font-bold text-body font-mono">
+                          {formatScalar(primaryValue, valKey)}
+                        </span>
+                        {item.unit && (
+                          <span className="text-[10px] text-muted">{item.unit}</span>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-muted font-mono">
+                        {item.period || item.date || item.created_at || ""}
+                      </div>
+                    )}
+
+                    {secondaryKeys.length > 0 && (
+                      <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                        {secondaryKeys.map((sk) => (
+                          <span key={sk} className="text-[10px] text-dim font-mono bg-surface px-1 py-0.5 rounded border border-line/60">
+                            {formatScalar(item[sk], sk)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+  }
+
+  // 5. Check for Score / Health Index
+  const scoreVal = ["score", "health", "rating", "health_score", "index"].find(
+    (k) => typeof result[k] === "number"
+  );
+  if (scoreVal) {
+    const score = Number(result[scoreVal]);
+    const interp = result.interpretation || result.status || (score >= 75 ? "Optimal" : score >= 50 ? "Stable" : "Attention Needed");
     const statusColor =
       score >= 75 ? "text-ok bg-ok/10 border-ok/30" : score >= 50 ? "text-warn bg-warn/10 border-warn/30" : "text-bad bg-bad/10 border-bad/30";
 
@@ -1651,9 +2001,14 @@ function KPIResultVisualizer({ result }: { result: any }) {
       <div className="space-y-3">
         <div className="flex items-center justify-between p-3 rounded-xl bg-surface-2 border border-line">
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-muted font-bold">Organizational Health Index</div>
+            <div className="text-[10px] uppercase tracking-wider text-muted font-bold flex items-center gap-1">
+              <Activity size={12} className="text-[var(--accent)]" />
+              <span>{formatKey(scoreVal)}</span>
+            </div>
             <div className="flex items-baseline gap-2 mt-0.5">
-              <span className="text-2xl font-bold font-mono text-body">{score.toFixed(1)}</span>
+              <span className="text-2xl font-bold font-mono text-body">
+                {Number.isInteger(score) ? score : score.toFixed(1)}
+              </span>
               <span className="text-xs text-muted">/ 100</span>
             </div>
           </div>
@@ -1662,13 +2017,14 @@ function KPIResultVisualizer({ result }: { result: any }) {
           </span>
         </div>
 
-        {result.components && Object.keys(result.components).length > 0 && (
+        {/* Sub-components if present */}
+        {result.components && typeof result.components === "object" && Object.keys(result.components).length > 0 && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {Object.entries(result.components).map(([k, v]: [string, any]) => (
               <div key={k} className="rounded-lg bg-surface border border-line p-2 text-center">
-                <div className="text-[10px] text-muted capitalize">{k.replace("_", " ")}</div>
+                <div className="text-[10px] text-muted capitalize truncate">{k.replace(/_/g, " ")}</div>
                 <div className="text-[13px] font-bold font-mono text-body mt-0.5">
-                  {typeof v === "number" ? v.toFixed(1) : String(v)}
+                  {typeof v === "number" ? (Number.isInteger(v) ? v : v.toFixed(1)) : String(v)}
                 </div>
               </div>
             ))}
@@ -1678,56 +2034,53 @@ function KPIResultVisualizer({ result }: { result: any }) {
     );
   }
 
-  // 3. Anomalies List (e.g. detect_kpi_anomalies)
-  if (Array.isArray(result.anomalies)) {
-    if (result.anomalies.length === 0) {
-      return (
-        <div className="flex items-center gap-2 p-2.5 rounded-lg bg-ok/10 text-ok text-[12px] border border-ok/20">
-          <CheckCircle2 size={15} />
-          <span>No statistical anomalies detected in this domain history.</span>
+  // 6. Generic Structured Object View (Clean Key-Value & Summary)
+  const summaryKey = ["summary", "overview", "message", "text", "content"].find(
+    (k) => typeof result[k] === "string" && result[k].length > 15
+  );
+
+  const scalarEntries = Object.entries(result).filter(
+    ([k, v]) => k !== summaryKey && typeof v !== "object" && v !== undefined && v !== null
+  );
+
+  const objectEntries = Object.entries(result).filter(
+    ([k, v]) => k !== summaryKey && typeof v === "object" && v !== null && !Array.isArray(v)
+  );
+
+  return (
+    <div className="space-y-2.5">
+      {summaryKey && (
+        <div className="rounded-lg bg-surface-2/80 border border-line p-2.5 text-[12px] text-body leading-relaxed">
+          {String(result[summaryKey])}
         </div>
-      );
-    }
-    return (
-      <div className="space-y-2">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-warn flex items-center gap-1.5">
-          <AlertTriangle size={14} />
-          <span>Detected Anomalies ({result.anomalies.length})</span>
-        </div>
-        <div className="space-y-1.5">
-          {result.anomalies.map((a: any, i: number) => (
-            <div key={i} className="p-2.5 rounded-lg bg-warn/10 border border-warn/25 flex justify-between items-center text-[12px]">
-              <div>
-                <span className="font-semibold text-body">{a.metric}</span>
-                <span className="text-muted ml-2 font-mono text-[11px]">{a.period}</span>
-              </div>
-              <div className="text-right">
-                <span className="font-bold font-mono text-warn">
-                  {typeof a.value === "number" ? a.value.toLocaleString() : a.value}
-                </span>
-                {a.z_score !== undefined && (
-                  <span className="text-[10px] text-dim ml-1.5">({a.z_score > 0 ? "+" : ""}{Number(a.z_score).toFixed(2)}σ)</span>
-                )}
-              </div>
+      )}
+
+      {scalarEntries.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+          {scalarEntries.map(([k, v]) => (
+            <div key={k} className="flex justify-between items-center px-2.5 py-1.5 rounded-lg bg-surface-2/40 border border-line/50 text-[12px]">
+              <span className="text-muted truncate capitalize">{k.replace(/_/g, " ")}:</span>
+              <span className="font-semibold text-body font-mono truncate max-w-[180px] ml-2">
+                {formatScalar(v, k)}
+              </span>
             </div>
           ))}
         </div>
-      </div>
-    );
-  }
+      )}
 
-  // Fallback to formatted key-value summary
-  return (
-    <div className="space-y-1.5">
-      {Object.entries(result).map(([k, v]: [string, any]) => {
-        if (typeof v === "object" && v !== null) return null;
-        return (
-          <div key={k} className="flex justify-between items-center py-0.5 border-b border-line/40 text-[12px]">
-            <span className="text-muted capitalize">{k.replace("_", " ")}:</span>
-            <span className="font-medium text-body font-mono truncate max-w-[200px]">{String(v)}</span>
+      {objectEntries.map(([k, v]: [string, any]) => (
+        <div key={k} className="rounded-lg bg-surface-2/40 border border-line/60 p-2.5 space-y-1.5">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-muted">{formatKey(k)}</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+            {Object.entries(v).slice(0, 6).map(([subK, subV]: [string, any]) => (
+              <div key={subK} className="p-1.5 rounded bg-surface border border-line/50 text-[11px]">
+                <div className="text-[9px] text-muted truncate capitalize">{subK.replace(/_/g, " ")}</div>
+                <div className="font-mono font-medium text-body truncate">{formatScalar(subV, subK)}</div>
+              </div>
+            ))}
           </div>
-        );
-      })}
+        </div>
+      ))}
     </div>
   );
 }
