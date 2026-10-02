@@ -17,7 +17,7 @@ async def transcribe(
     audio_bytes: bytes,
     provider: Optional[str] = None,
     language: str = "auto",
-    diarize: bool = False,
+    diarize: bool = True,
     strict: bool = False,
 ) -> Dict[str, Any]:
     """Transcribe audio via the unified transcription adapter."""

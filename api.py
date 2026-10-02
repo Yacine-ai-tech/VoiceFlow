@@ -352,11 +352,18 @@ class _RealtimeTrace:
 
 def _check_diarization_available(settings) -> dict:
     """Return diarization status dict to include in API responses."""
-    pyannote_token = getattr(settings, "PYANNOTE_TOKEN", "")
-    if not pyannote_token:
+    available = bool(
+        getattr(settings, "DEEPGRAM_API_KEY", "")
+        or getattr(settings, "ASSEMBLYAI_API_KEY", "")
+        or getattr(settings, "PYANNOTE_TOKEN", "")
+        or getattr(settings, "HF_TOKEN", "")
+        or getattr(settings, "GROQ_API_KEY", "")
+        or getattr(settings, "GEMINI_API_KEY", "")
+    )
+    if not available:
         return {
             "diarization_available": False,
-            "diarization_warning": "Speaker diarization is disabled: PYANNOTE_TOKEN not set. Transcription will proceed without speaker labels.",
+            "diarization_warning": "Speaker diarization is disabled: no supported ASR or LLM provider configured.",
         }
     return {"diarization_available": True, "diarization_warning": None}
 
@@ -364,6 +371,11 @@ def _check_diarization_available(settings) -> dict:
 class AnalyzeRequest(BaseModel):
     text: str
     analysis_type: str = "meeting"
+    language: Optional[str] = "auto"
+
+
+class AnnotateRequest(BaseModel):
+    text: str
     language: Optional[str] = "auto"
 
 
@@ -397,7 +409,7 @@ class TranscribeJsonRequest(BaseModel):
     audio_b64: str
     provider: Optional[str] = None
     language: Optional[str] = None
-    diarize: bool = False
+    diarize: bool = True
 
 
 @app.post("/transcribe-json")
@@ -412,10 +424,18 @@ async def transcribe_endpoint(
     file: UploadFile = File(...),
     provider: Optional[str] = Form(None),
     language: str = Form("auto"),
-    diarize: bool = Form(False),
+    diarize: bool = Form(True),
 ) -> Dict[str, Any]:
     audio = await file.read()
     return await route_transcribe(audio, provider=provider, language=language, diarize=diarize)
+
+
+@app.post("/annotate")
+async def annotate_endpoint(req: AnnotateRequest) -> Dict[str, Any]:
+    """Extract fine-grained semantic annotations (decisions, action items, objections, insights, quotes) from transcript."""
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="text required")
+    return await analyzer.extract_annotations(req.text, language=req.language)
 
 
 @app.post("/tts")
@@ -638,9 +658,10 @@ async def pipeline_endpoint(
     request: Request,
     file: UploadFile = File(...),
     analysis_type: str = Form("meeting"),
-    provider: str = Form("LOCAL_WHISPERX"),
+    provider: str = Form("DEEPGRAM"),
     language: str = Form("auto"),
     scenario: Optional[str] = Form(None),
+    diarize: bool = Form(True),
 ) -> Dict[str, Any]:
     """scenario, if given, pins an exact provider+diarize+model combination
     from services/scenarios.py — overrides `provider` and the analysis
@@ -654,13 +675,16 @@ async def pipeline_endpoint(
         raise HTTPException(status_code=400, detail=f"unknown_scenario: {scenario}")
 
     if spec:
+        spec_diarize = spec.get("diarize", diarize)
         trans = await route_transcribe(audio, provider=spec["transcription_provider"],
-                                       language=language, diarize=spec["diarize"], strict=True)
+                                       language=language, diarize=spec_diarize, strict=True)
         model = scenarios.resolve_analysis_model(settings, spec)
-        analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type, model=model, language=language)
+        text_for_analysis = trans.get("diarized_text") or trans.get("text", "")
+        analysis = await analyzer.analyze(text_for_analysis, analysis_type=analysis_type, model=model, language=language)
     else:
-        trans = await route_transcribe(audio, provider=provider, language=language)
-        analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=analysis_type, language=language)
+        trans = await route_transcribe(audio, provider=provider, language=language, diarize=diarize)
+        text_for_analysis = trans.get("diarized_text") or trans.get("text", "")
+        analysis = await analyzer.analyze(text_for_analysis, analysis_type=analysis_type, language=language)
 
     stats = _session_stats(request)
     stats["pipeline"] += 1
@@ -706,8 +730,9 @@ async def benchmarks_endpoint() -> Dict[str, Any]:
 @app.post("/meeting/process")
 async def meeting_process(request: Request, file: UploadFile = File(...)) -> Dict[str, Any]:
     audio = await file.read()
-    trans = await route_transcribe(audio)
-    analysis = await analyzer.analyze_meeting(trans.get("text", ""))
+    trans = await route_transcribe(audio, diarize=True)
+    text_for_analysis = trans.get("diarized_text") or trans.get("text", "")
+    analysis = await analyzer.analyze_meeting(text_for_analysis)
     _session_stats(request)["meeting"] += 1
     return {"transcript": trans, "meeting_notes": analysis}
 
@@ -715,8 +740,9 @@ async def meeting_process(request: Request, file: UploadFile = File(...)) -> Dic
 @app.post("/call/analyze")
 async def call_analyze(request: Request, file: UploadFile = File(...), call_type: str = Form("sales_call")) -> Dict[str, Any]:
     audio = await file.read()
-    trans = await route_transcribe(audio)
-    analysis = await analyzer.analyze(trans.get("text", ""), analysis_type=call_type)
+    trans = await route_transcribe(audio, diarize=True)
+    text_for_analysis = trans.get("diarized_text") or trans.get("text", "")
+    analysis = await analyzer.analyze(text_for_analysis, analysis_type=call_type)
     _session_stats(request)["call"] += 1
     return {"transcript": trans, "call_analysis": analysis, "call_type": call_type}
 
