@@ -63,6 +63,7 @@ type RealtimeConfig = {
   gemini_ws_path: string;
   openai_webrtc_session_path: string;
   openai_webrtc_available: boolean;
+  voice?: string;
 };
 
 type TransportCallbacks = {
@@ -149,21 +150,25 @@ class GeminiWebSocketTransport implements RealtimeTransport {
   constructor(private cfg: RealtimeConfig, private cb: TransportCallbacks) {}
 
   async connect() {
-    const resume = this.resumeHandle ? `?resume=${encodeURIComponent(this.resumeHandle)}` : "";
-    this.ws = new WebSocket(WS_BASE + withAuth(this.cfg.gemini_ws_path + resume));
+    const params = new URLSearchParams();
+    if (this.resumeHandle) params.set("resume", this.resumeHandle);
+    if (this.cfg.voice) params.set("voice", this.cfg.voice);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    this.ws = new WebSocket(WS_BASE + withAuth(this.cfg.gemini_ws_path + qs));
     this.ws.binaryType = "arraybuffer";
 
     this.ws.onopen = () => {
       this.pingInterval = setInterval(() => {
         if (this.ws?.readyState === WebSocket.OPEN) {
           this.ws.send(JSON.stringify({ type: "ping" }));
+          if (this.pongTimeout) clearTimeout(this.pongTimeout);
           this.pongTimeout = setTimeout(() => {
             if (this.ws?.readyState === WebSocket.OPEN) {
               this.ws.close();
             }
-          }, 5000);
+          }, 15000);
         }
-      }, 15000);
+      }, 20000);
     };
 
     this.ws.onmessage = (m) => {
@@ -430,6 +435,9 @@ export default function VoiceAgent() {
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [showPermissionModal, setShowPermissionModal] = useState(false);
+  const [selectedVoice, setSelectedVoice] = useState<string>(
+    () => localStorage.getItem("voiceflow.gemini_voice") || "Zephyr"
+  );
 
   const cfgRef = useRef<RealtimeConfig | null>(null);
   const transportRef = useRef<RealtimeTransport | null>(null);
@@ -796,8 +804,11 @@ export default function VoiceAgent() {
   };
 
   const scheduleReconnect = () => {
-    stopVoice();
+    // Note: Do NOT terminate the microphone or audio context if the user is in an active live call!
+    // Keeping streamRef and audioCtxRef alive allows seamless background reconnection without
+    // forcing the caller to re-click "Start Live Voice" every turn.
     if (!wasReadyRef.current || reconnectAttemptsRef.current >= MAX_AUTO_RECONNECT_ATTEMPTS) {
+      stopVoice();
       setState("closed");
       addTelemetryLog("session.closed", "Connection terminated", "warn");
       return;
@@ -806,10 +817,10 @@ export default function VoiceAgent() {
     setReconnectAttempt(attempt + 1);
     setState("connecting");
     addTelemetryLog("session.reconnecting", `Attempt ${attempt + 1}/${MAX_AUTO_RECONNECT_ATTEMPTS}`, "warn");
-    reconnectTimerRef.current = setTimeout(() => connect(false), Math.min(1000 * 2 ** attempt, 15000));
+    reconnectTimerRef.current = setTimeout(() => connect(false), Math.min(1000 * 2 ** attempt, 8000));
   };
 
-  const connect = async (reset = false) => {
+  const connect = async (reset = false, overrideVoice?: string) => {
     setErrorMsg("");
     if (reset) {
       setMsgs([]);
@@ -826,7 +837,9 @@ export default function VoiceAgent() {
     addTelemetryLog("transport.connecting", "Negotiating realtime session", "info");
     try {
       const cfg = await fetch(BASE + "/realtime/config", { headers: { "X-VoiceFlow-Session": getSessionId() } }).then((r) => r.json());
-      cfgRef.current = cfg;
+      const voiceToUse = overrideVoice || selectedVoice;
+      const cfgWithVoice: RealtimeConfig = { ...cfg, voice: voiceToUse };
+      cfgRef.current = cfgWithVoice;
       if (cfg.auth_required && !authToken()) {
         setErrorMsg("This deployment requires a WebSocket token. Set VITE_VOICEFLOW_INTERNAL_TOKEN or voiceflow.internal_token in localStorage.");
         setState("unconfigured");
@@ -834,14 +847,14 @@ export default function VoiceAgent() {
       }
       transportRef.current?.close();
       transportRef.current =
-        cfg.provider === "openai" && cfg.openai_webrtc_available
-          ? new OpenAIWebRTCTransport(cfg, {
+        cfgWithVoice.provider === "openai" && cfgWithVoice.openai_webrtc_available
+          ? new OpenAIWebRTCTransport(cfgWithVoice, {
               onEvent: handleEvent,
               onClose: scheduleReconnect,
               onError: setErrorMsg,
               onAudio: queueAudioPlayback,
             })
-          : new GeminiWebSocketTransport(cfg, {
+          : new GeminiWebSocketTransport(cfgWithVoice, {
               onEvent: handleEvent,
               onClose: scheduleReconnect,
               onError: setErrorMsg,
@@ -852,6 +865,14 @@ export default function VoiceAgent() {
       setErrorMsg(err.message || String(err));
       setState("error");
       addTelemetryLog("transport.error", err.message || String(err), "error");
+    }
+  };
+
+  const handleVoiceChange = (newVoice: string) => {
+    setSelectedVoice(newVoice);
+    localStorage.setItem("voiceflow.gemini_voice", newVoice);
+    if (cfgRef.current) {
+      connect(false, newVoice);
     }
   };
 
@@ -1054,6 +1075,25 @@ export default function VoiceAgent() {
                       <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-mono text-dim border border-line">
                         {cfgRef.current.provider === "gemini" ? "Gemini 2.5 Live" : "OpenAI Realtime"}
                       </span>
+                    )}
+
+                    {cfgRef.current?.provider === "gemini" && (
+                      <div className="flex items-center gap-1.5 ml-1">
+                        <span className="text-[11px] text-muted hidden sm:inline">Voice:</span>
+                        <select
+                          value={selectedVoice}
+                          onChange={(e) => handleVoiceChange(e.target.value)}
+                          className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-body border border-line outline-none cursor-pointer focus:border-[var(--accent)]"
+                          title="Select Gemini Live AI Voice"
+                        >
+                          <option value="Zephyr">Zephyr (Warm)</option>
+                          <option value="Puck">Puck (Energetic)</option>
+                          <option value="Charon">Charon (Calm)</option>
+                          <option value="Kore">Kore (Clear)</option>
+                          <option value="Fenrir">Fenrir (Deep)</option>
+                          <option value="Aoede">Aoede (Expressive)</option>
+                        </select>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1422,8 +1462,11 @@ export default function VoiceAgent() {
 /**
  * Dedicated structured card for tool execution events in the chat timeline.
  */
+/**
+ * Dedicated structured card for tool execution events in the chat timeline.
+ */
 function ToolMessageCard({ msg }: { msg: Msg }) {
-  const [expanded, setExpanded] = useState(false);
+  const [showJson, setShowJson] = useState(false);
   const tool = msg.toolData;
   if (!tool) return null;
 
@@ -1431,16 +1474,16 @@ function ToolMessageCard({ msg }: { msg: Msg }) {
   const isFailed = tool.status === "failed";
 
   return (
-    <div className="flex justify-center my-2">
-      <div className="w-full max-w-lg rounded-xl border border-line bg-surface p-3 shadow-sm text-[12px]">
-        <div className="flex items-center justify-between cursor-pointer select-none" onClick={() => setExpanded((v) => !v)}>
+    <div className="flex justify-center my-2.5">
+      <div className="w-full max-w-xl rounded-xl border border-line bg-surface p-3.5 shadow-sm text-[12px] space-y-3">
+        <div className="flex items-center justify-between select-none">
           <div className="flex items-center gap-2.5">
             <div
-              className={`h-6 w-6 rounded-lg flex items-center justify-center ${
+              className={`h-7 w-7 rounded-lg flex items-center justify-center shrink-0 ${
                 isCompleted ? "bg-ok/10 text-ok" : isFailed ? "bg-bad/10 text-bad" : "bg-[var(--accent)]/10 text-[var(--accent)] animate-pulse"
               }`}
             >
-              {isCompleted ? <CheckCircle2 size={14} /> : isFailed ? <XCircle size={14} /> : <Wrench size={14} />}
+              {isCompleted ? <CheckCircle2 size={15} /> : isFailed ? <XCircle size={15} /> : <Wrench size={15} />}
             </div>
 
             <div className="flex flex-col">
@@ -1468,13 +1511,31 @@ function ToolMessageCard({ msg }: { msg: Msg }) {
             >
               {tool.status}
             </span>
-            {expanded ? <ChevronDown size={14} className="text-muted" /> : <ChevronRight size={14} className="text-muted" />}
           </div>
         </div>
 
-        {/* Collapsible Arguments & Output Inspector */}
-        {expanded && (
-          <div className="mt-3 pt-2.5 border-t border-line space-y-2 font-mono text-[11px]">
+        {/* Visualized Structured Results */}
+        {isCompleted && tool.result !== undefined && (
+          <div className="pt-2 border-t border-line/60">
+            <KPIResultVisualizer result={tool.result} />
+          </div>
+        )}
+
+        {/* Inspector Accordion Toggle for Raw JSON */}
+        <div className="pt-1 border-t border-line/40 flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setShowJson((v) => !v)}
+            className="flex items-center gap-1 text-[11px] text-muted hover:text-body transition-colors"
+          >
+            {showJson ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+            <span>{showJson ? "Hide Raw Payload" : "View Raw JSON Payload"}</span>
+          </button>
+        </div>
+
+        {/* Raw Arguments & Output Inspector */}
+        {showJson && (
+          <div className="pt-2 border-t border-line space-y-2 font-mono text-[11px] animate-in fade-in">
             {tool.args && Object.keys(tool.args).length > 0 && (
               <div>
                 <span className="text-[10px] uppercase tracking-wider text-muted font-sans font-bold">Arguments</span>
@@ -1495,6 +1556,178 @@ function ToolMessageCard({ msg }: { msg: Msg }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Visual Formatter for structured KPI & Tool Results.
+ */
+function KPIResultVisualizer({ result }: { result: any }) {
+  if (!result || typeof result !== "object") {
+    return <div className="text-body text-[13px]">{String(result)}</div>;
+  }
+
+  // 1. KPI Records List (e.g. query_kpis)
+  if (Array.isArray(result.kpis) && result.kpis.length > 0) {
+    return (
+      <div className="space-y-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+            KPI Metrics Snapshot
+          </span>
+          <span className="rounded-full bg-[var(--accent)]/10 text-[var(--accent)] px-2 py-0.5 text-[10px] font-mono font-medium">
+            {result.total || result.kpis.length} metric{result.kpis.length > 1 ? "s" : ""}
+          </span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {result.kpis.map((k: any, i: number) => {
+            let formattedVal = k.value;
+            if (typeof k.value === "number") {
+              if (
+                k.unit === "USD" ||
+                k.metric?.toLowerCase().includes("revenue") ||
+                k.metric?.toLowerCase().includes("arr") ||
+                k.metric?.toLowerCase().includes("cogs")
+              ) {
+                if (k.value >= 1_000_000) formattedVal = `$${(k.value / 1_000_000).toFixed(2)}M`;
+                else if (k.value >= 1_000) formattedVal = `$${(k.value / 1_000).toFixed(1)}k`;
+                else formattedVal = `$${k.value.toFixed(2)}`;
+              } else if (k.unit === "%") {
+                formattedVal = `${k.value.toFixed(1)}%`;
+              } else if (k.unit === "months") {
+                formattedVal = `${k.value.toFixed(1)} mo`;
+              } else if (k.unit === "days") {
+                formattedVal = `${k.value.toFixed(1)} days`;
+              } else {
+                formattedVal = k.value >= 1000 ? k.value.toLocaleString() : k.value;
+              }
+            }
+
+            return (
+              <div
+                key={i}
+                className="rounded-lg border border-line bg-surface-2/60 p-2.5 flex flex-col justify-between hover:border-[var(--accent)]/40 transition-colors"
+              >
+                <div className="flex items-start justify-between gap-1 mb-1">
+                  <span className="text-[12px] font-semibold text-body truncate" title={k.metric}>
+                    {k.metric}
+                  </span>
+                  {k.category && (
+                    <span className="rounded bg-surface px-1.5 py-0.5 text-[9px] font-medium text-dim border border-line shrink-0">
+                      {k.category}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-baseline justify-between mt-1">
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-[15px] font-bold text-body font-mono">
+                      {formattedVal}
+                    </span>
+                    {k.unit && !["USD", "%", "months", "days"].includes(k.unit) && (
+                      <span className="text-[10px] text-muted">{k.unit}</span>
+                    )}
+                  </div>
+                  {k.period && (
+                    <span className="text-[10px] text-dim font-mono">{k.period}</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Company Health Score (e.g. get_company_health)
+  if (result.score !== undefined && typeof result.score === "number") {
+    const score = result.score;
+    const interp = result.interpretation || "Stable";
+    const statusColor =
+      score >= 75 ? "text-ok bg-ok/10 border-ok/30" : score >= 50 ? "text-warn bg-warn/10 border-warn/30" : "text-bad bg-bad/10 border-bad/30";
+
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between p-3 rounded-xl bg-surface-2 border border-line">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted font-bold">Organizational Health Index</div>
+            <div className="flex items-baseline gap-2 mt-0.5">
+              <span className="text-2xl font-bold font-mono text-body">{score.toFixed(1)}</span>
+              <span className="text-xs text-muted">/ 100</span>
+            </div>
+          </div>
+          <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold border ${statusColor}`}>
+            {interp}
+          </span>
+        </div>
+
+        {result.components && Object.keys(result.components).length > 0 && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {Object.entries(result.components).map(([k, v]: [string, any]) => (
+              <div key={k} className="rounded-lg bg-surface border border-line p-2 text-center">
+                <div className="text-[10px] text-muted capitalize">{k.replace("_", " ")}</div>
+                <div className="text-[13px] font-bold font-mono text-body mt-0.5">
+                  {typeof v === "number" ? v.toFixed(1) : String(v)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // 3. Anomalies List (e.g. detect_kpi_anomalies)
+  if (Array.isArray(result.anomalies)) {
+    if (result.anomalies.length === 0) {
+      return (
+        <div className="flex items-center gap-2 p-2.5 rounded-lg bg-ok/10 text-ok text-[12px] border border-ok/20">
+          <CheckCircle2 size={15} />
+          <span>No statistical anomalies detected in this domain history.</span>
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-2">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-warn flex items-center gap-1.5">
+          <AlertTriangle size={14} />
+          <span>Detected Anomalies ({result.anomalies.length})</span>
+        </div>
+        <div className="space-y-1.5">
+          {result.anomalies.map((a: any, i: number) => (
+            <div key={i} className="p-2.5 rounded-lg bg-warn/10 border border-warn/25 flex justify-between items-center text-[12px]">
+              <div>
+                <span className="font-semibold text-body">{a.metric}</span>
+                <span className="text-muted ml-2 font-mono text-[11px]">{a.period}</span>
+              </div>
+              <div className="text-right">
+                <span className="font-bold font-mono text-warn">
+                  {typeof a.value === "number" ? a.value.toLocaleString() : a.value}
+                </span>
+                {a.z_score !== undefined && (
+                  <span className="text-[10px] text-dim ml-1.5">({a.z_score > 0 ? "+" : ""}{Number(a.z_score).toFixed(2)}σ)</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // Fallback to formatted key-value summary
+  return (
+    <div className="space-y-1.5">
+      {Object.entries(result).map(([k, v]: [string, any]) => {
+        if (typeof v === "object" && v !== null) return null;
+        return (
+          <div key={k} className="flex justify-between items-center py-0.5 border-b border-line/40 text-[12px]">
+            <span className="text-muted capitalize">{k.replace("_", " ")}:</span>
+            <span className="font-medium text-body font-mono truncate max-w-[200px]">{String(v)}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
