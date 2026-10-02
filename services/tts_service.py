@@ -253,20 +253,29 @@ async def _generate_openai(text: str, voice_gender: str) -> Optional[bytes]:
         return None
 
 
-def _generate_kokoro_sync(text: str, voice_gender: str) -> Optional[bytes]:
+def _generate_kokoro_sync(
+    text: str,
+    voice_gender: str,
+    voice_id: Optional[str] = None,
+    lang_code: Optional[str] = None,
+) -> Optional[bytes]:
     """Runs Kokoro's (synchronous, CPU/GPU-bound) pipeline. Called via a
     thread so it doesn't block the event loop."""
     global _kokoro_pipeline
     try:
         import numpy as np
         import soundfile as sf
+        chosen_lang = (lang_code or settings.KOKORO_LANG_CODE or "a").strip()
         if _kokoro_pipeline is None:
             from kokoro import KPipeline
-            _kokoro_pipeline = KPipeline(
-                lang_code=settings.KOKORO_LANG_CODE,
-                repo_id=settings.KOKORO_REPO_ID,
+            model_path = getattr(settings, "KOKORO_MODEL_PATH", "") or None
+            repo_id = settings.KOKORO_REPO_ID
+            _kokoro_pipeline = (
+                KPipeline(lang_code=chosen_lang, repo_id=repo_id, model=model_path)
+                if model_path
+                else KPipeline(lang_code=chosen_lang, repo_id=repo_id)
             )
-        voice = _KOKORO_VOICES.get(voice_gender, _KOKORO_VOICES["default"])
+        voice = voice_id or _KOKORO_VOICES.get(voice_gender, _KOKORO_VOICES["default"])
         chunks = []
         for _, _, audio in _kokoro_pipeline(text, voice=voice):
             chunks.append(audio)
@@ -302,7 +311,7 @@ async def _post_with_retries(client, url: str, json_body: dict, headers: dict, a
     raise last_exc
 
 
-async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[bytes]:
+async def _generate_kokoro_remote(text: str, voice_gender: str, voice_id: Optional[str] = None) -> Optional[bytes]:
     if not settings.TTS_REMOTE_ENDPOINT:
         return None
     import httpx
@@ -312,11 +321,15 @@ async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[byte
 
     endpoint = settings.TTS_REMOTE_ENDPOINT
     timeout = settings.TTS_REMOTE_TIMEOUT
+    payload = {"text": text, "voice_gender": voice_gender}
+    if voice_id:
+        payload["voice_id"] = voice_id
+        payload["voice"] = voice_id
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await _post_with_retries(
                 client, f"{endpoint}/tts/kokoro",
-                {"text": text, "voice_gender": voice_gender}, headers,
+                payload, headers,
             )
             audio_bytes = resp.content
             log.info("TTS (Kokoro, remote /tts/kokoro) generated: %d bytes", len(audio_bytes))
@@ -326,7 +339,7 @@ async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[byte
 
     try:
         import base64
-        voice = _KOKORO_VOICES.get(voice_gender, _KOKORO_VOICES["default"])
+        voice = voice_id or _KOKORO_VOICES.get(voice_gender, _KOKORO_VOICES["default"])
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await _post_with_retries(
                 client, f"{endpoint}/api/inference/tts",
@@ -343,13 +356,19 @@ async def _generate_kokoro_remote(text: str, voice_gender: str) -> Optional[byte
         return None
 
 
-async def _generate_kokoro(text: str, language: str, voice_gender: str) -> Optional[bytes]:
-    if language.startswith("fr"):
-        return None  # no French checkpoint in default Kokoro release — fall back
+async def _generate_kokoro(
+    text: str,
+    language: str,
+    voice_gender: str,
+    voice_id: Optional[str] = None,
+) -> Optional[bytes]:
+    lang_code = settings.KOKORO_LANG_CODE
+    if language.startswith("fr") and lang_code == "a" and not os.getenv("KOKORO_LANG_CODE"):
+        return None  # no French checkpoint in default English Kokoro release — fall back to edge-tts
 
     # 1. Primary: Run local on-host Kokoro synthesis directly
     try:
-        audio = await asyncio.to_thread(_generate_kokoro_sync, text, voice_gender)
+        audio = await asyncio.to_thread(_generate_kokoro_sync, text, voice_gender, voice_id, lang_code)
         if audio:
             return audio
     except Exception as e:
@@ -357,7 +376,7 @@ async def _generate_kokoro(text: str, language: str, voice_gender: str) -> Optio
 
     # 2. Secondary fallback: remote endpoint only if explicitly configured
     if settings.TTS_REMOTE_ENDPOINT:
-        audio = await _generate_kokoro_remote(text, voice_gender)
+        audio = await _generate_kokoro_remote(text, voice_gender, voice_id)
         if audio:
             return audio
 
@@ -388,7 +407,7 @@ async def generate_speech(
         if audio:
             return audio
     elif p == "kokoro":
-        audio = await _generate_kokoro(text, language, voice_gender)
+        audio = await _generate_kokoro(text, language, voice_gender, voice_id=voice_id)
         if audio:
             return audio
 
@@ -448,7 +467,7 @@ async def generate_speech_with_meta(
         if audio:
             return audio, "openai"
     elif p == "kokoro":
-        audio = await _generate_kokoro(text, language, voice_gender)
+        audio = await _generate_kokoro(text, language, voice_gender, voice_id=voice_id)
         if audio:
             return audio, "kokoro"
     audio = await generate_speech(text, language, voice_gender, rate, volume, provider="edge")

@@ -325,9 +325,10 @@ def _groq_whisper_sync(audio_bytes: bytes, language: Optional[str] = None, diari
         import io
         from groq import Groq  # type: ignore
         client = Groq(api_key=key)
+        groq_model = getattr(settings, "GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
         kwargs: Dict[str, Any] = {
             "file": ("audio.wav", io.BytesIO(audio_bytes)),
-            "model": "whisper-large-v3-turbo",
+            "model": groq_model,
             "response_format": "verbose_json",
         }
         if language and language != "auto":
@@ -360,7 +361,7 @@ def _groq_whisper_sync(audio_bytes: bytes, language: Optional[str] = None, diari
             "language": getattr(result, "language", language or "unknown"),
             "segments": segments,
             "speakers": speakers,
-            "method": "groq-whisper",
+            "method": f"groq-{groq_model}",
             "diarized": is_diarized,
         }
     except Exception as e:
@@ -382,7 +383,8 @@ def _deepgram_whisper_sync(audio_bytes: bytes, diarize: bool = True) -> Optional
     if not key:
         return None
     try:
-        url = "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true"
+        dg_model = getattr(settings, "DEEPGRAM_MODEL", "nova-3")
+        url = f"https://api.deepgram.com/v1/listen?model={dg_model}&smart_format=true"
         if diarize:
             url += "&diarize=true&paragraphs=true"
         req = urllib.request.Request(
