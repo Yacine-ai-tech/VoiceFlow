@@ -49,6 +49,12 @@ try:
 except ImportError:
     _NEMO_DIARIZATION = False
 
+try:
+    from pyannote.audio import Pipeline as _PyannotePipeline  # type: ignore
+    _PYANNOTE_AUDIO = True
+except ImportError:
+    _PYANNOTE_AUDIO = False
+
 
 # ─── NeMo diarization — real implementation, not a stub ───────────────────────
 
@@ -172,44 +178,65 @@ def diarize_only(audio_bytes: bytes, transcription: Dict[str, Any]) -> Dict[str,
 
 def _run_diarization(audio_path: str) -> Optional[List[Dict[str, Any]]]:
     """Dispatches to whichever LOCAL_DIARIZATION_ENGINE is configured.
-    pyannote needs whisperx's DiarizationPipeline wrapper + HF_TOKEN; nemo
-    needs nemo_toolkit. Returns None (never raises) if unavailable/failed."""
+    pyannote needs HF_TOKEN or PYANNOTE_TOKEN; nemo needs nemo_toolkit.
+    Supports pyannote via whisperx DiarizationPipeline or native pyannote.audio.
+    Returns None (never raises) if unavailable/failed."""
     engine = settings.LOCAL_DIARIZATION_ENGINE
     if engine == "nemo":
         return _nemo_diarize(audio_path)
 
-    # pyannote, via whisperx's wrapper
-    if not (_WHISPERX and settings.HF_TOKEN):
+    token = getattr(settings, "HF_TOKEN", "") or getattr(settings, "PYANNOTE_TOKEN", "")
+    if not token:
+        log.info("pyannote diarization skipped: no HF_TOKEN or PYANNOTE_TOKEN configured")
         return None
-    try:
-        # DiarizationPipeline is NOT a top-level whisperx export on current versions —
-        # it lives in whisperx.diarize. The old top-level spelling raises
-        # AttributeError, which the `except Exception` below then swallowed, so this
-        # returned None every time and diarization silently never happened. Confirmed
-        # against a real two-speaker recording: transcription was correct, speaker
-        # labels were absent. The old spelling is kept as a fallback so both API
-        # generations work.
-        try:
-            from whisperx.diarize import DiarizationPipeline
-        except ImportError:
-            DiarizationPipeline = whisperx.DiarizationPipeline
 
-        # The auth kwarg was renamed use_auth_token -> token (matching
-        # huggingface_hub's own rename). Passing the old name to a current whisperx
-        # raises TypeError, which the handler below swallowed — the same silent
-        # degradation as the import path above, one layer down.
+    model_name = getattr(settings, "PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1")
+    device = getattr(settings, "WHISPER_DEVICE", "cpu")
+
+    # 1. Try whisperx's DiarizationPipeline wrapper if whisperx is installed
+    if _WHISPERX:
         try:
-            diarize_model = DiarizationPipeline(token=settings.HF_TOKEN, device="cpu")
-        except TypeError:
-            diarize_model = DiarizationPipeline(use_auth_token=settings.HF_TOKEN, device="cpu")
-        raw = diarize_model(audio_path)
-        # whisperx's DiarizationPipeline returns a pyannote-style DataFrame;
-        # normalize to our {start, end, speaker} shape for the shared assigner.
-        return [{"start": float(r.start), "end": float(r.end), "speaker": str(r.speaker)}
-                for r in raw.itertuples()]
-    except Exception as e:
-        log.warning("pyannote diarization failed: %s", e)
-        return None
+            try:
+                from whisperx.diarize import DiarizationPipeline
+            except ImportError:
+                DiarizationPipeline = whisperx.DiarizationPipeline
+
+            try:
+                diarize_model = DiarizationPipeline(model_name=model_name, token=token, device=device)
+            except TypeError:
+                try:
+                    diarize_model = DiarizationPipeline(token=token, device=device)
+                except TypeError:
+                    diarize_model = DiarizationPipeline(use_auth_token=token, device=device)
+            raw = diarize_model(audio_path)
+            # whisperx's DiarizationPipeline returns a pyannote-style DataFrame;
+            # normalize to our {start, end, speaker} shape for the shared assigner.
+            return [{"start": float(r.start), "end": float(r.end), "speaker": str(r.speaker)}
+                    for r in raw.itertuples()]
+        except Exception as e:
+            log.warning("whisperx pyannote diarization failed: %s", e)
+
+    # 2. Try native pyannote.audio if installed directly
+    if _PYANNOTE_AUDIO:
+        try:
+            try:
+                pipeline = _PyannotePipeline.from_pretrained(model_name, token=token)
+            except TypeError:
+                pipeline = _PyannotePipeline.from_pretrained(model_name, use_auth_token=token)
+            if pipeline is not None:
+                diarization = pipeline(audio_path)
+                segments = []
+                for turn, _, speaker in diarization.itertracks(yield_label=True):
+                    segments.append({
+                        "start": float(turn.start),
+                        "end": float(turn.end),
+                        "speaker": str(speaker)
+                    })
+                return segments
+        except Exception as e:
+            log.warning("native pyannote.audio diarization failed: %s", e)
+
+    return None
 
 
 class WhisperXService:
@@ -293,12 +320,24 @@ class WhisperXService:
                     seg_list.append({"start": float(s.start), "end": float(s.end), "text": s.text})
                 text = " ".join(s["text"].strip() for s in seg_list)
                 detected_lang = getattr(info, "language", language or "en")
+                diarized = False
+                if diarize:
+                    diar_segments = _run_diarization(path)
+                    if diar_segments is not None:
+                        _assign_speakers_by_overlap(seg_list, diar_segments)
+                        diarized = True
+                    else:
+                        log.info(
+                            "diarization unavailable (%s engine, key/package missing, or it failed) "
+                            "— returning transcript without speaker labels",
+                            settings.LOCAL_DIARIZATION_ENGINE,
+                        )
                 return {
                     "text": text,
                     "language": detected_lang,
                     "segments": seg_list,
                     "method": "faster-whisper",
-                    "diarized": False,
+                    "diarized": diarized,
                 }
         finally:
             try:
