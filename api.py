@@ -843,8 +843,11 @@ async def ws_stream(ws: WebSocket):
 
 
 @app.get("/realtime/config")
-async def realtime_config() -> Dict[str, Any]:
+async def realtime_config(request: Request) -> Dict[str, Any]:
     provider = getattr(settings, "REALTIME_PROVIDER", "openai").lower()
+    custom_url = request.query_params.get("agent_tools_url")
+    active_url = custom_url or settings.AGENT_TOOLS_URL
+    tools = agent_tools_bridge.cached_tools_snapshot(active_url)
     return {
         "provider": provider,
         "auth_required": _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true",
@@ -852,8 +855,22 @@ async def realtime_config() -> Dict[str, Any]:
         "openai_webrtc_session_path": "/realtime/session/openai",
         "openai_webrtc_available": bool(settings.OPENAI_REALTIME_API_KEY),
         "gemini_available": bool(settings.GEMINI_API_KEY),
-        "tools_cached": len(agent_tools_bridge.cached_tools_snapshot()),
+        "tools_cached": len(tools),
+        "agent_tools_url": active_url,
     }
+
+
+@app.get("/api/agent-tools/test")
+async def test_agent_tools(request: Request) -> Dict[str, Any]:
+    """Test connection to an agent tools service and return discovered tools."""
+    url = (request.query_params.get("url") or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    if not url:
+        return {"status": "unconfigured", "tools": [], "message": "No agent tools URL configured."}
+    try:
+        tools = await agent_tools_bridge.discover_tools(url, force=True)
+        return {"status": "ok", "url": url, "count": len(tools), "tools": tools}
+    except Exception as exc:
+        return {"status": "error", "url": url, "error": str(exc)}
 
 
 @app.post("/realtime/session/openai")
@@ -928,6 +945,7 @@ async def openai_webrtc_session(request: Request):
 class RealtimeToolCallRequest(BaseModel):
     name: str
     arguments: Dict[str, Any] = {}
+    agent_tools_url: Optional[str] = None
 
 
 @app.post("/realtime/tool-call")
@@ -937,7 +955,8 @@ async def realtime_tool_call(req: RealtimeToolCallRequest, request: Request) -> 
         expected = _os.environ.get("VOICEFLOW_INTERNAL_TOKEN", "")
         if not hmac.compare_digest(token, expected):
             raise HTTPException(status_code=403, detail="Missing or invalid X-VoiceFlow-Internal-Token")
-    return await agent_tools_bridge.call_tool(req.name, req.arguments)
+    target_url = req.agent_tools_url or request.headers.get("X-Agent-Tools-Url") or request.query_params.get("agent_tools_url")
+    return await agent_tools_bridge.call_tool(req.name, req.arguments, target_url=target_url)
 
 
 @app.websocket("/realtime/gemini")
@@ -1000,14 +1019,18 @@ async def ws_realtime(ws: WebSocket):
         # several dozen on the prior model.
         GEMINI_LIVE_MODEL = _os.getenv("GEMINI_LIVE_MODEL", "models/gemini-2.5-flash-native-audio-preview-09-2025")
 
+        _custom_agent_url = ws.query_params.get("agent_tools_url")
+        _agent_tools_url = (_custom_agent_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+
         try:
-            _external_tools = agent_tools_bridge.gemini_tool_declarations_from_snapshot()
-            if not _external_tools and settings.AGENT_TOOLS_URL:
-                asyncio.create_task(agent_tools_bridge.prewarm())
+            if _agent_tools_url:
+                _external_tools = await agent_tools_bridge.gemini_tool_declarations(_agent_tools_url)
+            else:
+                _external_tools = []
         except Exception as e:
-            log.warning("agent-tools declarations unavailable for Gemini Live: %s", e)
+            log.warning("agent-tools declarations unavailable for Gemini Live (%s): %s", _agent_tools_url, e)
             _external_tools = []
-        await trace.mark("tools_ready", count=len(_external_tools))
+        await trace.mark("tools_ready", count=len(_external_tools), agent_url=_agent_tools_url)
 
         # Browsers can't set custom headers on a WS handshake, so a resumption
         # handle from a *previous* connection on this same logical session
@@ -1017,9 +1040,9 @@ async def ws_realtime(ws: WebSocket):
         _resume_handle = ws.query_params.get("resume") or None
 
         # The system instruction is intentionally domain-agnostic: it must not bias
-        # the model toward any specific tool category (KPIs, finance, etc.) because
-        # the available tools are discovered dynamically from agent_tools_bridge and
-        # can be anything — BI, task management, communication, or custom workflows.
+        # the model toward any specific tool category because the available tools
+        # are discovered dynamically from agent_tools_bridge and can be anything
+        # (business intelligence, task management, communications, CRM, search, custom APIs).
         # The model reads each tool's own description to determine when to invoke it.
         _system_instruction = (
             "You are VoiceFlow's voice agent — a natural, fluent, and concise spoken AI assistant. "
@@ -1035,9 +1058,7 @@ async def ws_realtime(ws: WebSocket):
             "A natural brief spoken preamble like 'Let me check that' or 'Un instant, je vérifie' right before invoking a tool is fine; otherwise speak the answer directly.\n"
             "4. SPOKEN DELIVERY: You are speaking aloud over audio, not writing text. Keep answers brief (1-3 conversational sentences) and speak naturally. "
             "Pronounce numbers, dates, and percentages naturally for spoken delivery.\n"
-            "5. SPOKEN TOOL RESULTS & METRICS DELIVERY: When you receive data from an external tool (such as KPI metrics, company health scores, financial figures, anomalies, or forecasts), "
-            "you MUST ALWAYS verbalize and speak the key findings and metric numbers aloud to the caller in 2-3 natural spoken sentences. State the specific values, units, percentages, and direction "
-            "clearly so the user hears them directly over audio. Never remain silent or reply with raw code/JSON."
+            "5. SPOKEN TOOL RESULTS DELIVERY: When you receive data from an external tool, you MUST ALWAYS verbalize and speak the key findings, results, numbers, status, or answers aloud to the caller in 2-3 natural spoken sentences. State the specific facts or numbers clearly so the user hears them directly over audio. Never remain silent or reply with raw code/JSON."
         )
 
         _requested_voice = ws.query_params.get("voice") or _os.getenv("GEMINI_VOICE_NAME", "Zephyr")
@@ -1346,7 +1367,7 @@ async def ws_realtime(ws: WebSocket):
                                         fc_args = dict(fc.args or {})
                                         await trace.mark("tool_start", name=fc.name)
                                         await safe_ws_send({"type": "tool_call", "name": fc.name, "arguments": fc_args})
-                                        result = await agent_tools_bridge.call_tool(fc.name, fc_args)
+                                        result = await agent_tools_bridge.call_tool(fc.name, fc_args, target_url=_agent_tools_url)
                                         await trace.mark("tool_end", name=fc.name, ok="error" not in result)
                                         await safe_ws_send({"type": "tool_result", "name": fc.name, "result": result})
                                         try:
