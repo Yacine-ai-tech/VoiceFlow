@@ -388,6 +388,12 @@ async def call_tool(
         k: v for k, v in (arguments or {}).items()
         if v is not None and k not in ("approval_token", "dry_run")
     }
+    if "domain" in args:
+        dom_val = str(args["domain"]).strip()
+        if dom_val.lower() in ("all", "company", "global", "total", "*", "none", "null", ""):
+            del args["domain"]
+        else:
+            args["domain"] = dom_val
 
     log.debug("agent-tool call: %r  effect=%s  dry_run=%s", name, effect, dry_run)
 
