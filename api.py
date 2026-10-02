@@ -1034,8 +1034,15 @@ async def ws_realtime(ws: WebSocket):
             "3. NO INTERNAL PROCESS NARRATION: Never say 'I am calling a tool', 'Connecting to an agent', or mention API names or parameters. "
             "A natural brief spoken preamble like 'Let me check that' or 'Un instant, je vérifie' right before invoking a tool is fine; otherwise speak the answer directly.\n"
             "4. SPOKEN DELIVERY: You are speaking aloud over audio, not writing text. Keep answers brief (1-3 conversational sentences) and speak naturally. "
-            "Pronounce numbers, dates, and percentages naturally for spoken delivery."
+            "Pronounce numbers, dates, and percentages naturally for spoken delivery.\n"
+            "5. SPOKEN TOOL RESULTS & METRICS DELIVERY: When you receive data from an external tool (such as KPI metrics, company health scores, financial figures, anomalies, or forecasts), "
+            "you MUST ALWAYS verbalize and speak the key findings and metric numbers aloud to the caller in 2-3 natural spoken sentences. State the specific values, units, percentages, and direction "
+            "clearly so the user hears them directly over audio. Never remain silent or reply with raw code/JSON."
         )
+
+        _requested_voice = ws.query_params.get("voice") or _os.getenv("GEMINI_VOICE_NAME", "Zephyr")
+        _valid_voices = {"Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Aoede"}
+        _voice_name = _requested_voice if _requested_voice in _valid_voices else "Zephyr"
 
         _config = _gtypes.LiveConnectConfig(
             response_modalities=["AUDIO"],
@@ -1043,7 +1050,7 @@ async def ws_realtime(ws: WebSocket):
             **({"tools": _external_tools} if _external_tools else {}),
             speech_config=_gtypes.SpeechConfig(
                 voice_config=_gtypes.VoiceConfig(
-                    prebuilt_voice_config=_gtypes.PrebuiltVoiceConfig(voice_name="Zephyr")
+                    prebuilt_voice_config=_gtypes.PrebuiltVoiceConfig(voice_name=_voice_name)
                 )
             ),
             context_window_compression=_gtypes.ContextWindowCompressionConfig(
@@ -1075,8 +1082,19 @@ async def ws_realtime(ws: WebSocket):
 
         async def _run_gemini_session(client):
             async with client.aio.live.connect(model=GEMINI_LIVE_MODEL, config=_config) as session:
+                session_send_lock = asyncio.Lock()
+                ws_send_lock = asyncio.Lock()
+
+                async def safe_ws_send(payload: dict):
+                    """Safely serialize JSON writes to the client websocket to prevent Starlette concurrency races."""
+                    try:
+                        async with ws_send_lock:
+                            await ws.send_json(payload)
+                    except Exception as exc:
+                        log.debug("safe_ws_send error: %s", exc)
+
                 await trace.mark("provider_ready", provider="gemini", model=GEMINI_LIVE_MODEL)
-                await ws.send_json({"type": "provider_ready", "provider": "gemini", "message": f"Connected to Gemini Multimodal Live ({GEMINI_LIVE_MODEL})"})
+                await safe_ws_send({"type": "provider_ready", "provider": "gemini", "message": f"Connected to Gemini Multimodal Live ({GEMINI_LIVE_MODEL})"})
 
                 is_tool_active = [False]
                 cancel_flag = [False]
@@ -1237,7 +1255,7 @@ async def ws_realtime(ws: WebSocket):
                                         pending_cancel_notice[0] = True
 
                                 elif evt == "ping":
-                                    await ws.send_json({"type": "pong"})
+                                    await safe_ws_send({"type": "pong"})
 
                             except Exception:
                                 log.exception("Gemini client_to_gemini error")
@@ -1258,7 +1276,7 @@ async def ws_realtime(ws: WebSocket):
                                         pending_cancel_notice[0] = False
                                         is_tool_active[0] = False
                                         turn_active[0] = False
-                                        await ws.send_json({"type": "response.done", "cancelled": True})
+                                        await safe_ws_send({"type": "response.done", "cancelled": True})
                                     if response.server_content and getattr(response.server_content, "turn_complete", False):
                                         cancel_flag[0] = False
                                         turn_active[0] = False
@@ -1267,20 +1285,20 @@ async def ws_realtime(ws: WebSocket):
                                 if response.data:
                                     turn_active[0] = True
                                     await trace.first("first_output_audio")
-                                    await ws.send_json({
+                                    await safe_ws_send({
                                         "type": "response.audio.delta",
                                         "delta": base64.b64encode(response.data).decode()
                                     })
 
                                 if response.text:
-                                    await ws.send_json({
+                                    await safe_ws_send({
                                         "type": "response.audio_transcript.delta",
                                         "delta": response.text
                                     })
 
                                 out_t = getattr(response.server_content, "output_transcription", None) if response.server_content else None
                                 if out_t and out_t.text:
-                                    await ws.send_json({
+                                    await safe_ws_send({
                                         "type": "response.audio_transcript.delta",
                                         "delta": out_t.text
                                     })
@@ -1294,7 +1312,7 @@ async def ws_realtime(ws: WebSocket):
                                 # and start a new one for the next thing the user says.
                                 in_t = getattr(response.server_content, "input_transcription", None) if response.server_content else None
                                 if in_t and in_t.text:
-                                    await ws.send_json({
+                                    await safe_ws_send({
                                         "type": "response.user_transcript.delta",
                                         "delta": in_t.text,
                                         "finished": bool(getattr(in_t, "finished", False)),
@@ -1306,7 +1324,7 @@ async def ws_realtime(ws: WebSocket):
                                     # next connection attempt (see _resume_handle above) — lets a
                                     # reconnect actually resume this Gemini session server-side
                                     # instead of starting a context-free new one.
-                                    await ws.send_json({
+                                    await safe_ws_send({
                                         "type": "session.resumption_handle",
                                         "handle": resumption.new_handle,
                                     })
@@ -1317,7 +1335,7 @@ async def ws_realtime(ws: WebSocket):
                                     # (session duration limit, etc.) — let the frontend show a
                                     # "reconnecting soon" state proactively instead of the close
                                     # arriving with no warning.
-                                    await ws.send_json({
+                                    await safe_ws_send({
                                         "type": "session.go_away",
                                         "time_left": getattr(go_away, "time_left", None),
                                     })
@@ -1327,10 +1345,10 @@ async def ws_realtime(ws: WebSocket):
                                     for fc in (getattr(response.tool_call, "function_calls", None) or []):
                                         fc_args = dict(fc.args or {})
                                         await trace.mark("tool_start", name=fc.name)
-                                        await ws.send_json({"type": "tool_call", "name": fc.name, "arguments": fc_args})
+                                        await safe_ws_send({"type": "tool_call", "name": fc.name, "arguments": fc_args})
                                         result = await agent_tools_bridge.call_tool(fc.name, fc_args)
                                         await trace.mark("tool_end", name=fc.name, ok="error" not in result)
-                                        await ws.send_json({"type": "tool_result", "name": fc.name, "result": result})
+                                        await safe_ws_send({"type": "tool_result", "name": fc.name, "result": result})
                                         try:
                                             async with session_send_lock:
                                                 await session.send_tool_response(
@@ -1346,7 +1364,7 @@ async def ws_realtime(ws: WebSocket):
                                     is_tool_active[0] = False
                                     cancel_flag[0] = False
                                     turn_active[0] = False
-                                    await ws.send_json({"type": "response.done"})
+                                    await safe_ws_send({"type": "response.done"})
                     except Exception as e:
                         # This used to be a bare `except: pass` — any exception here (a
                         # malformed response, an SDK-internal error mid-stream, anything)
