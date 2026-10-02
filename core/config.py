@@ -86,7 +86,27 @@ class Settings:
 
     @property
     def PYANNOTE_TOKEN(self) -> str:
-        return os.getenv("PYANNOTE_TOKEN", "").strip()
+        return os.getenv("PYANNOTE_TOKEN", "").strip() or os.getenv("HF_TOKEN", "").strip()
+
+    @property
+    def HF_TOKEN(self) -> str:
+        return os.getenv("HF_TOKEN", "").strip() or self.PYANNOTE_TOKEN
+
+    @property
+    def PYANNOTE_MODEL(self) -> str:
+        return os.getenv("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip()
+
+    @property
+    def DEEPGRAM_MODEL(self) -> str:
+        return os.getenv("DEEPGRAM_MODEL", "nova-3").strip()
+
+    @property
+    def GROQ_WHISPER_MODEL(self) -> str:
+        return os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo").strip()
+
+    @property
+    def ASSEMBLYAI_SPEECH_MODEL(self) -> str:
+        return os.getenv("ASSEMBLYAI_SPEECH_MODEL", "best").strip()
 
     @property
     def DEEPGRAM_API_KEY(self) -> str:
@@ -192,6 +212,10 @@ class Settings:
     @property
     def KOKORO_REPO_ID(self) -> str:
         return os.getenv("KOKORO_REPO_ID", "hexgrad/Kokoro-82M").strip()
+
+    @property
+    def KOKORO_MODEL_PATH(self) -> str:
+        return os.getenv("KOKORO_MODEL_PATH", "").strip()
 
     @property
     def KOKORO_LANG_CODE(self) -> str:
