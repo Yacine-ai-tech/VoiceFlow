@@ -59,14 +59,20 @@ _JSON_TYPE_MAP = {
     "boolean": "boolean",
 }
 
-# Cache: single dict holding tools + resources + prompts discovered together
-_cache: Dict[str, Any] = {
-    "tools":      None,
-    "resources":  None,
-    "prompts":    None,
-    "gemini_tools": None,
-    "fetched_at": 0.0,
-}
+# Cache: URL-aware dictionary holding tools + resources + prompts per endpoint
+_url_cache: Dict[str, Dict[str, Any]] = {}
+
+def _get_url_cache(url: Optional[str] = None) -> Dict[str, Any]:
+    base = (url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    if base not in _url_cache:
+        _url_cache[base] = {
+            "tools":      None,
+            "resources":  None,
+            "prompts":    None,
+            "gemini_tools": None,
+            "fetched_at": 0.0,
+        }
+    return _url_cache[base]
 
 _result_cache: Dict[str, Dict[str, Any]] = {}
 _shared_client: Optional[httpx.AsyncClient] = None
@@ -91,12 +97,12 @@ def _cache_key(name: str, arguments: Optional[Dict[str, Any]]) -> str:
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _auth_headers() -> Dict[str, str]:
+def _auth_headers(custom_token: Optional[str] = None) -> Dict[str, str]:
     """Return the auth header dict for requests to AGENT_TOOLS_URL.
     Sends standard Authorization Bearer header as well as common token headers
     so any compliant external agent service can authenticate requests.
     """
-    token = settings.AGENT_TOOLS_TOKEN
+    token = custom_token or settings.AGENT_TOOLS_TOKEN
     if not token:
         return {}
     return {
@@ -137,21 +143,22 @@ def _effect_suffix(effect: str) -> str:
 
 # ── Discovery ────────────────────────────────────────────────────────────────
 
-async def _refresh_cache(force: bool = False) -> None:
-    """Fetch and cache tools + resources + prompts from AGENT_TOOLS_URL/api/tools.
+async def _refresh_cache(target_url: Optional[str] = None, force: bool = False) -> None:
+    """Fetch and cache tools + resources + prompts from {base}/api/tools.
     Silently no-ops if the URL is unset or the request fails.
     """
+    base = (target_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    entry = _get_url_cache(base)
     ttl = settings.AGENT_TOOLS_CACHE_TTL
     if (
         not force
-        and _cache["tools"] is not None
-        and (time.time() - _cache["fetched_at"]) < ttl
+        and entry["tools"] is not None
+        and (time.time() - entry["fetched_at"]) < ttl
     ):
         return  # still fresh
 
-    base = settings.AGENT_TOOLS_URL
     if not base:
-        _cache.update({"tools": [], "resources": [], "prompts": [], "gemini_tools": [], "fetched_at": time.time()})
+        entry.update({"tools": [], "resources": [], "prompts": [], "gemini_tools": [], "fetched_at": time.time()})
         return
 
     try:
@@ -164,7 +171,7 @@ async def _refresh_cache(force: bool = False) -> None:
         resources = data.get("resources", []) if isinstance(data.get("resources"), list) else []
         prompts   = data.get("prompts", []) if isinstance(data.get("prompts"), list) else []
 
-        _cache.update({
+        entry.update({
             "tools":      tools,
             "resources":  resources,
             "prompts":    prompts,
@@ -176,19 +183,13 @@ async def _refresh_cache(force: bool = False) -> None:
             len(tools), len(resources), len(prompts), base,
         )
     except Exception as exc:
-        log.warning("agent-tools discovery failed (%s) — continuing without tools", exc)
-        # If we had a previous good discovery, keep serving it. A transient
-        # downstream service cold start should not remove tools from live sessions.
-        if _cache["tools"] is None:
-            _cache.update({"tools": [], "resources": [], "prompts": [], "gemini_tools": [], "fetched_at": time.time()})
+        log.warning("agent-tools discovery failed at %s (%s) — continuing without tools", base, exc)
+        if entry["tools"] is None:
+            entry.update({"tools": [], "resources": [], "prompts": [], "gemini_tools": [], "fetched_at": time.time()})
 
 
 def _build_gemini_tool_declarations_from_tools(tools: List[Dict[str, Any]]):
-    """Build Gemini SDK tool objects from already-discovered tools.
-
-    This imports google-genai and constructs pydantic SDK objects, which can be
-    slow on small Render instances. Keep it out of the WebSocket connect path.
-    """
+    """Build Gemini SDK tool objects from already-discovered tools."""
     if not tools:
         return []
 
@@ -209,50 +210,58 @@ def _build_gemini_tool_declarations_from_tools(tools: List[Dict[str, Any]]):
     return [_gtypes.Tool(function_declarations=declarations)] if declarations else []
 
 
-async def prewarm() -> None:
+async def prewarm(target_url: Optional[str] = None) -> None:
     """Best-effort background discovery warmup for realtime sessions."""
-    await _refresh_cache(force=True)
+    await _refresh_cache(target_url=target_url, force=True)
+    base = (target_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    entry = _get_url_cache(base)
     try:
-        _cache["gemini_tools"] = _build_gemini_tool_declarations_from_tools(cached_tools_snapshot())
+        entry["gemini_tools"] = _build_gemini_tool_declarations_from_tools(cached_tools_snapshot(base))
     except Exception as exc:
-        log.warning("agent-tools Gemini declaration warmup failed (%s) — continuing without tools", exc)
-        _cache["gemini_tools"] = []
+        log.warning("agent-tools Gemini declaration warmup failed at %s (%s)", base, exc)
+        entry["gemini_tools"] = []
 
 
-def cached_tools_snapshot() -> List[Dict[str, Any]]:
+def cached_tools_snapshot(target_url: Optional[str] = None) -> List[Dict[str, Any]]:
     """Return the current in-memory tools without network I/O."""
-    return _cache["tools"] or []
+    base = (target_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    return _get_url_cache(base).get("tools") or []
 
 
-async def discover_tools(force: bool = False) -> List[Dict[str, Any]]:
+async def discover_tools(target_url: Optional[str] = None, force: bool = False) -> List[Dict[str, Any]]:
     """Return the cached tool list. Empty list if unset or unreachable."""
-    await _refresh_cache(force=force)
-    return _cache["tools"] or []
+    await _refresh_cache(target_url=target_url, force=force)
+    base = (target_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    return _get_url_cache(base).get("tools") or []
 
 
-async def discover_resources(force: bool = False) -> List[Dict[str, Any]]:
+async def discover_resources(target_url: Optional[str] = None, force: bool = False) -> List[Dict[str, Any]]:
     """Return the cached resource list `[{"uri", "name", "description"}, ...]`.
     Empty list if unset or unreachable.
     """
-    await _refresh_cache(force=force)
-    return _cache["resources"] or []
+    await _refresh_cache(target_url=target_url, force=force)
+    base = (target_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    return _get_url_cache(base).get("resources") or []
 
 
-async def discover_prompts(force: bool = False) -> List[Dict[str, Any]]:
+async def discover_prompts(target_url: Optional[str] = None, force: bool = False) -> List[Dict[str, Any]]:
     """Return the cached prompt list `[{"name", "description", "arguments"}, ...]`.
     Empty list if unset or unreachable.
     """
-    await _refresh_cache(force=force)
-    return _cache["prompts"] or []
+    await _refresh_cache(target_url=target_url, force=force)
+    base = (target_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    return _get_url_cache(base).get("prompts") or []
 
 
-async def discover_all(force: bool = False) -> Dict[str, List[Dict[str, Any]]]:
+async def discover_all(target_url: Optional[str] = None, force: bool = False) -> Dict[str, List[Dict[str, Any]]]:
     """Return all three discovery lists in one call."""
-    await _refresh_cache(force=force)
+    await _refresh_cache(target_url=target_url, force=force)
+    base = (target_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    entry = _get_url_cache(base)
     return {
-        "tools":     _cache["tools"]     or [],
-        "resources": _cache["resources"] or [],
-        "prompts":   _cache["prompts"]   or [],
+        "tools":     entry.get("tools")     or [],
+        "resources": entry.get("resources") or [],
+        "prompts":   entry.get("prompts")   or [],
     }
 
 
@@ -296,36 +305,49 @@ def openai_tools_from_snapshot() -> List[Dict[str, Any]]:
     return result
 
 
-async def gemini_tool_declarations():
+async def gemini_tool_declarations(target_url: Optional[str] = None):
     """Tools as google-genai FunctionDeclaration objects for Gemini Live.
 
     Imports google-genai lazily so this module loads without it installed.
     Write/destructive effects are appended to descriptions.
     Returns [] if nothing to declare.
     """
-    tools = await discover_tools()
+    base = (target_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    entry = _get_url_cache(base)
+    if entry.get("gemini_tools") is not None:
+        return entry["gemini_tools"]
+
+    tools = await discover_tools(target_url=target_url)
     if not tools:
+        entry["gemini_tools"] = []
         return []
 
-    from google.genai import types as _gtypes  # type: ignore
+    try:
+        from google.genai import types as _gtypes  # type: ignore
 
-    declarations = []
-    for t in tools:
-        if not t.get("name"):
-            continue
-        effect = t.get("effect", "read")
-        description = (t.get("description") or "") + _effect_suffix(effect)
-        declarations.append(
-            _gtypes.FunctionDeclaration(
-                name=t["name"],
-                description=description,
-                parameters=_params_to_json_schema(t.get("params", [])),
+        declarations = []
+        for t in tools:
+            if not t.get("name"):
+                continue
+            effect = t.get("effect", "read")
+            description = (t.get("description") or "") + _effect_suffix(effect)
+            declarations.append(
+                _gtypes.FunctionDeclaration(
+                    name=t["name"],
+                    description=description,
+                    parameters=_params_to_json_schema(t.get("params", [])),
+                )
             )
-        )
-    return [_gtypes.Tool(function_declarations=declarations)] if declarations else []
+        decls = [_gtypes.Tool(function_declarations=declarations)] if declarations else []
+        entry["gemini_tools"] = decls
+        return decls
+    except Exception as exc:
+        log.warning("gemini_tool_declarations failed at %s (%s)", base, exc)
+        entry["gemini_tools"] = []
+        return []
 
 
-def gemini_tool_declarations_from_snapshot():
+def gemini_tool_declarations_from_snapshot(target_url: Optional[str] = None):
     """Gemini tool declarations from the warm cache only.
 
     This must stay non-blocking for `/realtime/gemini`: no network, no imports,
@@ -333,7 +355,8 @@ def gemini_tool_declarations_from_snapshot():
     background; if it is unavailable, the session starts tool-free instead of
     adding seconds of startup latency.
     """
-    return _cache.get("gemini_tools") or []
+    base = (target_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    return _get_url_cache(base).get("gemini_tools") or []
 
 
 # ── Tool execution ────────────────────────────────────────────────────────────
@@ -344,6 +367,7 @@ async def call_tool(
     *,
     dry_run: bool = False,
     approval_token: Optional[str] = None,
+    target_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute a discovered tool call.
 
@@ -363,27 +387,19 @@ async def call_tool(
     Never raises — returns {"error": ...} on any failure so the model can
     report the issue to the user.
     """
-    tools = cached_tools_snapshot() or await discover_tools()
+    tools = cached_tools_snapshot(target_url) or await discover_tools(target_url)
     spec = next((t for t in tools if t.get("name") == name), None)
     if not spec:
         return {"error": f"unknown_tool: {name}"}
 
-    base     = settings.AGENT_TOOLS_URL
+    base     = (target_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
     endpoint = spec.get("endpoint")
     if not base or not endpoint:
         return {"error": "tool_endpoint_unavailable"}
 
     effect = spec.get("effect", "read")
     url    = f"{base}{endpoint}"
-    # Strip the two control fields out of whatever the model supplied, rather
-    # than trusting the discovery contract to never expose them as ordinary
-    # params. approval_token in particular is documented (module docstring)
-    # to come only from a human/supervising system, never the model — if a
-    # downstream tool's own JSON schema ever declared a same-named param,
-    # a manipulated/prompt-injected model could otherwise "supply" a fake
-    # approval_token as a regular argument and have it ride through to
-    # `body` unfiltered, silently bypassing the human-approval gate this
-    # function's own explicit `approval_token=` keyword is meant to enforce.
+    # Strip control fields
     args = {
         k: v for k, v in (arguments or {}).items()
         if v is not None and k not in ("approval_token", "dry_run")
@@ -395,9 +411,9 @@ async def call_tool(
         else:
             args["domain"] = dom_val
 
-    log.debug("agent-tool call: %r  effect=%s  dry_run=%s", name, effect, dry_run)
+    log.debug("agent-tool call: %r  effect=%s  dry_run=%s  base=%s", name, effect, dry_run, base)
 
-    result_key = _cache_key(name, args)
+    result_key = _cache_key(f"{base}:{name}", args)
     now = time.time()
     if effect == "read" and not dry_run:
         cached = _result_cache.get(result_key)

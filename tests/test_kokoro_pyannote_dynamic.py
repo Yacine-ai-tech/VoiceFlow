@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.config import settings
-from services import tts_service, whisperx_service, transcription_adapter
+from services import tts_service, whisperx_service, transcription_adapter, agent_tools_bridge
 
 
 def test_hf_token_and_pyannote_token_resolution():
@@ -70,3 +70,30 @@ def test_faster_whisper_path_invokes_diarization():
         assert res["diarized"] is True
         assert res["segments"][0]["speaker"] == "Speaker 1"
         mock_diarize.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_agent_tools_url_and_target_url():
+    with patch.dict(os.environ, {"AGENT_TOOLS_URL": "https://custom-agent.example.com"}):
+        assert settings.AGENT_TOOLS_URL == "https://custom-agent.example.com"
+
+    with patch("services.agent_tools_bridge.cached_tools_snapshot") as mock_snap, \
+         patch("services.agent_tools_bridge._get_shared_client") as mock_client:
+        mock_snap.return_value = [{"name": "custom_search", "endpoint": "/api/search", "effect": "read"}]
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"results": [{"title": "Test Title", "score": 98}]}
+
+        async def _mock_get(*args, **kwargs):
+            return mock_resp
+
+        mock_http = MagicMock()
+        mock_http.get = _mock_get
+        mock_client.return_value = mock_http
+
+        res = await agent_tools_bridge.call_tool(
+            "custom_search",
+            {"query": "antigravity"},
+            target_url="https://another-agent.example.com",
+        )
+        assert res == {"results": [{"title": "Test Title", "score": 98}]}

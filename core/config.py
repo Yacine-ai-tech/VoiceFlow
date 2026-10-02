@@ -322,15 +322,22 @@ class Settings:
             or os.getenv("INTERNAL_TOKEN", "")
         ).strip()
 
-    # Base URL of an external "agent tools" service — see
-    # services/agent_tools_bridge.py for the discovery contract. Generic on
-    # purpose: this isn't tied to any specific product. Empty by default,
-    # which means /realtime just runs without tools; nothing is assumed to
-    # be running at any particular address.
-    AGENT_TOOLS_URL = os.getenv("AGENT_TOOLS_URL", "").rstrip("/")
-    AGENT_TOOLS_CACHE_TTL = int(os.getenv("AGENT_TOOLS_CACHE_TTL", "300"))
-    AGENT_TOOLS_CALL_BUDGET_SECONDS = float(os.getenv("AGENT_TOOLS_CALL_BUDGET_SECONDS", "2.0"))
-    AGENT_TOOLS_RESULT_CACHE_TTL = int(os.getenv("AGENT_TOOLS_RESULT_CACHE_TTL", "30"))
+    @property
+    def AGENT_TOOLS_URL(self) -> str:
+        """Dynamic resolution of external agent tools URL — can point to any service."""
+        return os.getenv("AGENT_TOOLS_URL", "").rstrip("/")
+
+    @property
+    def AGENT_TOOLS_CACHE_TTL(self) -> int:
+        return int(os.getenv("AGENT_TOOLS_CACHE_TTL", "300"))
+
+    @property
+    def AGENT_TOOLS_CALL_BUDGET_SECONDS(self) -> float:
+        return float(os.getenv("AGENT_TOOLS_CALL_BUDGET_SECONDS", "2.0"))
+
+    @property
+    def AGENT_TOOLS_RESULT_CACHE_TTL(self) -> int:
+        return int(os.getenv("AGENT_TOOLS_RESULT_CACHE_TTL", "30"))
 
     @property
     def AGENT_TOOLS_TOKEN(self) -> str:
