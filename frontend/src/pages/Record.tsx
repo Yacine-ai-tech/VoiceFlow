@@ -28,8 +28,9 @@ const LANGUAGES = [
 export default function Record() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [mode, setMode] = useState("meeting");
-  const [provider, setProvider] = useState("GROQ_WHISPER");
+  const [provider, setProvider] = useState("DEEPGRAM");
   const [language, setLanguage] = useState("auto");
+  const [diarize, setDiarize] = useState(true);
   const [elapsed, setElapsed] = useState(0);
   const [err, setErr] = useState("");
   const [result, setResult] = useState<PipelineResult | null>(null);
@@ -160,7 +161,7 @@ export default function Record() {
     setPhase("processing"); setErr(""); setActiveStage(0);
     const timer = setInterval(() => setActiveStage(s => Math.min(s + 1, 3)), 2000);
     try {
-      const res = await api.pipeline(b, "recording.webm", mode, provider, language);
+      const res = await api.pipeline(b, "recording.webm", mode, provider, language, undefined, diarize);
       setResult(res);
       setPhase("done");
       saveHistory({ ts: Date.now(), kind: mode, title: `Recording · ${fmt(elapsed)}`, durationSec: elapsed, result: res });
@@ -195,6 +196,18 @@ export default function Record() {
             <div>
               <Label>Language</Label>
               <Segmented value={language} onChange={setLanguage} options={LANGUAGES} />
+            </div>
+            <div>
+              <Label>Diarization</Label>
+              <button
+                type="button"
+                onClick={() => setDiarize(!diarize)}
+                className={`mt-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                  diarize ? "border border-ok/40 bg-ok/15 text-ok" : "border border-line bg-surface-3 text-muted"
+                }`}
+              >
+                {diarize ? "Diarize ON" : "Diarize OFF"}
+              </button>
             </div>
           </div>
 

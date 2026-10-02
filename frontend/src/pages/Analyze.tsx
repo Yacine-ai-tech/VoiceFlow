@@ -28,8 +28,9 @@ const LANGUAGES = [
 export default function Analyze() {
   const [tab, setTab] = useState("text");
   const [mode, setMode] = useState("meeting");
-  const [provider, setProvider] = useState("GROQ_WHISPER");
+  const [provider, setProvider] = useState("DEEPGRAM");
   const [language, setLanguage] = useState("auto");
+  const [diarize, setDiarize] = useState(true);
   const [customFields, setCustomFields] = useState<string[]>(["owner", "deadline", "priority", "task"]);
   const [fieldInput, setFieldInput] = useState("");
   const [instructions, setInstructions] = useState("");
@@ -65,7 +66,7 @@ export default function Analyze() {
         saveHistory({ ts: Date.now(), kind: mode, title: text.slice(0, 60) + "…", result: { analysis, analysis_type: mode } });
       } else {
         if (!file) throw new Error("Choose an audio file first");
-        const res = await api.pipeline(file, file.name, mode, provider, language, scenario || undefined);
+        const res = await api.pipeline(file, file.name, mode, provider, language, scenario || undefined, diarize);
         setResult({ transcript: res.transcript, analysis: res.analysis, type: res.analysis_type, usedScenario: res.scenario });
         saveHistory({ ts: Date.now(), kind: mode, title: file.name, result: res });
       }
@@ -151,6 +152,21 @@ export default function Analyze() {
                 <div>
                   <Label>ASR Engine</Label>
                   <Segmented value={provider} onChange={setProvider} options={ASR_PROVIDERS} />
+                </div>
+                <div className="flex items-center justify-between rounded-xl border border-line bg-surface-2 px-3.5 py-2.5">
+                  <div>
+                    <div className="text-[13px] font-medium text-body">Speaker Diarization</div>
+                    <div className="text-[11px] text-muted">Separate speakers with timestamps and turn badges</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDiarize(!diarize)}
+                    className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+                      diarize ? "border border-ok/40 bg-ok/15 text-ok" : "border border-line bg-surface-3 text-muted"
+                    }`}
+                  >
+                    {diarize ? "Enabled" : "Disabled"}
+                  </button>
                 </div>
                 <label className="flex cursor-pointer items-center gap-2 rounded-input border border-dashed border-line-strong px-3 py-4 text-sm text-dim hover:border-[var(--accent)]">
                   <FileAudio size={16} /> {file ? file.name : "Choose audio (wav, mp3, m4a, webm…)"}

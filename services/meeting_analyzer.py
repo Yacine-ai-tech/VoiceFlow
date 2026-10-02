@@ -149,6 +149,7 @@ PROMPTS: Dict[str, str] = {
         "meeting_summary (3-5 sentences), duration_minutes (estimate from word count if absent), "
         "participants_mentioned, decisions, "
         "action_items: [{owner, action, due (ISO YYYY-MM-DD or null), priority (low|medium|high)}], "
+        "annotations: [{time, speaker, type (decision|action_item|objection|insight|question|quote), title, note, quote}], "
         "key_numbers, open_questions, next_steps, "
         "sentiment (positive|neutral|tense|mixed), topics_covered. JSON only."
     ),
@@ -157,6 +158,7 @@ PROMPTS: Dict[str, str] = {
         "call_summary, prospect_company, prospect_contact, prospect_role, "
         "pain_points, objections: [{type, content}], buying_signals, budget_mentioned, "
         "deal_stage (discovery|evaluation|negotiation|closing), "
+        "annotations: [{time, speaker, type (decision|action_item|objection|insight|question|quote), title, note, quote}], "
         "crm_notes (Salesforce/HubSpot-paste ready notes with next steps), overall_sentiment, "
         "likelihood_to_close (float 0.0 to 1.0). JSON only."
     ),
@@ -164,20 +166,115 @@ PROMPTS: Dict[str, str] = {
         "Extract from this support-call transcript as JSON: "
         "customer_issue, severity (low|medium|high|critical), "
         "resolution_summary, escalation_needed (boolean true|false), "
+        "annotations: [{time, speaker, type (decision|action_item|objection|insight|question|quote), title, note, quote}], "
         "follow_ups: [{action, owner, due}], sentiment (positive|neutral|frustrated|satisfied). JSON only."
     ),
     "interview": (
         "Extract from this interview transcript as JSON: "
         "candidate_name, role_discussed, strengths: [string], gaps: [string], "
-        "key_quotes: [string] (3-5 verbatim quotes), recommendation (hire|maybe|no_hire), reasoning. JSON only."
+        "key_quotes: [string] (3-5 verbatim quotes), "
+        "annotations: [{time, speaker, type (decision|action_item|objection|insight|question|quote), title, note, quote}], "
+        "recommendation (hire|maybe|no_hire), reasoning. JSON only."
     ),
     "general": (
         "Extract structured intelligence from this transcript as JSON: "
         "summary (3-5 sentences), main_topics: [string], key_insights: [string], "
         "decisions: [string], action_items: [{owner, action, due, priority}], "
+        "annotations: [{time, speaker, type (decision|action_item|objection|insight|question|quote), title, note, quote}], "
         "participants_mentioned: [string], sentiment (positive|neutral|negative|mixed). JSON only."
     ),
 }
+
+
+def _synthesize_annotations(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Synthesize structured annotations from parsed fields if annotations was absent or empty."""
+    items: List[Dict[str, Any]] = []
+    # Decisions
+    for d in data.get("decisions") or []:
+        title = d if isinstance(d, str) else d.get("title", d.get("decision", "Decision"))
+        items.append({
+            "time": None,
+            "speaker": None,
+            "type": "decision",
+            "title": str(title)[:100],
+            "note": str(d) if isinstance(d, str) else d.get("note", str(d)),
+            "quote": None,
+        })
+    # Action items
+    for a in data.get("action_items") or data.get("follow_ups") or []:
+        if isinstance(a, dict):
+            owner = a.get("owner")
+            act = a.get("action", "Action item")
+            due = a.get("due")
+            pri = a.get("priority", "medium")
+            items.append({
+                "time": None,
+                "speaker": owner,
+                "type": "action_item",
+                "title": str(act)[:100],
+                "note": f"Priority: {pri}" + (f", Due: {due}" if due else ""),
+                "quote": None,
+            })
+        else:
+            items.append({
+                "time": None,
+                "speaker": None,
+                "type": "action_item",
+                "title": str(a)[:100],
+                "note": str(a),
+                "quote": None,
+            })
+    # Objections
+    for o in data.get("objections") or []:
+        if isinstance(o, dict):
+            items.append({
+                "time": None,
+                "speaker": None,
+                "type": "objection",
+                "title": str(o.get("type", "Objection"))[:100],
+                "note": str(o.get("content", str(o))),
+                "quote": None,
+            })
+        else:
+            items.append({
+                "time": None,
+                "speaker": None,
+                "type": "objection",
+                "title": "Objection",
+                "note": str(o),
+                "quote": None,
+            })
+    # Insights / key numbers
+    for num in data.get("key_numbers") or data.get("key_insights") or []:
+        items.append({
+            "time": None,
+            "speaker": None,
+            "type": "insight",
+            "title": "Key Insight",
+            "note": str(num),
+            "quote": None,
+        })
+    # Open questions
+    for q in data.get("open_questions") or []:
+        items.append({
+            "time": None,
+            "speaker": None,
+            "type": "question",
+            "title": "Open Question",
+            "note": str(q),
+            "quote": None,
+        })
+    # Quotes
+    for q in data.get("key_quotes") or []:
+        items.append({
+            "time": None,
+            "speaker": None,
+            "type": "quote",
+            "title": "Key Quote",
+            "note": str(q),
+            "quote": str(q),
+        })
+    return items
 
 
 def _strip_fences(text: str) -> str:
@@ -227,6 +324,23 @@ class MeetingAnalyzer:
             )
             content = resp.choices[0].message.content or "{}"
             result = json.loads(_strip_fences(content))
+            if isinstance(result, dict):
+                raw_ann = result.get("annotations")
+                if not raw_ann or not isinstance(raw_ann, list):
+                    result["annotations"] = _synthesize_annotations(result)
+                else:
+                    clean_ann = []
+                    for item in raw_ann:
+                        if isinstance(item, dict) and (item.get("title") or item.get("note")):
+                            clean_ann.append({
+                                "time": item.get("time") or None,
+                                "speaker": item.get("speaker") or None,
+                                "type": str(item.get("type") or "insight").lower(),
+                                "title": str(item.get("title") or item.get("note") or "")[:120],
+                                "note": str(item.get("note") or item.get("title") or ""),
+                                "quote": item.get("quote") or None,
+                            })
+                    result["annotations"] = clean_ann if clean_ann else _synthesize_annotations(result)
         except asyncio.TimeoutError:
             return {"error": f"analysis_timed_out_after_{ANALYSIS_TIMEOUT_SECONDS}s", "analysis_type": analysis_type}
         except json.JSONDecodeError:
@@ -297,4 +411,83 @@ class MeetingAnalyzer:
 
     async def general_analysis(self, transcript: str, language: Optional[str] = "auto") -> Dict[str, Any]:
         return await self.analyze(transcript, "general", language=language)
+
+    async def extract_annotations(self, transcript: str, language: Optional[str] = "auto") -> Dict[str, Any]:
+        """Extract rich semantic and actionable annotations categorized by type from any dialogue transcript."""
+        if not _LITELLM:
+            return {"error": "litellm_not_installed", "annotations": [], "counts": {}}
+        transcript = transcript or ""
+        lang_key = (language or "auto").strip().lower()
+        directive = MULTILINGUAL_DIRECTIVES.get(lang_key, MULTILINGUAL_DIRECTIVES["auto"])
+        prompt = (
+            f"{directive}\n\n"
+            "You are an expert conversation intelligence and transcript annotation engine. "
+            "Analyze the following transcript (which may contain timestamps and speaker turns). "
+            "Extract all significant semantic and dialogue annotations, categorized into: "
+            "'decision' (agreed choice/direction), 'action_item' (assigned task with owner), "
+            "'objection' (concern, obstacle, doubt, or pushback), 'insight' (valuable revelation or metric), "
+            "'question' (crucial unresolved query), or 'quote' (pivotal memorable statement).\n\n"
+            "Anchor each annotation to its exact speaker and timestamp if available in the transcript.\n\n"
+            "Return strictly JSON with this schema:\n"
+            "{\n"
+            '  "summary": "1-2 sentence overview of the conversation intelligence",\n'
+            '  "annotations": [\n'
+            "    {\n"
+            '      "time": "MM:SS or timestamp if present, otherwise null",\n'
+            '      "speaker": "Speaker 0 / Name if present, otherwise null",\n'
+            '      "type": "decision|action_item|objection|insight|question|quote",\n'
+            '      "title": "Concise headline (under 8 words)",\n'
+            '      "note": "Clear context and explanation",\n'
+            '      "quote": "Verbatim quote snippet from dialogue or null"\n'
+            "    }\n"
+            "  ],\n"
+            '  "counts": {"decision": 0, "action_item": 0, "objection": 0, "insight": 0, "question": 0, "quote": 0}\n'
+            "}\n"
+        )
+        sent_transcript, truncated, original_length = _truncate(transcript)
+        if not sent_transcript.strip():
+            return {"summary": "No speech detected", "annotations": [], "counts": {}}
+        try:
+            resp = await asyncio.wait_for(
+                _llm_with_fallback(
+                    model=settings.LLM_DEFAULT,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": sent_transcript},
+                    ],
+                    fallback=settings.LLM_REASONING_FALLBACK,
+                    temperature=0.1,
+                ),
+                timeout=ANALYSIS_TIMEOUT_SECONDS,
+            )
+            content = resp.choices[0].message.content or "{}"
+            result = json.loads(_strip_fences(content))
+            if not isinstance(result, dict):
+                result = {"annotations": []}
+            raw_ann = result.get("annotations") or []
+            clean_ann = []
+            for item in raw_ann:
+                if isinstance(item, dict) and (item.get("title") or item.get("note")):
+                    clean_ann.append({
+                        "time": item.get("time") or None,
+                        "speaker": item.get("speaker") or None,
+                        "type": str(item.get("type") or "insight").lower(),
+                        "title": str(item.get("title") or item.get("note") or "")[:120],
+                        "note": str(item.get("note") or item.get("title") or ""),
+                        "quote": item.get("quote") or None,
+                    })
+            result["annotations"] = clean_ann
+            counts: Dict[str, int] = {}
+            for a in clean_ann:
+                t = a.get("type", "insight")
+                counts[t] = counts.get(t, 0) + 1
+            result["counts"] = counts
+            if truncated:
+                result["truncated"] = True
+                result["original_length"] = original_length
+            return result
+        except Exception as e:
+            log.exception("extract_annotations failed: %s", e)
+            return {"error": str(e), "annotations": [], "counts": {}}
+
 
