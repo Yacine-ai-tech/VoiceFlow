@@ -25,7 +25,21 @@ def test_realtime_config():
     assert r.status_code == 200
     body = r.json()
     assert body["gemini_ws_path"] == "/realtime/gemini"
+    assert body["openai_ws_path"] == "/realtime/openai"
     assert body["openai_webrtc_session_path"] == "/realtime/session/openai"
+
+
+@pytest.mark.unit
+def test_realtime_openai_route_unconfigured(monkeypatch):
+    monkeypatch.delenv("REALTIME_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_REALTIME_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with client.websocket_connect("/realtime/openai", headers={"X-VoiceFlow-Internal-Token": os.environ.get("VOICEFLOW_INTERNAL_TOKEN", "")}) as websocket:
+        data = websocket.receive_json()
+        while data.get("type") == "metric":
+            data = websocket.receive_json()
+        assert data.get("type") == "error"
+        assert "not configured" in data.get("message", "").lower()
 
 
 @pytest.mark.unit

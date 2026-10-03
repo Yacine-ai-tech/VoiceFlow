@@ -69,8 +69,10 @@ type RealtimeConfig = {
   provider: "gemini" | "openai" | string;
   auth_required: boolean;
   gemini_ws_path: string;
+  openai_ws_path?: string;
   openai_webrtc_session_path: string;
   openai_webrtc_available: boolean;
+  openai_available?: boolean;
   voice?: string;
   agent_tools_url?: string;
   tools_cached?: number;
@@ -157,7 +159,7 @@ class GeminiWebSocketTransport implements RealtimeTransport {
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private pongTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private cfg: RealtimeConfig, private cb: TransportCallbacks) {}
+  constructor(private cfg: RealtimeConfig, private cb: TransportCallbacks, private customWsPath?: string) {}
 
   async connect() {
     const params = new URLSearchParams();
@@ -165,7 +167,8 @@ class GeminiWebSocketTransport implements RealtimeTransport {
     if (this.cfg.voice) params.set("voice", this.cfg.voice);
     if (this.cfg.agent_tools_url) params.set("agent_tools_url", this.cfg.agent_tools_url);
     const qs = params.toString() ? `?${params.toString()}` : "";
-    this.ws = new WebSocket(WS_BASE + withAuth(this.cfg.gemini_ws_path + qs));
+    const targetPath = this.customWsPath || this.cfg.gemini_ws_path || "/realtime/gemini";
+    this.ws = new WebSocket(WS_BASE + withAuth(targetPath + qs));
     this.ws.binaryType = "arraybuffer";
 
     this.ws.onopen = () => {
@@ -447,8 +450,11 @@ export default function VoiceAgent() {
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [showPermissionModal, setShowPermissionModal] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<string>(
+    () => localStorage.getItem("voiceflow.selected_provider") || "gemini"
+  );
   const [selectedVoice, setSelectedVoice] = useState<string>(
-    () => localStorage.getItem("voiceflow.gemini_voice") || "Zephyr"
+    () => localStorage.getItem("voiceflow.selected_voice") || localStorage.getItem("voiceflow.gemini_voice") || "Zephyr"
   );
   const [agentToolsUrl, setAgentToolsUrl] = useState<string>(
     () => localStorage.getItem("voiceflow.agent_tools_url") || ""
@@ -839,7 +845,7 @@ export default function VoiceAgent() {
     reconnectTimerRef.current = setTimeout(() => connect(false), Math.min(1000 * 2 ** attempt, 8000));
   };
 
-  const connect = async (reset = false, overrideVoice?: string, overrideAgentUrl?: string) => {
+  const connect = async (reset = false, overrideVoice?: string, overrideAgentUrl?: string, overrideProvider?: string) => {
     setErrorMsg("");
     if (reset) {
       setMsgs([]);
@@ -855,12 +861,17 @@ export default function VoiceAgent() {
     setState("connecting");
     addTelemetryLog("transport.connecting", "Negotiating realtime session", "info");
     try {
+      const activeProvider = overrideProvider !== undefined ? overrideProvider : selectedProvider;
       const activeAgent = (overrideAgentUrl !== undefined ? overrideAgentUrl : agentToolsUrl).trim();
-      const qs = activeAgent ? `?agent_tools_url=${encodeURIComponent(activeAgent)}` : "";
+      const params = new URLSearchParams();
+      if (activeAgent) params.set("agent_tools_url", activeAgent);
+      if (activeProvider) params.set("provider", activeProvider === "openai_webrtc" ? "openai" : activeProvider);
+      const qs = params.toString() ? `?${params.toString()}` : "";
       const cfg = await fetch(BASE + withAuth("/realtime/config" + qs), { headers: { "X-VoiceFlow-Session": getSessionId() } }).then((r) => r.json());
       const voiceToUse = overrideVoice || selectedVoice;
       const cfgWithVoice: RealtimeConfig = {
         ...cfg,
+        provider: activeProvider,
         voice: voiceToUse,
         agent_tools_url: activeAgent || cfg.agent_tools_url || "",
       };
@@ -871,20 +882,36 @@ export default function VoiceAgent() {
         return;
       }
       transportRef.current?.close();
-      transportRef.current =
-        cfgWithVoice.provider === "openai" && cfgWithVoice.openai_webrtc_available
-          ? new OpenAIWebRTCTransport(cfgWithVoice, {
-              onEvent: handleEvent,
-              onClose: scheduleReconnect,
-              onError: setErrorMsg,
-              onAudio: queueAudioPlayback,
-            })
-          : new GeminiWebSocketTransport(cfgWithVoice, {
-              onEvent: handleEvent,
-              onClose: scheduleReconnect,
-              onError: setErrorMsg,
-              onAudio: queueAudioPlayback,
-            });
+      if (activeProvider === "openai_webrtc" && cfgWithVoice.openai_webrtc_available) {
+        transportRef.current = new OpenAIWebRTCTransport(cfgWithVoice, {
+          onEvent: handleEvent,
+          onClose: scheduleReconnect,
+          onError: setErrorMsg,
+          onAudio: queueAudioPlayback,
+        });
+      } else if (activeProvider === "openai" || activeProvider === "openai_ws") {
+        transportRef.current = new GeminiWebSocketTransport(
+          cfgWithVoice,
+          {
+            onEvent: handleEvent,
+            onClose: scheduleReconnect,
+            onError: setErrorMsg,
+            onAudio: queueAudioPlayback,
+          },
+          cfgWithVoice.openai_ws_path || "/realtime/openai"
+        );
+      } else {
+        transportRef.current = new GeminiWebSocketTransport(
+          cfgWithVoice,
+          {
+            onEvent: handleEvent,
+            onClose: scheduleReconnect,
+            onError: setErrorMsg,
+            onAudio: queueAudioPlayback,
+          },
+          cfgWithVoice.gemini_ws_path || "/realtime/gemini"
+        );
+      }
       await transportRef.current.connect();
     } catch (err: any) {
       setErrorMsg(err.message || String(err));
@@ -893,9 +920,20 @@ export default function VoiceAgent() {
     }
   };
 
+  const handleProviderChange = (newProvider: string) => {
+    setSelectedProvider(newProvider);
+    localStorage.setItem("voiceflow.selected_provider", newProvider);
+    const defaultVoice = newProvider === "gemini" ? "Zephyr" : "alloy";
+    setSelectedVoice(defaultVoice);
+    localStorage.setItem("voiceflow.selected_voice", defaultVoice);
+    if (cfgRef.current) {
+      connect(false, defaultVoice, undefined, newProvider);
+    }
+  };
+
   const handleVoiceChange = (newVoice: string) => {
     setSelectedVoice(newVoice);
-    localStorage.setItem("voiceflow.gemini_voice", newVoice);
+    localStorage.setItem("voiceflow.selected_voice", newVoice);
     if (cfgRef.current) {
       connect(false, newVoice);
     }
@@ -1126,30 +1164,53 @@ export default function VoiceAgent() {
                         ? `Reconnecting (${reconnectAttempt}/${MAX_AUTO_RECONNECT_ATTEMPTS})`
                         : "Initializing Transport..."}
                     </span>
-                    {cfgRef.current?.provider && (
-                      <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-mono text-dim border border-line">
-                        {cfgRef.current.provider === "gemini" ? "Gemini 2.5 Live" : "OpenAI Realtime"}
-                      </span>
-                    )}
+                    {/* Realtime Provider Selector */}
+                    <div className="flex items-center gap-1.5 ml-1">
+                      <span className="text-[11px] text-muted hidden sm:inline">Provider:</span>
+                      <select
+                        value={selectedProvider}
+                        onChange={(e) => handleProviderChange(e.target.value)}
+                        className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-body border border-line outline-none cursor-pointer focus:border-[var(--accent)]"
+                        title="Select Realtime Voice AI Provider"
+                      >
+                        <option value="gemini">Gemini 2.5 Live</option>
+                        <option value="openai">OpenAI Realtime (WebSocket)</option>
+                        <option value="openai_webrtc">OpenAI Realtime (WebRTC)</option>
+                      </select>
+                    </div>
 
-                    {cfgRef.current?.provider === "gemini" && (
-                      <div className="flex items-center gap-1.5 ml-1">
-                        <span className="text-[11px] text-muted hidden sm:inline">Voice:</span>
-                        <select
-                          value={selectedVoice}
-                          onChange={(e) => handleVoiceChange(e.target.value)}
-                          className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-body border border-line outline-none cursor-pointer focus:border-[var(--accent)]"
-                          title="Select Gemini Live AI Voice"
-                        >
-                          <option value="Zephyr">Zephyr (Warm)</option>
-                          <option value="Puck">Puck (Energetic)</option>
-                          <option value="Charon">Charon (Calm)</option>
-                          <option value="Kore">Kore (Clear)</option>
-                          <option value="Fenrir">Fenrir (Deep)</option>
-                          <option value="Aoede">Aoede (Expressive)</option>
-                        </select>
-                      </div>
-                    )}
+                    {/* Spoken Voice Selector */}
+                    <div className="flex items-center gap-1.5 ml-1">
+                      <span className="text-[11px] text-muted hidden sm:inline">Voice:</span>
+                      <select
+                        value={selectedVoice}
+                        onChange={(e) => handleVoiceChange(e.target.value)}
+                        className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-body border border-line outline-none cursor-pointer focus:border-[var(--accent)]"
+                        title="Select AI Spoken Voice"
+                      >
+                        {selectedProvider === "gemini" ? (
+                          <>
+                            <option value="Zephyr">Zephyr (Warm)</option>
+                            <option value="Puck">Puck (Energetic)</option>
+                            <option value="Charon">Charon (Calm)</option>
+                            <option value="Kore">Kore (Clear)</option>
+                            <option value="Fenrir">Fenrir (Deep)</option>
+                            <option value="Aoede">Aoede (Expressive)</option>
+                          </>
+                        ) : (
+                          <>
+                            <option value="alloy">Alloy (Neutral)</option>
+                            <option value="echo">Echo (Warm)</option>
+                            <option value="shimmer">Shimmer (Clear)</option>
+                            <option value="ash">Ash (Conversational)</option>
+                            <option value="ballad">Ballad (Smooth)</option>
+                            <option value="coral">Coral (Friendly)</option>
+                            <option value="sage">Sage (Calm)</option>
+                            <option value="verse">Verse (Dynamic)</option>
+                          </>
+                        )}
+                      </select>
+                    </div>
 
                     {/* Dynamic Agent Bridge Selector */}
                     <button
