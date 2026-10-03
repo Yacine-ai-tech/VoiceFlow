@@ -81,6 +81,19 @@ _shared_client: Optional[httpx.AsyncClient] = None
 def _get_shared_client() -> httpx.AsyncClient:
     """Return a shared httpx.AsyncClient with persistent keep-alive connection pooling."""
     global _shared_client
+    try:
+        import asyncio
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if _shared_client is not None and not _shared_client.is_closed:
+        transport = getattr(_shared_client, "_transport", None)
+        pool = getattr(transport, "_pool", None)
+        client_loop = getattr(pool, "_loop", None)
+        if client_loop is not None and (client_loop.is_closed() or (loop is not None and client_loop is not loop)):
+            _shared_client = None
+
     if _shared_client is None or _shared_client.is_closed:
         timeout = float(__import__("os").getenv("AGENT_TOOLS_HTTP_TIMEOUT_SECONDS", "8"))
         _shared_client = httpx.AsyncClient(
