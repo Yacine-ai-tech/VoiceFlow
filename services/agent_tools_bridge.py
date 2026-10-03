@@ -286,13 +286,13 @@ async def discover_all(target_url: Optional[str] = None, force: bool = False) ->
 
 # ── Realtime model tool shapes ────────────────────────────────────────────────
 
-async def openai_tools() -> List[Dict[str, Any]]:
+async def openai_tools(target_url: Optional[str] = None, force: bool = False) -> List[Dict[str, Any]]:
     """Tools in OpenAI Realtime API's `session.update` shape.
 
     Write/destructive tools have their effect class appended to the description
     so the model knows they cause side effects before invoking them.
     """
-    tools = await discover_tools()
+    tools = await discover_tools(target_url=target_url, force=force)
     result = []
     for t in tools:
         if not t.get("name"):
@@ -308,10 +308,10 @@ async def openai_tools() -> List[Dict[str, Any]]:
     return result
 
 
-def openai_tools_from_snapshot() -> List[Dict[str, Any]]:
+def openai_tools_from_snapshot(target_url: Optional[str] = None) -> List[Dict[str, Any]]:
     """OpenAI tool declarations from the current cache only."""
     result = []
-    for t in cached_tools_snapshot():
+    for t in cached_tools_snapshot(target_url):
         if not t.get("name"):
             continue
         effect = t.get("effect", "read")
