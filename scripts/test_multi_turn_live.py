@@ -55,6 +55,12 @@ async def test_multi_turn():
             await ws.send(chunk)
             await asyncio.sleep(0.04)
 
+        # Stream 15 frames of silence (0.6s) so Gemini VAD cleanly marks end of speech
+        silence = b"\x00" * 1600
+        for _ in range(15):
+            await ws.send(silence)
+            await asyncio.sleep(0.04)
+
         # Signal speech pause
         await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
         await ws.send(json.dumps({"type": "response.create", "response": {"modalities": ["audio"]}}))
@@ -91,6 +97,11 @@ async def test_multi_turn():
         for i in range(0, len(pcm2), chunk_size):
             chunk = pcm2[i:i+chunk_size]
             await ws.send(chunk)
+            await asyncio.sleep(0.04)
+
+        # Stream 15 frames of silence (0.6s) so Gemini VAD cleanly marks end of speech
+        for _ in range(15):
+            await ws.send(silence)
             await asyncio.sleep(0.04)
 
         await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))

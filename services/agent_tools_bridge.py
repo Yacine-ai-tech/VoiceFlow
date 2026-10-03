@@ -75,32 +75,38 @@ def _get_url_cache(url: Optional[str] = None) -> Dict[str, Any]:
     return _url_cache[base]
 
 _result_cache: Dict[str, Dict[str, Any]] = {}
-_shared_client: Optional[httpx.AsyncClient] = None
+import threading
+
+_client_local = threading.local()
 
 
 def _get_shared_client() -> httpx.AsyncClient:
-    """Return a shared httpx.AsyncClient with persistent keep-alive connection pooling."""
-    global _shared_client
+    """Return a thread-local, loop-bound httpx.AsyncClient with persistent keep-alive connection pooling."""
     try:
         import asyncio
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
 
-    if _shared_client is not None and not _shared_client.is_closed:
-        transport = getattr(_shared_client, "_transport", None)
-        pool = getattr(transport, "_pool", None)
-        client_loop = getattr(pool, "_loop", None)
-        if client_loop is not None and (client_loop.is_closed() or (loop is not None and client_loop is not loop)):
-            _shared_client = None
+    client = getattr(_client_local, "client", None)
+    client_loop = getattr(_client_local, "loop", None)
 
-    if _shared_client is None or _shared_client.is_closed:
+    if client is not None:
+        if client.is_closed or client_loop is None or client_loop is not loop:
+            client = None
+            _client_local.client = None
+            _client_local.loop = None
+
+    if client is None:
         timeout = float(__import__("os").getenv("AGENT_TOOLS_HTTP_TIMEOUT_SECONDS", "8"))
-        _shared_client = httpx.AsyncClient(
+        client = httpx.AsyncClient(
             timeout=timeout,
             limits=httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=30.0),
         )
-    return _shared_client
+        _client_local.client = client
+        _client_local.loop = loop
+
+    return client
 
 
 def _cache_key(name: str, arguments: Optional[Dict[str, Any]]) -> str:
