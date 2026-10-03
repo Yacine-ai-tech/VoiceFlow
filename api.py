@@ -846,14 +846,21 @@ async def ws_stream(ws: WebSocket):
 async def realtime_config(request: Request) -> Dict[str, Any]:
     provider = getattr(settings, "REALTIME_PROVIDER", "openai").lower()
     custom_url = request.query_params.get("agent_tools_url")
-    active_url = custom_url or settings.AGENT_TOOLS_URL
+    active_url = (custom_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
     tools = agent_tools_bridge.cached_tools_snapshot(active_url)
+    openai_key = (
+        getattr(settings, "OPENAI_REALTIME_API_KEY", "")
+        or getattr(settings, "REALTIME_API_KEY", "")
+        or _os.getenv("OPENAI_API_KEY", "")
+    )
     return {
         "provider": provider,
         "auth_required": _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true",
         "gemini_ws_path": "/realtime/gemini",
+        "openai_ws_path": "/realtime/openai",
         "openai_webrtc_session_path": "/realtime/session/openai",
-        "openai_webrtc_available": bool(settings.OPENAI_REALTIME_API_KEY),
+        "openai_webrtc_available": bool(openai_key),
+        "openai_available": bool(openai_key),
         "gemini_available": bool(settings.GEMINI_API_KEY),
         "tools_cached": len(tools),
         "agent_tools_url": active_url,
@@ -891,7 +898,11 @@ async def openai_webrtc_session(request: Request):
         if not hmac.compare_digest(token, expected):
             raise HTTPException(status_code=403, detail="Missing or invalid X-VoiceFlow-Internal-Token")
 
-    openai_realtime_key = settings.OPENAI_REALTIME_API_KEY
+    openai_realtime_key = (
+        getattr(settings, "OPENAI_REALTIME_API_KEY", "")
+        or getattr(settings, "REALTIME_API_KEY", "")
+        or _os.getenv("OPENAI_API_KEY", "")
+    )
     if not openai_realtime_key:
         raise HTTPException(status_code=503, detail="OPENAI_REALTIME_API_KEY not configured for OpenAI Realtime WebRTC")
 
@@ -899,9 +910,15 @@ async def openai_webrtc_session(request: Request):
     if not sdp.strip():
         raise HTTPException(status_code=400, detail="SDP offer required")
 
+    custom_url = request.headers.get("X-Agent-Tools-Url") or request.query_params.get("agent_tools_url")
+    active_url = (custom_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+
+    model = _os.getenv("OPENAI_REALTIME_MODEL") or getattr(settings, "OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview")
+    voice = request.query_params.get("voice") or _os.getenv("OPENAI_REALTIME_VOICE") or getattr(settings, "OPENAI_REALTIME_VOICE", "alloy")
+
     session_config = {
         "type": "realtime",
-        "model": settings.OPENAI_REALTIME_MODEL,
+        "model": model,
         "instructions": (
             "You are VoiceFlow's realtime voice agent — a natural, fluent, and concise spoken AI assistant. "
             "Speak fluently and empathetically in whatever language the caller uses (French, English, Spanish, etc.). "
@@ -912,15 +929,17 @@ async def openai_webrtc_session(request: Request):
             "that specifically matches that tool's description. If in doubt, DO NOT call a tool. "
             "Never call the same tool twice for the same question. "
             "Never narrate your internal process — do not say 'I am calling a tool' or 'Connecting to a system'. "
-            "Keep answers brief and conversational (1-3 sentences)."
+            "Keep answers brief and conversational (1-3 sentences). "
+            "Pronounce numbers, dates, and percentages naturally for spoken delivery. "
+            "When you receive data from an external tool, verbalize the key numbers, facts, and conclusions directly aloud."
         ),
         "audio": {
             "input": {
                 "turn_detection": {"type": "semantic_vad"},
             },
-            "output": {"voice": settings.OPENAI_REALTIME_VOICE},
+            "output": {"voice": voice},
         },
-        "tools": agent_tools_bridge.openai_tools_from_snapshot(),
+        "tools": agent_tools_bridge.openai_tools_from_snapshot(active_url),
         "tool_choice": "auto",
         "reasoning": {"effort": "low"},
     }
@@ -960,25 +979,23 @@ async def realtime_tool_call(req: RealtimeToolCallRequest, request: Request) -> 
 
 
 @app.websocket("/realtime/gemini")
+@app.websocket("/realtime/openai")
 @app.websocket("/realtime")
 async def ws_realtime(ws: WebSocket):
     """OpenAI Realtime API & Gemini Multimodal Live bridge (voice agent).
 
-    Provider selection (env-driven):
+    Provider selection (query-param or path or env-driven):
+      - Query param: `?provider=gemini` or `?provider=openai`
+      - Path: `/realtime/gemini` or `/realtime/openai`
       - REALTIME_PROVIDER ('openai' or 'gemini', default: 'openai').
-      - REALTIME_API_KEY (API key for selected provider).
+      - REALTIME_API_KEY / OPENAI_REALTIME_API_KEY / GEMINI_API_KEY.
 
     Audio specs:
-      - OpenAI: 24kHz PCM 16-bit input/output (no resampling needed).
+      - OpenAI: 24kHz PCM 16-bit input/output (binary frames or json-base64 buffer append).
       - Gemini: 16kHz PCM 16-bit input, 24kHz output (server downsamples input).
 
-    External tools: if AGENT_TOOLS_URL is set, the model on either provider
-    is given whatever tools that service exposes (discovered at connect time
-    — see services/agent_tools_bridge.py for the contract) and can call them
-    mid-conversation. Tool calls and their results are also forwarded to the
-    browser as {"type": "tool_call" | "tool_result", ...} events. If the
-    service is unreachable, the model gets told that instead of the call
-    hanging; if AGENT_TOOLS_URL is unset, the session just runs without tools.
+    External tools: if AGENT_TOOLS_URL is set (or passed via ?agent_tools_url=),
+    the model on either provider is given whatever tools that service exposes.
     """
     reason = _ws_reject_reason(ws)
     if reason:
@@ -987,14 +1004,68 @@ async def ws_realtime(ws: WebSocket):
     await ws.accept()
     trace = _RealtimeTrace(ws)
     await trace.mark("transport_ready")
+
+    ws_send_lock = asyncio.Lock()
+
+    async def safe_ws_send(payload: Any):
+        """Safely serialize JSON/text/bytes writes to the client websocket to prevent concurrency races."""
+        try:
+            async with ws_send_lock:
+                if ws.client_state.name == "CONNECTED":
+                    if isinstance(payload, str):
+                        await ws.send_text(payload)
+                    elif isinstance(payload, bytes):
+                        await ws.send_bytes(payload)
+                    else:
+                        await ws.send_json(payload)
+        except Exception as exc:
+            log.debug("safe_ws_send error: %s", exc)
+
     explicit_gemini_route = ws.url.path.endswith("/gemini")
-    provider = "gemini" if explicit_gemini_route else getattr(settings, "REALTIME_PROVIDER", "openai").lower()
-    api_key = settings.GEMINI_API_KEY if explicit_gemini_route else getattr(settings, "REALTIME_API_KEY", "")
+    explicit_openai_route = ws.url.path.endswith("/openai")
+    req_provider = ws.query_params.get("provider", "").strip().lower()
+
+    if explicit_gemini_route or req_provider == "gemini":
+        provider = "gemini"
+    elif explicit_openai_route or req_provider == "openai":
+        provider = "openai"
+    else:
+        provider = getattr(settings, "REALTIME_PROVIDER", "openai").lower()
+
+    if provider == "gemini":
+        api_key = settings.GEMINI_API_KEY
+    else:
+        explicit_key = getattr(settings, "OPENAI_REALTIME_API_KEY", "").strip()
+        if explicit_key:
+            api_key = explicit_key
+        elif getattr(settings, "REALTIME_PROVIDER", "").lower() == "openai" and getattr(settings, "REALTIME_API_KEY", "").startswith("sk-"):
+            api_key = settings.REALTIME_API_KEY
+        elif _os.getenv("OPENAI_API_KEY", "").startswith("sk-"):
+            api_key = _os.getenv("OPENAI_API_KEY", "").strip()
+        else:
+            api_key = ""
 
     if not api_key:
-        await ws.send_json({"type": "error", "message": "REALTIME_API_KEY not configured."})
+        await safe_ws_send({"type": "error", "message": f"API key not configured for provider '{provider}'."})
         await ws.close()
         return
+
+    _system_instruction = (
+        "You are VoiceFlow's voice agent — a natural, fluent, and concise spoken AI assistant. "
+        "Speak fluently, warmly, and empathetically in whatever language the caller uses (French, English, Spanish, German, etc.).\n\n"
+        "CRITICAL CONVERSATIONAL RULES:\n"
+        "1. CONVERSATION FIRST: You are primarily a conversational voice assistant. For greetings ('hello', 'bonjour', 'salut', 'hi', 'how are you'), "
+        "pleasantries, introductions, small talk, chit-chat, opinions, explanations, or general knowledge questions (math, science, history, coding, languages), "
+        "NEVER call any tool. Answer directly, warmly, and naturally in 1-2 conversational sentences using your own voice.\n"
+        "2. STRICT TOOL USAGE: You have access to optional external tools. Invoke a tool ONLY if the user explicitly and unambiguously requests "
+        "live data or an external action that specifically matches an available tool's description. If the user's intent does not clearly require an external tool, "
+        "DO NOT call any tool — simply respond conversationally.\n"
+        "3. NO INTERNAL PROCESS NARRATION: Never say 'I am calling a tool', 'Connecting to an agent', or mention API names or parameters. "
+        "A natural brief spoken preamble like 'Let me check that' or 'Un instant, je vérifie' right before invoking a tool is fine; otherwise speak the answer directly.\n"
+        "4. SPOKEN DELIVERY: You are speaking aloud over audio, not writing text. Keep answers brief (1-3 conversational sentences) and speak naturally. "
+        "Pronounce numbers, dates, and percentages naturally for spoken delivery.\n"
+        "5. SPOKEN TOOL RESULTS DELIVERY: When you receive data from an external tool, you MUST ALWAYS verbalize and speak the key findings, results, numbers, status, or answers aloud to the caller in 2-3 natural spoken sentences. State the specific facts or numbers clearly so the user hears them directly over audio. Never remain silent or reply with raw code/JSON."
+    )
 
     if provider == "gemini":
         gemini_key = api_key
@@ -1440,52 +1511,168 @@ async def ws_realtime(ws: WebSocket):
         import inspect
         import websockets
 
-        model = getattr(settings, "OPENAI_REALTIME_MODEL", None) or "gpt-4o-realtime-preview"
+        model = _os.getenv("OPENAI_REALTIME_MODEL") or getattr(settings, "OPENAI_REALTIME_MODEL", None) or "gpt-4o-realtime-preview"
         url = f"wss://api.openai.com/v1/realtime?model={model}"
         headers = [("Authorization", f"Bearer {openai_key}"), ("OpenAI-Beta", "realtime=v1")]
         model_name = f"OpenAI Realtime ({model})"
 
+        _custom_agent_url = ws.query_params.get("agent_tools_url")
+        _agent_tools_url = (_custom_agent_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+
+        try:
+            if _agent_tools_url:
+                _external_tools = await asyncio.wait_for(agent_tools_bridge.openai_tools(_agent_tools_url), timeout=3.0)
+            else:
+                _external_tools = []
+        except Exception as e:
+            log.warning("agent-tools declarations unavailable for OpenAI Realtime (%s): %s", _agent_tools_url, e)
+            _external_tools = []
+        await trace.mark("tools_ready", count=len(_external_tools), agent_url=_agent_tools_url)
+
+        _requested_voice = ws.query_params.get("voice") or _os.getenv("OPENAI_REALTIME_VOICE") or getattr(settings, "OPENAI_REALTIME_VOICE", "alloy")
+        _valid_openai_voices = {"alloy", "echo", "shimmer", "ash", "ballad", "coral", "sage", "verse"}
+        _voice_name = _requested_voice if _requested_voice in _valid_openai_voices else "alloy"
+
         hkw = "additional_headers" if "additional_headers" in inspect.signature(websockets.connect).parameters else "extra_headers"
         try:
             async with websockets.connect(url, max_size=None, **{hkw: headers}) as upstream:
+                session_payload = {
+                    "modalities": ["text", "audio"],
+                    "instructions": _system_instruction,
+                    "voice": _voice_name,
+                    "input_audio_format": "pcm16",
+                    "output_audio_format": "pcm16",
+                    "input_audio_transcription": {"model": "whisper-1"},
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.5,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500,
+                    },
+                }
+                if _external_tools:
+                    session_payload["tools"] = _external_tools
+                    session_payload["tool_choice"] = "auto"
+
                 await upstream.send(json.dumps({
                     "type": "session.update",
-                    "session": {
-                        "tools": await agent_tools_bridge.openai_tools(),
-                        "tool_choice": "auto",
-                    },
+                    "session": session_payload,
                 }))
                 await trace.mark("provider_ready", provider="openai", model=model)
-                await ws.send_json({"type": "provider_ready", "provider": "openai", "message": f"Connected to {model_name}"})
+                await safe_ws_send({
+                    "type": "provider_ready",
+                    "provider": "openai",
+                    "message": f"Connected to {model_name}",
+                })
+
+                is_tool_active = [False]
+                turn_active = [False]
+                cancel_flag = [False]
 
                 async def client_to_upstream():
                     try:
                         while True:
-                            msg_text = await ws.receive_text()
-                            try:
-                                data = json.loads(msg_text)
-                                if data.get("type") == "client.speech_started":
-                                    await upstream.send(json.dumps({"type": "response.cancel"}))
-                                    continue
-                            except Exception:
-                                pass
-                            await upstream.send(msg_text)
-                            await trace.first("first_input_audio")
-                    except Exception:
-                        pass
+                            msg = await ws.receive()
+                            msg_text = msg.get("text")
+                            msg_bytes = msg.get("bytes")
 
-                async def upstream_to_client():
-                    try:
-                        async for msg in upstream:
-                            msg_text = msg if isinstance(msg, str) else msg.decode("utf-8", "ignore")
-                            await ws.send_text(msg_text)
+                            if msg_bytes:
+                                if is_tool_active[0]:
+                                    continue  # gate audio while tool execution is in progress
+                                await trace.first("first_input_audio")
+                                b64_audio = base64.b64encode(msg_bytes).decode()
+                                await upstream.send(json.dumps({
+                                    "type": "input_audio_buffer.append",
+                                    "audio": b64_audio,
+                                }))
+                                continue
+
+                            if not msg_text:
+                                continue
 
                             try:
                                 data = json.loads(msg_text)
                             except Exception:
                                 continue
 
-                            if data.get("type") == "response.function_call_arguments.done":
+                            evt = data.get("type", "")
+
+                            if evt == "input_audio_buffer.append":
+                                if is_tool_active[0]:
+                                    continue
+                                await trace.first("first_input_audio", mode="json_base64")
+                                await upstream.send(msg_text)
+
+                            elif evt == "input_audio_buffer.commit":
+                                cancel_flag[0] = False
+                                turn_active[0] = True
+                                await upstream.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                                await upstream.send(json.dumps({"type": "response.create"}))
+                                await trace.first("first_commit")
+
+                            elif evt == "conversation.item.create":
+                                cancel_flag[0] = False
+                                turn_active[0] = True
+                                await upstream.send(msg_text)
+                                await upstream.send(json.dumps({"type": "response.create"}))
+                                await trace.first("first_commit", mode="text")
+
+                            elif evt in ("client.speech_started", "response.cancel"):
+                                cancel_flag[0] = True
+                                await upstream.send(json.dumps({"type": "response.cancel"}))
+                                await safe_ws_send({"type": "assistant.cancelled"})
+                                await safe_ws_send({"type": "response.done", "cancelled": True})
+
+                            elif evt == "ping":
+                                await safe_ws_send({"type": "pong"})
+
+                            else:
+                                await upstream.send(msg_text)
+
+                    except WebSocketDisconnect:
+                        pass
+                    except Exception:
+                        log.exception("OpenAI client_to_upstream error")
+
+                async def upstream_to_client():
+                    try:
+                        async for msg in upstream:
+                            msg_text = msg if isinstance(msg, str) else msg.decode("utf-8", "ignore")
+                            try:
+                                data = json.loads(msg_text)
+                            except Exception:
+                                continue
+
+                            mtype = data.get("type", "")
+
+                            if mtype == "response.audio.delta":
+                                turn_active[0] = True
+                                await trace.first("first_output_audio")
+                                await safe_ws_send({
+                                    "type": "response.audio.delta",
+                                    "delta": data.get("delta", ""),
+                                })
+
+                            elif mtype == "response.audio_transcript.delta":
+                                await safe_ws_send({
+                                    "type": "response.audio_transcript.delta",
+                                    "delta": data.get("delta", ""),
+                                })
+
+                            elif mtype == "conversation.item.input_audio_transcription.completed":
+                                user_transcript = data.get("transcript", "").strip()
+                                if user_transcript:
+                                    await safe_ws_send({
+                                        "type": "response.user_transcript.delta",
+                                        "delta": user_transcript,
+                                        "finished": True,
+                                    })
+
+                            elif mtype == "response.done":
+                                turn_active[0] = False
+                                await safe_ws_send({"type": "response.done"})
+
+                            elif mtype == "response.function_call_arguments.done":
                                 call_id = data.get("call_id")
                                 name = data.get("name")
                                 try:
@@ -1493,11 +1680,12 @@ async def ws_realtime(ws: WebSocket):
                                 except Exception:
                                     fc_args = {}
 
-                                await ws.send_json({"type": "tool_call", "name": name, "arguments": fc_args})
+                                is_tool_active[0] = True
+                                await safe_ws_send({"type": "tool_call", "name": name, "arguments": fc_args})
                                 await trace.mark("tool_start", name=name)
-                                result = await agent_tools_bridge.call_tool(name, fc_args)
+                                result = await agent_tools_bridge.call_tool(name, fc_args, target_url=_agent_tools_url)
                                 await trace.mark("tool_end", name=name, ok="error" not in result)
-                                await ws.send_json({"type": "tool_result", "name": name, "result": result})
+                                await safe_ws_send({"type": "tool_result", "name": name, "result": result})
 
                                 await upstream.send(json.dumps({
                                     "type": "conversation.item.create",
@@ -1508,8 +1696,19 @@ async def ws_realtime(ws: WebSocket):
                                     },
                                 }))
                                 await upstream.send(json.dumps({"type": "response.create"}))
-                    except Exception:
+                                is_tool_active[0] = False
+
+                            elif mtype == "error":
+                                log.warning("upstream openai realtime error: %s", data)
+                                await safe_ws_send(data)
+
+                            else:
+                                await safe_ws_send(data)
+
+                    except WebSocketDisconnect:
                         pass
+                    except Exception:
+                        log.exception("OpenAI upstream_to_client error")
 
                 await asyncio.gather(client_to_upstream(), upstream_to_client())
         except WebSocketDisconnect:
@@ -1517,7 +1716,7 @@ async def ws_realtime(ws: WebSocket):
         except Exception as e:
             log.warning("realtime openai relay error: %s", e)
             try:
-                await ws.send_json({"type": "error", "message": f"OpenAI Realtime relay failed: {e}"})
+                await safe_ws_send({"type": "error", "message": f"OpenAI Realtime relay failed: {e}"})
             except Exception:
                 pass
     else:
