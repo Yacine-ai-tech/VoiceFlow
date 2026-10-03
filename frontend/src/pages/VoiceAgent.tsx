@@ -158,10 +158,12 @@ class GeminiWebSocketTransport implements RealtimeTransport {
   private resumeHandle: string | null = null;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private pongTimeout: ReturnType<typeof setTimeout> | null = null;
+  private intentionalClose = false;
 
   constructor(private cfg: RealtimeConfig, private cb: TransportCallbacks, private customWsPath?: string) {}
 
   async connect() {
+    this.intentionalClose = false;
     const params = new URLSearchParams();
     if (this.resumeHandle) params.set("resume", this.resumeHandle);
     if (this.cfg.voice) params.set("voice", this.cfg.voice);
@@ -207,9 +209,13 @@ class GeminiWebSocketTransport implements RealtimeTransport {
     this.ws.onclose = () => {
       if (this.pingInterval) clearInterval(this.pingInterval);
       if (this.pongTimeout) clearTimeout(this.pongTimeout);
+      if (this.intentionalClose) return;
       this.cb.onClose();
     };
-    this.ws.onerror = () => this.cb.onError("Gemini WebSocket connection failed");
+    this.ws.onerror = () => {
+      if (this.intentionalClose) return;
+      this.cb.onError("Gemini WebSocket connection failed");
+    };
   }
 
   async attachMic() {}
@@ -230,10 +236,16 @@ class GeminiWebSocketTransport implements RealtimeTransport {
     }
   }
   close() {
+    this.intentionalClose = true;
     if (this.pingInterval) clearInterval(this.pingInterval);
     if (this.pongTimeout) clearTimeout(this.pongTimeout);
-    this.ws?.close();
-    this.ws = null;
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.onmessage = null;
+      this.ws.close();
+      this.ws = null;
+    }
   }
 }
 
@@ -241,10 +253,12 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
   private pc: RTCPeerConnection | null = null;
   private dc: RTCDataChannel | null = null;
   private stream: MediaStream | null = null;
+  private intentionalClose = false;
 
   constructor(private cfg: RealtimeConfig, private cb: TransportCallbacks) {}
 
   async connect() {
+    this.intentionalClose = false;
     this.pc = new RTCPeerConnection();
     this.dc = this.pc.createDataChannel("oai-events");
     this.dc.onmessage = async (m) => {
@@ -263,6 +277,7 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
       audio.srcObject = event.streams[0];
     };
     this.pc.onconnectionstatechange = () => {
+      if (this.intentionalClose) return;
       if (this.pc?.connectionState === "failed" || this.pc?.connectionState === "closed") {
         this.cb.onClose();
       }
@@ -303,9 +318,20 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
     this.cb.onEvent({ type: "assistant.cancelled" });
   }
   close() {
+    this.intentionalClose = true;
+    if (this.dc) {
+      this.dc.onmessage = null;
+      this.dc.close();
+      this.dc = null;
+    }
+    if (this.pc) {
+      this.pc.onconnectionstatechange = null;
+      this.pc.ontrack = null;
+      this.pc.close();
+      this.pc = null;
+    }
     this.stream?.getTracks().forEach((t) => t.stop());
-    this.pc?.close();
-    this.pc = null;
+    this.stream = null;
   }
 
   private async handleToolCall(data: Record<string, unknown>) {
@@ -813,6 +839,12 @@ export default function VoiceAgent() {
       clearTimeout(watchdogTimerRef.current);
       watchdogTimerRef.current = null;
     }
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    reconnectAttemptsRef.current = 0;
+    setReconnectAttempt(0);
     responsePendingRef.current = false;
     closeTurn("assistant", agentOpenIdRef, agentDraftRef);
     closeTurn("user", userOpenIdRef, userDraftRef);
@@ -846,8 +878,14 @@ export default function VoiceAgent() {
   };
 
   const connect = async (reset = false, overrideVoice?: string, overrideAgentUrl?: string, overrideProvider?: string) => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     setErrorMsg("");
     if (reset) {
+      reconnectAttemptsRef.current = 0;
+      setReconnectAttempt(0);
       setMsgs([]);
       setMetrics([]);
       setEvents([]);
@@ -926,16 +964,27 @@ export default function VoiceAgent() {
     const defaultVoice = newProvider === "gemini" ? "Zephyr" : "alloy";
     setSelectedVoice(defaultVoice);
     localStorage.setItem("voiceflow.selected_voice", defaultVoice);
-    if (cfgRef.current) {
+    if (isRecording || state === "ready" || state === "connecting" || state === "provider_connecting") {
       connect(false, defaultVoice, undefined, newProvider);
+    } else if (cfgRef.current) {
+      cfgRef.current = {
+        ...cfgRef.current,
+        provider: newProvider,
+        voice: defaultVoice,
+      };
     }
   };
 
   const handleVoiceChange = (newVoice: string) => {
     setSelectedVoice(newVoice);
     localStorage.setItem("voiceflow.selected_voice", newVoice);
-    if (cfgRef.current) {
+    if (isRecording || state === "ready" || state === "connecting" || state === "provider_connecting") {
       connect(false, newVoice);
+    } else if (cfgRef.current) {
+      cfgRef.current = {
+        ...cfgRef.current,
+        voice: newVoice,
+      };
     }
   };
 
@@ -944,7 +993,14 @@ export default function VoiceAgent() {
     setAgentToolsUrl(trimmed);
     localStorage.setItem("voiceflow.agent_tools_url", trimmed);
     setShowAgentModal(false);
-    connect(false, undefined, trimmed);
+    if (isRecording || state === "ready" || state === "connecting" || state === "provider_connecting") {
+      connect(false, undefined, trimmed);
+    } else if (cfgRef.current) {
+      cfgRef.current = {
+        ...cfgRef.current,
+        agent_tools_url: trimmed,
+      };
+    }
   };
 
   const handleResetAgentUrl = () => {
@@ -952,7 +1008,14 @@ export default function VoiceAgent() {
     setCustomAgentInput("");
     localStorage.removeItem("voiceflow.agent_tools_url");
     setShowAgentModal(false);
-    connect(false, undefined, "");
+    if (isRecording || state === "ready" || state === "connecting" || state === "provider_connecting") {
+      connect(false, undefined, "");
+    } else if (cfgRef.current) {
+      cfgRef.current = {
+        ...cfgRef.current,
+        agent_tools_url: "",
+      };
+    }
   };
 
   const testAgentEndpoint = async (urlToTest: string) => {
