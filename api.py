@@ -22,14 +22,17 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import hmac
 import json
-import os as _os
+import os
 import threading
 import time
 import uuid
 from collections import Counter as _Counter
 from typing import Any, Dict, Optional
+
+_os = os
 
 import httpx
 from fastapi import (
@@ -52,8 +55,23 @@ from services.tts_service import generate_speech, generate_speech_with_meta
 
 log = get_logger(__name__)
 
-app = FastAPI(title="VoiceFlow", version="0.1.0",
-              description="Speech → structured intelligence.")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Preload Kokoro in-memory pipeline during server boot to eliminate cold-start latency
+    try:
+        asyncio.create_task(tts_service.preload_kokoro())
+    except Exception as e:
+        log.warning("Background Kokoro preloading initialization error: %s", e)
+    yield
+
+
+app = FastAPI(
+    title="VoiceFlow",
+    version="0.1.0",
+    description="Speech → structured intelligence.",
+    lifespan=lifespan,
+)
 
 # Per-IP sliding-window limits. This product has no user accounts and every
 # endpoint below is reachable by anyone (see ARCHITECTURE.md) — a per-IP cap
@@ -189,6 +207,12 @@ app.add_middleware(
     allow_origins=settings.CORS_ALLOWED_ORIGINS or ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[
+        "Content-Disposition",
+        "X-VoiceFlow-TTS-Provider",
+        "X-VoiceFlow-Translated",
+        "X-VoiceFlow-Translated-Text",
+    ],
 )
 
 
@@ -445,27 +469,42 @@ async def tts_endpoint(req: TTSRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text required")
 
-    # On-the-fly translation: if target voice language is 'fr', translate English text first
+    # On-the-fly translation: if target voice language is French, translate English text first
     text_to_speak = req.text
     was_translated = False
-    if req.language == "fr":
+    clean_lang = (req.language or "").strip().lower()
+    if clean_lang.startswith("fr") or clean_lang == "french":
         try:
             from services.meeting_analyzer import _llm_with_fallback
+            import re
             model = os.getenv("TTS_TRANSLATION_MODEL", settings.LLM_DEFAULT) or "groq/openai/gpt-oss-120b"
             max_tokens = int(os.getenv("TTS_TRANSLATION_MAX_TOKENS", "1024"))
             temperature = float(os.getenv("TTS_TRANSLATION_TEMPERATURE", "0.3"))
             resp = await _llm_with_fallback(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "You are a professional translator. Translate the given text to natural, fluent French for speech synthesis. Only return the translated French text without any quotes, preambles, notes, or explanations."},
-                    {"role": "user", "content": text_to_speak}
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a professional translator. Translate the given text to natural, fluent French for speech synthesis. "
+                            "If the text is already in French, return it unchanged. Only return the final French text without any quotes, "
+                            "markdown formatting, preambles, notes, or explanations."
+                        ),
+                    },
+                    {"role": "user", "content": text_to_speak},
                 ],
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
             )
             if resp.choices and resp.choices[0].message.content:
-                text_to_speak = resp.choices[0].message.content.strip()
-                was_translated = True
+                candidate = resp.choices[0].message.content.strip()
+                candidate = re.sub(r"<think>[\s\S]*?</think>", "", candidate).strip()
+                if (candidate.startswith('"') and candidate.endswith('"')) or (candidate.startswith("'") and candidate.endswith("'")):
+                    candidate = candidate[1:-1].strip()
+                if candidate:
+                    text_to_speak = candidate
+                    was_translated = True
+                    log.info("On-the-fly TTS translation to French successful (%d -> %d chars)", len(req.text), len(text_to_speak))
         except Exception as e:
             log.warning("On-the-fly translation to French failed, proceeding with original text: %s", e)
 

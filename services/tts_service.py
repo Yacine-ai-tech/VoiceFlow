@@ -113,7 +113,42 @@ class _DynamicKokoroVoicesMapping(dict):
 
 _KOKORO_VOICES = _DynamicKokoroVoicesMapping()
 
-_kokoro_pipeline = None  # lazy-loaded, cached across calls.
+_kokoro_pipelines: dict[str, Any] = {}
+
+
+def get_or_create_kokoro_pipeline(lang_code: str = "a"):
+    """Thread-safe retrieval or initialization of Kokoro KPipeline for a language code."""
+    global _kokoro_pipelines
+    clean_lang = (lang_code or "a").strip().lower()
+    if clean_lang in _kokoro_pipelines:
+        return _kokoro_pipelines[clean_lang]
+    try:
+        from kokoro import KPipeline
+        model_path = getattr(settings, "KOKORO_MODEL_PATH", "") or None
+        repo_id = settings.KOKORO_REPO_ID or "hexgrad/Kokoro-82M"
+        pipe = (
+            KPipeline(lang_code=clean_lang, repo_id=repo_id, model=model_path)
+            if model_path
+            else KPipeline(lang_code=clean_lang, repo_id=repo_id)
+        )
+        _kokoro_pipelines[clean_lang] = pipe
+        log.info("Kokoro KPipeline successfully initialized for lang_code=%r in memory", clean_lang)
+        return pipe
+    except Exception as e:
+        log.warning("Failed to initialize Kokoro pipeline for lang_code=%r: %s", clean_lang, e)
+        return None
+
+
+async def preload_kokoro() -> None:
+    """Preload Kokoro pipeline into memory during server startup to eliminate cold-start latency."""
+    default_lang = (settings.KOKORO_LANG_CODE or "a").strip().lower()
+    log.info("Preloading Kokoro TTS pipeline in memory (lang_code=%r)...", default_lang)
+    loop = asyncio.get_running_loop()
+    pipe = await loop.run_in_executor(None, get_or_create_kokoro_pipeline, default_lang)
+    if pipe is not None:
+        log.info("Kokoro TTS pipeline successfully preloaded in memory with zero cold start.")
+    else:
+        log.info("Kokoro TTS not available for preloading (fallback providers will be used).")
 
 
 async def _generate_elevenlabs(text: str, language: str, voice_gender: str, voice_id: Optional[str] = None) -> Optional[bytes]:
@@ -265,19 +300,13 @@ def _generate_kokoro_sync(
     try:
         import numpy as np
         import soundfile as sf
-        chosen_lang = (lang_code or settings.KOKORO_LANG_CODE or "a").strip()
-        if _kokoro_pipeline is None:
-            from kokoro import KPipeline
-            model_path = getattr(settings, "KOKORO_MODEL_PATH", "") or None
-            repo_id = settings.KOKORO_REPO_ID
-            _kokoro_pipeline = (
-                KPipeline(lang_code=chosen_lang, repo_id=repo_id, model=model_path)
-                if model_path
-                else KPipeline(lang_code=chosen_lang, repo_id=repo_id)
-            )
+        chosen_lang = (lang_code or settings.KOKORO_LANG_CODE or "a").strip().lower()
+        pipeline = get_or_create_kokoro_pipeline(chosen_lang)
+        if pipeline is None:
+            return None
         voice = voice_id or _KOKORO_VOICES.get(voice_gender, _KOKORO_VOICES["default"])
         chunks = []
-        for _, _, audio in _kokoro_pipeline(text, voice=voice):
+        for _, _, audio in pipeline(text, voice=voice):
             chunks.append(audio)
         if not chunks:
             return None
