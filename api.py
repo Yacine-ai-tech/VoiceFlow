@@ -1241,11 +1241,6 @@ async def ws_realtime(ws: WebSocket):
                                     cancel_flag[0] = False
                                     pending_cancel_notice[0] = False
                                     turn_active[0] = True
-                                    try:
-                                        async with session_send_lock:
-                                            await session.send_realtime_input(activity_end=_gtypes.ActivityEnd())
-                                    except Exception as e:
-                                        log.debug("send activity_end notice: %s", e)
                                     await trace.first("first_commit")
 
                                 elif evt == "conversation.item.create":
@@ -1266,11 +1261,6 @@ async def ws_realtime(ws: WebSocket):
                                         await trace.first("first_commit", mode="text")
 
                                 elif evt == "client.speech_started":
-                                    try:
-                                        async with session_send_lock:
-                                            await session.send_realtime_input(activity_start=_gtypes.ActivityStart())
-                                    except Exception:
-                                        pass
                                     if turn_active[0] or is_tool_active[0]:
                                         cancel_flag[0] = True
                                         pending_cancel_notice[0] = True
