@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from core.config import settings
 from core.logger import get_logger
@@ -118,7 +118,6 @@ _kokoro_pipelines: dict[str, Any] = {}
 
 def get_or_create_kokoro_pipeline(lang_code: str = "a"):
     """Thread-safe retrieval or initialization of Kokoro KPipeline for a language code."""
-    global _kokoro_pipelines
     clean_lang = (lang_code or "a").strip().lower()
     if clean_lang in _kokoro_pipelines:
         return _kokoro_pipelines[clean_lang]
@@ -296,7 +295,6 @@ def _generate_kokoro_sync(
 ) -> Optional[bytes]:
     """Runs Kokoro's (synchronous, CPU/GPU-bound) pipeline. Called via a
     thread so it doesn't block the event loop."""
-    global _kokoro_pipeline
     try:
         import numpy as np
         import soundfile as sf
