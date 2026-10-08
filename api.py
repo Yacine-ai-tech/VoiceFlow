@@ -215,6 +215,9 @@ app.add_middleware(
     ],
 )
 
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 
 try:
     _assets_dir = _os.path.join(_os.path.dirname(__file__), "frontend", "dist", "assets")
