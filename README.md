@@ -2,19 +2,19 @@
 
 [![CI](https://github.com/Yacine-ai-tech/VoiceFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Yacine-ai-tech/VoiceFlow/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Live App](https://img.shields.io/badge/Live_App-voiceflow--ui-0070f3?style=flat&logo=vercel)](https://voiceflow-ui-2026.vercel.app)
-[![Research](https://img.shields.io/badge/Research-Gemini_Live_Pipeline-8a2be2?style=flat)](https://voiceflow-ui-2026.vercel.app/research)
-[![Benchmarks](https://img.shields.io/badge/Benchmarks-WER_2.2%25-green?style=flat)](https://voiceflow-ui-2026.vercel.app/benchmark)
-[![Guide](https://img.shields.io/badge/Docs-User_Guide-blue?style=flat)](https://voiceflow-ui-2026.vercel.app/guide)
+[![Live App](https://img.shields.io/badge/Live_App-voiceflow-0070f3?style=flat)](https://voiceflow.ysiddo-ai-projects.app)
+[![Research](https://img.shields.io/badge/Research-Gemini_Live_Pipeline-8a2be2?style=flat)](https://voiceflow.ysiddo-ai-projects.app/research)
+[![Benchmarks](https://img.shields.io/badge/Benchmarks-WER_2.2%25-green?style=flat)](https://voiceflow.ysiddo-ai-projects.app/benchmark)
+[![Guide](https://img.shields.io/badge/Docs-User_Guide-blue?style=flat)](https://voiceflow.ysiddo-ai-projects.app/guide)
 
 **Speech to structured intelligence.** A full web dashboard over four transcription
 providers, five per-type analysis routes, and a real-time voice agent with external
 tool-calling.
 
-**Live Application (record in your browser):** [voiceflow-ui-2026.vercel.app](https://voiceflow-ui-2026.vercel.app) (also accessible at [voiceflow.ysiddo-ai-projects.app](https://voiceflow.ysiddo-ai-projects.app)) — bidirectional real-time audio with Gemini Live preview and multi-provider transcription.
-- **Research Background:** [`RESEARCH.md`](RESEARCH.md) / [Online Research Documentation](https://voiceflow-ui-2026.vercel.app/research)
-- **Empirical Benchmarks:** [`BENCHMARK.md`](BENCHMARK.md) / [Online Benchmark Dashboard](https://voiceflow-ui-2026.vercel.app/benchmark)
-- **User Guide:** [Online User Guide](https://voiceflow-ui-2026.vercel.app/guide)
+**Live Application (record in your browser):** [voiceflow.ysiddo-ai-projects.app](https://voiceflow.ysiddo-ai-projects.app) — bidirectional real-time audio with Gemini Live preview and multi-provider transcription.
+- **Research Background:** [`RESEARCH.md`](RESEARCH.md) / [Online Research Documentation](https://voiceflow.ysiddo-ai-projects.app/research)
+- **Empirical Benchmarks:** [`BENCHMARK.md`](BENCHMARK.md) / [Online Benchmark Dashboard](https://voiceflow.ysiddo-ai-projects.app/benchmark)
+- **User Guide:** [Online User Guide](https://voiceflow.ysiddo-ai-projects.app/guide)
 - **Self-Hosting Guide:** [`SELF_HOSTING.md`](SELF_HOSTING.md)
 
 ## What It Does
