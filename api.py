@@ -22,6 +22,7 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import asynccontextmanager
 import hmac
 import json
