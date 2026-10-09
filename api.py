@@ -1323,8 +1323,8 @@ async def ws_realtime(ws: WebSocket):
                             msg_bytes = msg.get("bytes")
                             try:
                                 if msg_bytes:
-                                    if is_tool_active[0]:
-                                        continue  # gate audio while tool execution is in progress
+                                    if is_tool_active[0] or turn_active[0]:
+                                        continue  # gate audio while tool execution or assistant response turn is active
                                     await trace.first("first_input_audio")
                                     async with session_send_lock:
                                         await session.send_realtime_input(
@@ -1338,8 +1338,8 @@ async def ws_realtime(ws: WebSocket):
                                 evt = data.get("type", "")
 
                                 if evt == "input_audio_buffer.append":
-                                    if is_tool_active[0]:
-                                        continue  # gate audio while tool execution is in progress
+                                    if is_tool_active[0] or turn_active[0]:
+                                        continue  # gate audio while tool execution or assistant response turn is active
                                     b64 = data.get("audio")
                                     if b64:
                                         pcm_24k = base64.b64decode(b64)
@@ -1378,6 +1378,7 @@ async def ws_realtime(ws: WebSocket):
                                     if turn_active[0] or is_tool_active[0]:
                                         cancel_flag[0] = True
                                         pending_cancel_notice[0] = True
+                                        turn_active[0] = False
 
                                 elif evt == "ping":
                                     await safe_ws_send({"type": "pong"})
@@ -1396,6 +1397,7 @@ async def ws_realtime(ws: WebSocket):
                                 if response.server_content and getattr(response.server_content, "interrupted", False):
                                     cancel_flag[0] = True
                                     pending_cancel_notice[0] = True
+                                    turn_active[0] = False
                                 if cancel_flag[0]:
                                     if pending_cancel_notice[0]:
                                         pending_cancel_notice[0] = False

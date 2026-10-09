@@ -377,6 +377,8 @@ class VADProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.isSilent = true;
+    this.isPlaying = false;
+    this.bargeInStreak = 0;
     this.lastAudioTime = Date.now();
     this.lastVolumePost = 0;
     this.targetRate = 16000;
@@ -386,6 +388,15 @@ class VADProcessor extends AudioWorkletProcessor {
     this.CHUNK_SIZE = 800; // 50ms at 16kHz
     this.accumulatedSamples = new Int16Array(this.CHUNK_SIZE);
     this.accumulatedCount = 0;
+
+    this.port.onmessage = (e) => {
+      if (e.data && e.data.type === 'playback_state') {
+        this.isPlaying = !!e.data.isPlaying;
+        if (!this.isPlaying) {
+          this.bargeInStreak = 0;
+        }
+      }
+    };
   }
 
   flushAccumulated() {
@@ -412,6 +423,8 @@ class VADProcessor extends AudioWorkletProcessor {
     }
 
     const SPEECH_THRESHOLD = 0.012;
+    const BARGE_IN_THRESHOLD = 0.065;
+    const BARGE_IN_REQUIRED_FRAMES = 35;
     const PAUSE_THRESHOLD_MS = 550;
 
     const outLen = Math.max(1, Math.floor(channelData.length / this.ratio));
@@ -421,6 +434,44 @@ class VADProcessor extends AudioWorkletProcessor {
       pcm16[i] = Math.max(-1, Math.min(1, sample)) * 32767;
     }
 
+    if (this.isPlaying) {
+      // Audio playback is active through device speakers.
+      // Suppress normal sensitive speech detection to prevent acoustic echo self-interruption.
+      // Require sustained high-volume energy for intentional barge-in.
+      if (vol > BARGE_IN_THRESHOLD) {
+        this.bargeInStreak++;
+      } else {
+        this.bargeInStreak = Math.max(0, this.bargeInStreak - 3);
+      }
+
+      if (this.bargeInStreak >= BARGE_IN_REQUIRED_FRAMES) {
+        // Confirmed intentional user barge-in
+        this.isPlaying = false;
+        this.isSilent = false;
+        this.bargeInStreak = 0;
+        this.lastAudioTime = now;
+        this.port.postMessage({ type: 'speech_started', bargeIn: true });
+        while (this.preBuffer.length > 0) {
+          const pre = this.preBuffer.shift();
+          this.port.postMessage({ type: 'audio', buffer: pre.buffer }, [pre.buffer]);
+        }
+        for (let i = 0; i < pcm16.length; i++) {
+          this.accumulatedSamples[this.accumulatedCount++] = pcm16[i];
+          if (this.accumulatedCount >= this.CHUNK_SIZE) {
+            this.flushAccumulated();
+          }
+        }
+      } else {
+        // Playback active, no confirmed barge-in. Keep rolling prebuffer but do not stream echo audio.
+        this.preBuffer.push(pcm16);
+        if (this.preBuffer.length > this.preBufferMaxFrames) {
+          this.preBuffer.shift();
+        }
+      }
+      return true;
+    }
+
+    // Normal listening mode (no assistant audio playing)
     if (vol > SPEECH_THRESHOLD) {
       this.lastAudioTime = now;
       if (this.isSilent) {
@@ -518,6 +569,19 @@ export default function VoiceAgent() {
   const responsePendingRef = useRef(false);
   const watchdogTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const audioRemainderRef = useRef<Uint8Array | null>(null);
+
+  const updatePlaybackState = (playing: boolean) => {
+    isPlayingRef.current = playing;
+    setAgentSpeaking(playing);
+    try {
+      workletNodeRef.current?.port.postMessage({
+        type: "playback_state",
+        isPlaying: playing,
+      });
+    } catch {}
+  };
 
   const addTelemetryLog = (type: string, detail?: string, level: "info" | "success" | "warn" | "error" = "info") => {
     setEvents((old) => [
@@ -782,24 +846,41 @@ export default function VoiceAgent() {
     try {
       ensurePlaybackContext();
       const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const int16 = new Int16Array(bytes.buffer);
+      const rawLen = binary.length;
+      const rem = audioRemainderRef.current;
+      const totalLen = (rem ? rem.length : 0) + rawLen;
+      const bytes = new Uint8Array(totalLen);
+      let offset = 0;
+      if (rem && rem.length > 0) {
+        bytes.set(rem, 0);
+        offset += rem.length;
+        audioRemainderRef.current = null;
+      }
+      for (let i = 0; i < rawLen; i++) {
+        bytes[offset + i] = binary.charCodeAt(i);
+      }
+
+      // Ensure 16-bit PCM alignment (multiple of 2)
+      const alignedBytes = bytes.length - (bytes.length % 2);
+      if (bytes.length % 2 !== 0) {
+        audioRemainderRef.current = bytes.slice(alignedBytes);
+      }
+      if (alignedBytes === 0) return;
+
+      const int16 = new Int16Array(bytes.buffer, bytes.byteOffset, alignedBytes / 2);
       const float32 = new Float32Array(int16.length);
       for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
       playbackQueueRef.current.push(float32);
       scheduleNextBuffers();
     } catch (err: any) {
-      setErrorMsg(err.message || String(err));
-      setState("error");
+      console.error("Audio playback queue error:", err);
     }
   };
 
   const scheduleNextBuffers = () => {
     const audioCtx = playbackCtxRef.current;
     if (!audioCtx || playbackQueueRef.current.length === 0) return;
-    isPlayingRef.current = true;
-    setAgentSpeaking(true);
+    updatePlaybackState(true);
     nextPlayTimeRef.current = Math.max(audioCtx.currentTime + 0.025, nextPlayTimeRef.current);
     while (playbackQueueRef.current.length > 0) {
       const float32 = playbackQueueRef.current.shift()!;
@@ -814,14 +895,14 @@ export default function VoiceAgent() {
       source.onended = () => {
         activeSourcesRef.current = activeSourcesRef.current.filter((s) => s !== source);
         if (activeSourcesRef.current.length === 0 && playbackQueueRef.current.length === 0) {
-          isPlayingRef.current = false;
-          setAgentSpeaking(false);
+          updatePlaybackState(false);
         }
       };
     }
   };
 
   const stopAudioPlayback = () => {
+    audioRemainderRef.current = null;
     playbackQueueRef.current = [];
     activeSourcesRef.current.forEach((s) => {
       try {
@@ -829,9 +910,8 @@ export default function VoiceAgent() {
       } catch {}
     });
     activeSourcesRef.current = [];
-    isPlayingRef.current = false;
     nextPlayTimeRef.current = 0;
-    setAgentSpeaking(false);
+    updatePlaybackState(false);
   };
 
   const stopVoice = () => {
@@ -854,6 +934,8 @@ export default function VoiceAgent() {
     audioCtxRef.current = null;
     playbackCtxRef.current?.close();
     playbackCtxRef.current = null;
+    workletNodeRef.current = null;
+    audioRemainderRef.current = null;
     setIsRecording(false);
     setVolume(0);
     stopAudioPlayback();
@@ -1105,24 +1187,27 @@ export default function VoiceAgent() {
       }
       const source = audioCtx.createMediaStreamSource(stream);
       const workletNode = new AudioWorkletNode(audioCtx, "vad-processor");
+      workletNodeRef.current = workletNode;
+      workletNode.port.postMessage({ type: "playback_state", isPlaying: isPlayingRef.current });
       workletNode.port.onmessage = (e) => {
         const data = e.data;
         if (data.type === "volume") setVolume(data.vol);
         if (data.type === "speech_started") {
           lastClosedRef.current.user = { id: null, text: "", at: 0 };
           lastClosedRef.current.assistant = { id: null, text: "", at: 0 };
-          closeTurn("assistant", agentOpenIdRef, agentDraftRef);
+          if (isPlayingRef.current) {
+            stopAudioPlayback();
+            transportRef.current?.cancel();
+            closeTurn("assistant", agentOpenIdRef, agentDraftRef, true);
+          } else {
+            closeTurn("assistant", agentOpenIdRef, agentDraftRef, false);
+          }
           closeTurn("user", userOpenIdRef, userDraftRef);
           if (watchdogTimerRef.current) {
             clearTimeout(watchdogTimerRef.current);
             watchdogTimerRef.current = null;
           }
           responsePendingRef.current = false;
-          // Only trigger cancellation/barge-in when the assistant is actively playing audio
-          if (isPlayingRef.current) {
-            stopAudioPlayback();
-            transportRef.current?.cancel();
-          }
         }
         if (data.type === "speech_stopped" && !responsePendingRef.current) {
           responsePendingRef.current = true;
@@ -1135,7 +1220,12 @@ export default function VoiceAgent() {
             }
           }, 6000);
         }
-        if (data.type === "audio") transportRef.current?.sendAudio(data.buffer);
+        if (data.type === "audio") {
+          // Double safety gate: do not stream mic audio to server during active playback unless barging in
+          if (!isPlayingRef.current) {
+            transportRef.current?.sendAudio(data.buffer);
+          }
+        }
       };
       const silent = audioCtx.createGain();
       silent.gain.value = 0;
@@ -1150,6 +1240,8 @@ export default function VoiceAgent() {
       audioCtxRef.current = null;
       playbackCtxRef.current?.close();
       playbackCtxRef.current = null;
+      workletNodeRef.current = null;
+      audioRemainderRef.current = null;
       setIsRecording(false);
       let userNotice = err.message || String(err);
       const isDenied =
