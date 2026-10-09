@@ -222,10 +222,10 @@ def list_voice_records(
         if is_admin or session_id == "*":
             where_sql = ""
         elif session_id:
-            where_sql = " WHERE (session_id = %s OR session_id IS NULL)"
+            where_sql = " WHERE (session_id = %s OR kind = 'seed' OR (metadata IS NOT NULL AND metadata->>'is_seed' = 'true'))"
             params.append(session_id)
         else:
-            where_sql = " WHERE session_id IS NULL"
+            where_sql = " WHERE (kind = 'seed' OR (metadata IS NOT NULL AND metadata->>'is_seed' = 'true'))"
 
         sql = f"SELECT id, session_id, kind, title, duration_sec, transcript, analysis, metadata, created_at FROM voice_records{where_sql} ORDER BY created_at DESC LIMIT %s"
         params.append(limit)
