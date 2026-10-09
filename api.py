@@ -37,7 +37,7 @@ _os = os
 
 import httpx
 from fastapi import (
-    FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect,
+    FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -64,6 +64,11 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(tts_service.preload_kokoro())
     except Exception as e:
         log.warning("Background Kokoro preloading initialization error: %s", e)
+    if db.DB_ENABLED:
+        try:
+            db.ensure_schema()
+        except Exception as e:
+            log.warning("Database schema initialization deferred: %s", e)
     yield
 
 
@@ -1440,8 +1445,8 @@ async def ws_realtime(ws: WebSocket):
                             msg_bytes = msg.get("bytes")
                             try:
                                 if msg_bytes:
-                                    if is_tool_active[0] or turn_active[0]:
-                                        continue  # gate audio while tool execution or assistant response turn is active
+                                    if is_tool_active[0]:
+                                        continue  # gate audio strictly while tool execution is active
                                     await trace.first("first_input_audio")
                                     async with session_send_lock:
                                         await session.send_realtime_input(
@@ -1455,8 +1460,8 @@ async def ws_realtime(ws: WebSocket):
                                 evt = data.get("type", "")
 
                                 if evt == "input_audio_buffer.append":
-                                    if is_tool_active[0] or turn_active[0]:
-                                        continue  # gate audio while tool execution or assistant response turn is active
+                                    if is_tool_active[0]:
+                                        continue  # gate audio strictly while tool execution is active
                                     b64 = data.get("audio")
                                     if b64:
                                         pcm_24k = base64.b64decode(b64)

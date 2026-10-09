@@ -910,10 +910,9 @@ export default function VoiceAgent() {
           playbackEndTimerRef.current = setTimeout(() => {
             if (activeSourcesRef.current.length === 0 && playbackQueueRef.current.length === 0) {
               updatePlaybackState(false);
-              if (responseDoneReceivedRef.current) {
-                responsePendingRef.current = false;
-                setAgentSpeaking(false);
-              }
+              responsePendingRef.current = false;
+              responseDoneReceivedRef.current = false;
+              setAgentSpeaking(false);
             }
           }, 250);
         }
@@ -935,6 +934,8 @@ export default function VoiceAgent() {
     });
     activeSourcesRef.current = [];
     nextPlayTimeRef.current = 0;
+    responsePendingRef.current = false;
+    responseDoneReceivedRef.current = false;
     updatePlaybackState(false);
   };
 
@@ -1233,15 +1234,16 @@ export default function VoiceAgent() {
             closeTurn("user", userOpenIdRef, userDraftRef);
           } else {
             // Normal speech detection while agent is NOT actively playing
-            if (isPlayingRef.current || responsePendingRef.current) {
+            if (isPlayingRef.current) {
               // Ignore acoustic bleed or room noise while assistant is speaking
               return;
             }
+            responsePendingRef.current = false;
             closeTurn("assistant", agentOpenIdRef, agentDraftRef, false);
             closeTurn("user", userOpenIdRef, userDraftRef);
           }
         }
-        if (data.type === "speech_stopped" && !responsePendingRef.current && !isPlayingRef.current) {
+        if (data.type === "speech_stopped" && !isPlayingRef.current) {
           responsePendingRef.current = true;
           responseDoneReceivedRef.current = false;
           transportRef.current?.commitTurn();
