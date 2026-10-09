@@ -319,7 +319,13 @@ threading.Thread(target=_hydrate_stats_from_db, daemon=True).start()
 
 
 def _session_id(request: Request) -> str:
-    return request.headers.get("X-VoiceFlow-Session", "anonymous").strip() or "anonymous"
+    raw = (
+        request.headers.get("X-VoiceFlow-Session")
+        or request.headers.get("X-Demo-Session-Id")
+        or request.query_params.get("session_id")
+        or "anonymous"
+    )
+    return raw.strip() or "anonymous"
 
 
 def _session_stats(request: Request) -> "_Counter[str]":
@@ -763,15 +769,16 @@ async def analytics(request: Request):
 async def list_records_endpoint(
     request: Request,
     limit: int = 50,
+    session_id: Optional[str] = None,
     x_voiceflow_session: Optional[str] = Header(default=None, alias="X-VoiceFlow-Session"),
     x_demo_session_id: Optional[str] = Header(default=None, alias="X-Demo-Session-Id"),
     x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
 ) -> Dict[str, Any]:
     """Retrieve voice records scoped to the visitor's session with admin bypass for Omni-Admin."""
-    session_id = x_voiceflow_session or x_demo_session_id or request.headers.get("X-VoiceFlow-Session")
-    admin_secret = os.getenv("ADMIN_TOKEN") or os.getenv("VOICEFLOW_INTERNAL_TOKEN")
+    effective_session = session_id or x_voiceflow_session or x_demo_session_id or request.query_params.get("session_id") or request.headers.get("X-VoiceFlow-Session")
+    admin_secret = os.getenv("ADMIN_TOKEN")
     is_admin = bool(x_admin_token and admin_secret and x_admin_token == admin_secret)
-    records = db.list_voice_records(session_id=session_id, is_admin=is_admin, limit=limit)
+    records = db.list_voice_records(session_id=effective_session, is_admin=is_admin, limit=limit)
     return {"records": records, "count": len(records)}
 
 
@@ -779,28 +786,30 @@ async def list_records_endpoint(
 async def delete_record_endpoint(
     record_id: str,
     request: Request,
+    session_id: Optional[str] = None,
     x_voiceflow_session: Optional[str] = Header(default=None, alias="X-VoiceFlow-Session"),
     x_demo_session_id: Optional[str] = Header(default=None, alias="X-Demo-Session-Id"),
     x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
 ) -> Dict[str, Any]:
-    session_id = x_voiceflow_session or x_demo_session_id or request.headers.get("X-VoiceFlow-Session")
-    admin_secret = os.getenv("ADMIN_TOKEN") or os.getenv("VOICEFLOW_INTERNAL_TOKEN")
+    effective_session = session_id or x_voiceflow_session or x_demo_session_id or request.query_params.get("session_id") or request.headers.get("X-VoiceFlow-Session")
+    admin_secret = os.getenv("ADMIN_TOKEN")
     is_admin = bool(x_admin_token and admin_secret and x_admin_token == admin_secret)
-    success = db.delete_voice_record(record_id, session_id=session_id, is_admin=is_admin)
+    success = db.delete_voice_record(record_id, session_id=effective_session, is_admin=is_admin)
     return {"deleted": success, "id": record_id}
 
 
 @app.delete("/records")
 async def clear_records_endpoint(
     request: Request,
+    session_id: Optional[str] = None,
     x_voiceflow_session: Optional[str] = Header(default=None, alias="X-VoiceFlow-Session"),
     x_demo_session_id: Optional[str] = Header(default=None, alias="X-Demo-Session-Id"),
     x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
 ) -> Dict[str, Any]:
-    session_id = x_voiceflow_session or x_demo_session_id or request.headers.get("X-VoiceFlow-Session")
-    admin_secret = os.getenv("ADMIN_TOKEN") or os.getenv("VOICEFLOW_INTERNAL_TOKEN")
+    effective_session = session_id or x_voiceflow_session or x_demo_session_id or request.query_params.get("session_id") or request.headers.get("X-VoiceFlow-Session")
+    admin_secret = os.getenv("ADMIN_TOKEN")
     is_admin = bool(x_admin_token and admin_secret and x_admin_token == admin_secret)
-    cleared = db.clear_voice_records(session_id=session_id, is_admin=is_admin)
+    cleared = db.clear_voice_records(session_id=effective_session, is_admin=is_admin)
     return {"cleared": cleared}
 
 
