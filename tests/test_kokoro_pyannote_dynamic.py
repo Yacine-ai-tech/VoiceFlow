@@ -97,3 +97,38 @@ async def test_dynamic_agent_tools_url_and_target_url():
             target_url="https://another-agent.example.com",
         )
         assert res == {"results": [{"title": "Test Title", "score": 98}]}
+
+
+@pytest.mark.asyncio
+async def test_call_tool_prunes_hallucinated_arguments():
+    with patch("services.agent_tools_bridge.cached_tools_snapshot") as mock_snap, \
+         patch("services.agent_tools_bridge._get_shared_client") as mock_client:
+        mock_snap.return_value = [{
+            "name": "annotate_metric",
+            "endpoint": "/api/tools/annotate_metric",
+            "effect": "write",
+            "params": [{"name": "metric_id", "type": "string"}, {"name": "note", "type": "string"}],
+        }]
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+
+        captured_body = {}
+        async def _mock_post(url, json=None, headers=None):
+            nonlocal captured_body
+            captured_body = json or {}
+            return mock_resp
+
+        mock_http = MagicMock()
+        mock_http.post = _mock_post
+        mock_client.return_value = mock_http
+
+        res = await agent_tools_bridge.call_tool(
+            "annotate_metric",
+            {"metric_id": "rev_q3", "note": "verified", "hallucinated_field": "ignore_me"},
+            target_url="https://agentkit.example.com",
+        )
+        assert res == {"status": "ok"}
+        assert "hallucinated_field" not in captured_body
+        assert captured_body["metric_id"] == "rev_q3"
+        assert captured_body["note"] == "verified"
