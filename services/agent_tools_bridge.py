@@ -430,6 +430,13 @@ async def call_tool(
         else:
             args["domain"] = dom_val
 
+    # Prune unexpected arguments not defined in spec.params (if spec defines params)
+    spec_params = spec.get("params")
+    if isinstance(spec_params, list) and spec_params:
+        allowed_param_names = {p.get("name") for p in spec_params if isinstance(p, dict) and p.get("name")}
+        if allowed_param_names:
+            args = {k: v for k, v in args.items() if k in allowed_param_names}
+
     log.debug("agent-tool call: %r  effect=%s  dry_run=%s  base=%s", name, effect, dry_run, base)
 
     result_key = _cache_key(f"{base}:{name}", args)
