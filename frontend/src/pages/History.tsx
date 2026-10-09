@@ -1,22 +1,61 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { History as HistoryIcon, Trash2 } from "lucide-react";
 import { PageHeader } from "../kit/AppShell";
 import { Button, Card, Chip, EmptyState } from "../kit/primitives";
 import { ResultView } from "../components/Results";
-import { clearHistory, HistoryItem, readHistory } from "../lib/api";
+import { api, clearHistory, HistoryItem, readHistory } from "../lib/api";
 
 export default function History() {
   const [items, setItems] = useState<HistoryItem[]>(readHistory());
   const [openIdx, setOpenIdx] = useState<number | null>(null);
 
+  useEffect(() => {
+    let active = true;
+    api.getRecords(50).then((res) => {
+      if (!active || !res?.records) return;
+      const serverItems: HistoryItem[] = res.records.map((r) => ({
+        ts: new Date(r.created_at).getTime(),
+        kind: r.kind,
+        title: r.title,
+        durationSec: r.duration_sec ?? undefined,
+        result: {
+          transcript: r.transcript || undefined,
+          analysis: r.analysis || undefined,
+          analysis_type: r.kind,
+        },
+      }));
+      setItems((prev) => {
+        const combined = [...serverItems];
+        const seen = new Set(combined.map((x) => x.ts));
+        for (const it of prev) {
+          if (!seen.has(it.ts)) {
+            combined.push(it);
+            seen.add(it.ts);
+          }
+        }
+        return combined.sort((a, b) => b.ts - a.ts);
+      });
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  const handleClear = async () => {
+    try {
+      await api.clearRecords();
+    } catch {}
+    clearHistory();
+    setItems([]);
+    setOpenIdx(null);
+  };
+
   return (
     <div>
       <PageHeader
         title="History"
-        sub="Conversations processed in this browser session (stored locally — the API is stateless by design)."
+        sub="Conversations and analysis processed in this session (persisted durably with strict session isolation)."
         actions={
           items.length > 0 && (
-            <Button variant="ghost" onClick={() => { clearHistory(); setItems([]); setOpenIdx(null); }}>
+            <Button variant="ghost" onClick={handleClear}>
               <Trash2 size={14} /> Clear
             </Button>
           )

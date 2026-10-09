@@ -422,10 +422,10 @@ class VADProcessor extends AudioWorkletProcessor {
       this.port.postMessage({ type: 'volume', vol });
     }
 
-    const SPEECH_THRESHOLD = 0.012;
-    const BARGE_IN_THRESHOLD = 0.065;
-    const BARGE_IN_REQUIRED_FRAMES = 35;
-    const PAUSE_THRESHOLD_MS = 550;
+    const SPEECH_THRESHOLD = 0.015;
+    const BARGE_IN_THRESHOLD = 0.085;
+    const BARGE_IN_REQUIRED_FRAMES = 50;
+    const PAUSE_THRESHOLD_MS = 600;
 
     const outLen = Math.max(1, Math.floor(channelData.length / this.ratio));
     const pcm16 = new Int16Array(outLen);
@@ -476,7 +476,7 @@ class VADProcessor extends AudioWorkletProcessor {
       this.lastAudioTime = now;
       if (this.isSilent) {
         this.isSilent = false;
-        this.port.postMessage({ type: 'speech_started' });
+        this.port.postMessage({ type: 'speech_started', bargeIn: false });
         while (this.preBuffer.length > 0) {
           const pre = this.preBuffer.shift();
           this.port.postMessage({ type: 'audio', buffer: pre.buffer }, [pre.buffer]);
@@ -567,6 +567,8 @@ export default function VoiceAgent() {
   const isPlayingRef = useRef(false);
   const wasReadyRef = useRef(false);
   const responsePendingRef = useRef(false);
+  const responseDoneReceivedRef = useRef(false);
+  const playbackEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const watchdogTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
@@ -725,13 +727,12 @@ export default function VoiceAgent() {
     }
 
     if (type === "response.text.delta" || type === "response.audio_transcript.delta") {
-      responsePendingRef.current = false;
       closeTurn("user", userOpenIdRef, userDraftRef);
       appendTurnDelta("assistant", String(data.delta || ""), agentOpenIdRef, agentDraftRef, true);
     }
 
     if (type === "response.audio.delta") {
-      responsePendingRef.current = false;
+      // Audio delta received — keep turn active while streaming
     }
 
     if (type === "response.user_transcript.delta") {
@@ -743,6 +744,8 @@ export default function VoiceAgent() {
     }
 
     if (type === "input_audio_buffer.committed") {
+      responsePendingRef.current = true;
+      responseDoneReceivedRef.current = false;
       addTelemetryLog("audio_buffer.committed", undefined, "info");
       // Seal user turn so each spoken input creates its own distinct message box
       closeTurn("user", userOpenIdRef, userDraftRef);
@@ -754,6 +757,7 @@ export default function VoiceAgent() {
         watchdogTimerRef.current = null;
       }
       responsePendingRef.current = false;
+      responseDoneReceivedRef.current = false;
       addTelemetryLog("assistant.interrupted", "Speech barge-in triggered", "warn");
       closeTurn("assistant", agentOpenIdRef, agentDraftRef, true);
     }
@@ -763,10 +767,13 @@ export default function VoiceAgent() {
         clearTimeout(watchdogTimerRef.current);
         watchdogTimerRef.current = null;
       }
-      responsePendingRef.current = false;
+      responseDoneReceivedRef.current = true;
       addTelemetryLog("response.completed", undefined, "success");
       closeTurn("assistant", agentOpenIdRef, agentDraftRef);
-      if (!isPlayingRef.current && playbackQueueRef.current.length === 0) setAgentSpeaking(false);
+      if (!isPlayingRef.current && playbackQueueRef.current.length === 0 && activeSourcesRef.current.length === 0) {
+        responsePendingRef.current = false;
+        setAgentSpeaking(false);
+      }
     }
 
     if (type === "tool_call") {
@@ -880,6 +887,10 @@ export default function VoiceAgent() {
   const scheduleNextBuffers = () => {
     const audioCtx = playbackCtxRef.current;
     if (!audioCtx || playbackQueueRef.current.length === 0) return;
+    if (playbackEndTimerRef.current) {
+      clearTimeout(playbackEndTimerRef.current);
+      playbackEndTimerRef.current = null;
+    }
     updatePlaybackState(true);
     nextPlayTimeRef.current = Math.max(audioCtx.currentTime + 0.025, nextPlayTimeRef.current);
     while (playbackQueueRef.current.length > 0) {
@@ -895,13 +906,26 @@ export default function VoiceAgent() {
       source.onended = () => {
         activeSourcesRef.current = activeSourcesRef.current.filter((s) => s !== source);
         if (activeSourcesRef.current.length === 0 && playbackQueueRef.current.length === 0) {
-          updatePlaybackState(false);
+          if (playbackEndTimerRef.current) clearTimeout(playbackEndTimerRef.current);
+          playbackEndTimerRef.current = setTimeout(() => {
+            if (activeSourcesRef.current.length === 0 && playbackQueueRef.current.length === 0) {
+              updatePlaybackState(false);
+              if (responseDoneReceivedRef.current) {
+                responsePendingRef.current = false;
+                setAgentSpeaking(false);
+              }
+            }
+          }, 250);
         }
       };
     }
   };
 
   const stopAudioPlayback = () => {
+    if (playbackEndTimerRef.current) {
+      clearTimeout(playbackEndTimerRef.current);
+      playbackEndTimerRef.current = null;
+    }
     audioRemainderRef.current = null;
     playbackQueueRef.current = [];
     activeSourcesRef.current.forEach((s) => {
@@ -1195,30 +1219,39 @@ export default function VoiceAgent() {
         if (data.type === "speech_started") {
           lastClosedRef.current.user = { id: null, text: "", at: 0 };
           lastClosedRef.current.assistant = { id: null, text: "", at: 0 };
-          if (isPlayingRef.current) {
+          if (data.bargeIn) {
+            // Explicit user barge-in detected with high volume energy during playback
             stopAudioPlayback();
             transportRef.current?.cancel();
             closeTurn("assistant", agentOpenIdRef, agentDraftRef, true);
+            if (watchdogTimerRef.current) {
+              clearTimeout(watchdogTimerRef.current);
+              watchdogTimerRef.current = null;
+            }
+            responsePendingRef.current = false;
+            responseDoneReceivedRef.current = false;
+            closeTurn("user", userOpenIdRef, userDraftRef);
           } else {
+            // Normal speech detection while agent is NOT actively playing
+            if (isPlayingRef.current || responsePendingRef.current) {
+              // Ignore acoustic bleed or room noise while assistant is speaking
+              return;
+            }
             closeTurn("assistant", agentOpenIdRef, agentDraftRef, false);
+            closeTurn("user", userOpenIdRef, userDraftRef);
           }
-          closeTurn("user", userOpenIdRef, userDraftRef);
-          if (watchdogTimerRef.current) {
-            clearTimeout(watchdogTimerRef.current);
-            watchdogTimerRef.current = null;
-          }
-          responsePendingRef.current = false;
         }
-        if (data.type === "speech_stopped" && !responsePendingRef.current) {
+        if (data.type === "speech_stopped" && !responsePendingRef.current && !isPlayingRef.current) {
           responsePendingRef.current = true;
+          responseDoneReceivedRef.current = false;
           transportRef.current?.commitTurn();
           if (watchdogTimerRef.current) clearTimeout(watchdogTimerRef.current);
           watchdogTimerRef.current = setTimeout(() => {
             if (responsePendingRef.current) {
               responsePendingRef.current = false;
-              addTelemetryLog("turn.watchdog_reset", "Watchdog reset ready state after 6s", "info");
+              addTelemetryLog("turn.watchdog_reset", "Watchdog reset ready state after 8s", "info");
             }
-          }, 6000);
+          }, 8000);
         }
         if (data.type === "audio") {
           // Double safety gate: do not stream mic audio to server during active playback unless barging in
