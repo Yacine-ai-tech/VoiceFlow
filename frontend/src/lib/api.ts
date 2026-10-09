@@ -209,6 +209,15 @@ export const api = {
 
   deleteVoice: (voiceId: string) =>
     req<{ ok: boolean; voice_id: string }>(`/tts/voices/${encodeURIComponent(voiceId)}`, { method: "DELETE" }),
+
+  getRecords: (limit = 50) =>
+    req<{ records: Array<{ id: string; session_id: string | null; kind: string; title: string; duration_sec: number | null; transcript: any; analysis: any; metadata: any; created_at: string }>; count: number }>(`/records?limit=${limit}`),
+
+  deleteRecord: (id: string) =>
+    req<{ deleted: boolean; id: string }>(`/records/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  clearRecords: () =>
+    req<{ cleared: number }>("/records", { method: "DELETE" }),
 };
 
 export type ElevenLabsVoice = {

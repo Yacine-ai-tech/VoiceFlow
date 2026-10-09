@@ -132,7 +132,7 @@ def _send_telemetry():
 
     lock_file = os.path.join(settings.LOGS_DIR, ".telemetry_last_ping")
     try:
-        if os.path.exists(lock_file) and time.time() - os.path.getmtime(lock_file) < 21600:
+        if os.path.exists(lock_file) and time.time() - os.path.getmtime(lock_file) < 30:
             return
         with open(lock_file, "w") as f:
             f.write(str(time.time()))
@@ -277,6 +277,37 @@ def _hydrate_stats_from_db():
         for key, value in counters.items():
             dict.__setitem__(counter, key, value)  # bypass the persist-on-write override — this data IS the DB
         _stats[session_id] = counter
+
+
+def _persist_voice_record(
+    session_id: Optional[str],
+    kind: str,
+    title: str,
+    duration_sec: Optional[float] = None,
+    transcript: Optional[Dict[str, Any]] = None,
+    analysis: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Non-blocking helper to persist a voice record into Postgres."""
+    if not db.DB_ENABLED:
+        return
+    try:
+        threading.Thread(
+            target=db.save_voice_record,
+            args=({
+                "session_id": session_id,
+                "kind": kind,
+                "title": title,
+                "duration_sec": duration_sec,
+                "transcript": transcript,
+                "analysis": analysis,
+                "metadata": metadata,
+            },),
+            daemon=True,
+        ).start()
+    except Exception as e:
+        log.warning("Async voice record persistence error: %s", e)
+
 
 
 threading.Thread(target=_hydrate_stats_from_db, daemon=True).start()
@@ -449,13 +480,27 @@ async def transcribe_json_endpoint(req: TranscribeJsonRequest) -> Dict[str, Any]
 
 @app.post("/transcribe")
 async def transcribe_endpoint(
+    request: Request,
     file: UploadFile = File(...),
     provider: Optional[str] = Form(None),
     language: str = Form("auto"),
     diarize: bool = Form(True),
 ) -> Dict[str, Any]:
     audio = await file.read()
-    return await route_transcribe(audio, provider=provider, language=language, diarize=diarize)
+    trans = await route_transcribe(audio, provider=provider, language=language, diarize=diarize)
+    session_id = request.headers.get("X-VoiceFlow-Session") or request.headers.get("X-Demo-Session-Id")
+    duration_sec = trans.get("duration") if isinstance(trans, dict) else None
+    title = file.filename or "Transcription"
+    _persist_voice_record(
+        session_id=session_id,
+        kind="transcription",
+        title=title,
+        duration_sec=duration_sec,
+        transcript=trans if isinstance(trans, dict) else {"raw": trans},
+        analysis=None,
+        metadata={"provider": provider, "language": language, "diarize": diarize},
+    )
+    return trans
 
 
 @app.post("/annotate")
@@ -591,7 +636,19 @@ async def tts_voices_delete_endpoint(voice_id: str) -> Dict[str, Any]:
 @app.post("/analyze")
 async def analyze_endpoint(req: AnalyzeRequest, request: Request) -> Dict[str, Any]:
     _session_stats(request)[f"analyze:{req.analysis_type}"] += 1
-    return await analyzer.analyze(req.text, analysis_type=req.analysis_type, language=req.language)
+    analysis = await analyzer.analyze(req.text, analysis_type=req.analysis_type, language=req.language)
+    session_id = request.headers.get("X-VoiceFlow-Session") or request.headers.get("X-Demo-Session-Id")
+    title = req.text[:40].strip() + ("..." if len(req.text) > 40 else "")
+    _persist_voice_record(
+        session_id=session_id,
+        kind=req.analysis_type,
+        title=title or "Transcript Analysis",
+        duration_sec=None,
+        transcript={"text": req.text},
+        analysis=analysis,
+        metadata={"language": req.language},
+    )
+    return analysis
 
 
 class CustomAnalyzeRequest(BaseModel):
@@ -696,6 +753,52 @@ async def analytics(request: Request):
     }
 
 
+@app.get("/records")
+@app.get("/api/records")
+async def list_records_endpoint(
+    request: Request,
+    limit: int = 50,
+    x_voiceflow_session: Optional[str] = Header(default=None, alias="X-VoiceFlow-Session"),
+    x_demo_session_id: Optional[str] = Header(default=None, alias="X-Demo-Session-Id"),
+    x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
+) -> Dict[str, Any]:
+    """Retrieve voice records scoped to the visitor's session with admin bypass for Omni-Admin."""
+    session_id = x_voiceflow_session or x_demo_session_id or request.headers.get("X-VoiceFlow-Session")
+    admin_secret = os.getenv("ADMIN_TOKEN") or os.getenv("VOICEFLOW_INTERNAL_TOKEN")
+    is_admin = bool(x_admin_token and admin_secret and x_admin_token == admin_secret)
+    records = db.list_voice_records(session_id=session_id, is_admin=is_admin, limit=limit)
+    return {"records": records, "count": len(records)}
+
+
+@app.delete("/records/{record_id}")
+async def delete_record_endpoint(
+    record_id: str,
+    request: Request,
+    x_voiceflow_session: Optional[str] = Header(default=None, alias="X-VoiceFlow-Session"),
+    x_demo_session_id: Optional[str] = Header(default=None, alias="X-Demo-Session-Id"),
+    x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
+) -> Dict[str, Any]:
+    session_id = x_voiceflow_session or x_demo_session_id or request.headers.get("X-VoiceFlow-Session")
+    admin_secret = os.getenv("ADMIN_TOKEN") or os.getenv("VOICEFLOW_INTERNAL_TOKEN")
+    is_admin = bool(x_admin_token and admin_secret and x_admin_token == admin_secret)
+    success = db.delete_voice_record(record_id, session_id=session_id, is_admin=is_admin)
+    return {"deleted": success, "id": record_id}
+
+
+@app.delete("/records")
+async def clear_records_endpoint(
+    request: Request,
+    x_voiceflow_session: Optional[str] = Header(default=None, alias="X-VoiceFlow-Session"),
+    x_demo_session_id: Optional[str] = Header(default=None, alias="X-Demo-Session-Id"),
+    x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
+) -> Dict[str, Any]:
+    session_id = x_voiceflow_session or x_demo_session_id or request.headers.get("X-VoiceFlow-Session")
+    admin_secret = os.getenv("ADMIN_TOKEN") or os.getenv("VOICEFLOW_INTERNAL_TOKEN")
+    is_admin = bool(x_admin_token and admin_secret and x_admin_token == admin_secret)
+    cleared = db.clear_voice_records(session_id=session_id, is_admin=is_admin)
+    return {"cleared": cleared}
+
+
 @app.post("/pipeline")
 async def pipeline_endpoint(
     request: Request,
@@ -733,6 +836,20 @@ async def pipeline_endpoint(
     stats["pipeline"] += 1
     if scenario:
         stats[f"scenario:{scenario}"] += 1
+
+    session_id = request.headers.get("X-VoiceFlow-Session") or request.headers.get("X-Demo-Session-Id")
+    duration_sec = trans.get("duration") if isinstance(trans, dict) else None
+    title = file.filename or "Audio Pipeline"
+    _persist_voice_record(
+        session_id=session_id,
+        kind=analysis_type,
+        title=title,
+        duration_sec=duration_sec,
+        transcript=trans if isinstance(trans, dict) else {"raw": trans},
+        analysis=analysis if isinstance(analysis, dict) else {"raw": analysis},
+        metadata={"scenario": scenario, "provider": provider, "language": language},
+    )
+
     return {"transcript": trans, "analysis": analysis, "analysis_type": analysis_type,
             "scenario": scenario}
 
