@@ -74,7 +74,9 @@ export function getSessionId(): string {
 
 function withSessionHeader(init?: RequestInit): RequestInit {
   const headers = new Headers(init?.headers);
-  headers.set("X-VoiceFlow-Session", getSessionId());
+  const sid = getSessionId();
+  headers.set("X-VoiceFlow-Session", sid);
+  headers.set("X-Demo-Session-Id", sid);
   return { ...init, headers };
 }
 
