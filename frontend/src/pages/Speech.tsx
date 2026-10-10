@@ -315,7 +315,7 @@ export default function Speech() {
               <div className="space-y-3">
                 {actualProvider && (
                   <div className="flex flex-wrap items-center gap-2">
-                    <Chip tone={actualProvider === "elevenlabs" ? "ok" : actualProvider === "kokoro" ? "accent" : "default"}>
+                    <Chip tone={actualProvider === "elevenlabs" ? "ok" : actualProvider === "deepgram" ? "warn" : actualProvider === "kokoro" ? "accent" : "default"}>
                       Engine: {actualProvider.toUpperCase()}
                     </Chip>
                     {actualProvider !== ttsProvider && (

@@ -259,6 +259,30 @@ async def delete_elevenlabs_voice(voice_id: str) -> None:
         resp.raise_for_status()
 
 
+async def _generate_deepgram(text: str, voice_gender: str, voice_id: Optional[str] = None) -> Optional[bytes]:
+    api_key = getattr(settings, "DEEPGRAM_API_KEY", "") or os.getenv("DEEPGRAM_API_KEY", "")
+    if not api_key:
+        return None
+    try:
+        import httpx
+        model = voice_id or ("aura-orion-en" if voice_gender == "male" else "aura-asteria-en")
+        url = f"https://api.deepgram.com/v1/speak?model={model}"
+        headers = {
+            "Authorization": f"Token {api_key}",
+            "Content-Type": "application/json",
+        }
+        data = {"text": text}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json=data, headers=headers)
+            resp.raise_for_status()
+            audio_bytes = resp.content
+            log.info("TTS (Deepgram %s) generated: %d bytes", model, len(audio_bytes))
+            return audio_bytes
+    except Exception as e:
+        log.warning("Deepgram Aura TTS failed: %s", e)
+        return None
+
+
 async def _generate_openai(text: str, voice_gender: str) -> Optional[bytes]:
     if not settings.OPENAI_API_KEY:
         return None
@@ -429,8 +453,15 @@ async def generate_speech(
         audio = await _generate_elevenlabs(text, language, voice_gender, voice_id)
         if audio:
             return audio
+    elif p == "deepgram":
+        audio = await _generate_deepgram(text, voice_gender, voice_id=voice_id)
+        if audio:
+            return audio
     elif p == "openai":
         audio = await _generate_openai(text, voice_gender)
+        if audio:
+            return audio
+        audio = await _generate_deepgram(text, voice_gender, voice_id=voice_id)
         if audio:
             return audio
     elif p == "kokoro":
@@ -470,6 +501,13 @@ async def generate_speech(
         log.error("edge-tts not installed. Install with: pip install edge-tts")
         raise RuntimeError("edge-tts not installed")
     except Exception as e:
+        log.warning("Edge-TTS failed (%s), attempting Deepgram/Kokoro fallback", e)
+        deepgram_audio = await _generate_deepgram(text, voice_gender, voice_id=voice_id)
+        if deepgram_audio:
+            return deepgram_audio
+        kokoro_audio = await _generate_kokoro(text, language, voice_gender, voice_id=voice_id)
+        if kokoro_audio:
+            return kokoro_audio
         log.error("TTS generation failed: %s", e)
         raise
 
@@ -489,16 +527,34 @@ async def generate_speech_with_meta(
         audio = await _generate_elevenlabs(text, language, voice_gender, voice_id)
         if audio:
             return audio, "elevenlabs"
+    elif p == "deepgram":
+        audio = await _generate_deepgram(text, voice_gender, voice_id=voice_id)
+        if audio:
+            return audio, "deepgram"
     elif p == "openai":
         audio = await _generate_openai(text, voice_gender)
         if audio:
             return audio, "openai"
+        audio = await _generate_deepgram(text, voice_gender, voice_id=voice_id)
+        if audio:
+            return audio, "deepgram"
     elif p == "kokoro":
         audio = await _generate_kokoro(text, language, voice_gender, voice_id=voice_id)
         if audio:
             return audio, "kokoro"
-    audio = await generate_speech(text, language, voice_gender, rate, volume, provider="edge")
-    return audio, "edge"
+
+    try:
+        audio = await generate_speech(text, language, voice_gender, rate, volume, provider="edge")
+        return audio, "edge"
+    except Exception as e:
+        log.warning("Edge-TTS meta generation failed (%s), attempting Deepgram/Kokoro", e)
+        audio = await _generate_deepgram(text, voice_gender, voice_id=voice_id)
+        if audio:
+            return audio, "deepgram"
+        audio = await _generate_kokoro(text, language, voice_gender, voice_id=voice_id)
+        if audio:
+            return audio, "kokoro"
+        raise
 
 
 def generate_speech_sync(
