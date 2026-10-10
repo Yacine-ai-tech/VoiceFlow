@@ -934,12 +934,20 @@ def _ws_reject_reason(ws: WebSocket) -> Optional[str]:
     if not _ws_connect_limiter.allow(ip):
         return "rate_limited"
     if _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true":
-        # Browsers can't set custom headers on a WS handshake, so the token
-        # travels as a query param here — same convention already used for
-        # ?session= on this same endpoint.
-        token = ws.query_params.get("token", "")
-        expected = _os.environ.get("VOICEFLOW_INTERNAL_TOKEN", "")
-        if not hmac.compare_digest(token, expected):
+        token = (
+            ws.query_params.get("token", "")
+            or ws.headers.get("X-VoiceFlow-Internal-Token", "")
+            or ws.headers.get("X-Internal-Token", "")
+            or ws.headers.get("X-OmniIntel-Internal-Token", "")
+        )
+        expected_tokens = [
+            t for t in (
+                _os.environ.get("VOICEFLOW_INTERNAL_TOKEN"),
+                _os.environ.get("INTERNAL_TOKEN"),
+                _os.environ.get("OMNIINTEL_INTERNAL_TOKEN"),
+            ) if t
+        ]
+        if not token or not any(hmac.compare_digest(token, exp) for exp in expected_tokens):
             return "unauthorized"
     return None
 
@@ -1066,10 +1074,18 @@ async def openai_webrtc_session(request: Request):
     if _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true":
         token = (
             request.headers.get("X-VoiceFlow-Internal-Token")
+            or request.headers.get("X-Internal-Token")
+            or request.headers.get("X-OmniIntel-Internal-Token")
             or request.query_params.get("token", "")
         )
-        expected = _os.environ.get("VOICEFLOW_INTERNAL_TOKEN", "")
-        if not hmac.compare_digest(token, expected):
+        expected_tokens = [
+            t for t in (
+                _os.environ.get("VOICEFLOW_INTERNAL_TOKEN"),
+                _os.environ.get("INTERNAL_TOKEN"),
+                _os.environ.get("OMNIINTEL_INTERNAL_TOKEN"),
+            ) if t
+        ]
+        if not token or not any(hmac.compare_digest(token, exp) for exp in expected_tokens):
             raise HTTPException(status_code=403, detail="Missing or invalid X-VoiceFlow-Internal-Token")
 
     openai_realtime_key = (
@@ -1144,9 +1160,20 @@ class RealtimeToolCallRequest(BaseModel):
 @app.post("/realtime/tool-call")
 async def realtime_tool_call(req: RealtimeToolCallRequest, request: Request) -> Dict[str, Any]:
     if _os.environ.get("REQUIRE_INTERNAL_TOKEN", "false").lower() == "true":
-        token = request.headers.get("X-VoiceFlow-Internal-Token") or request.query_params.get("token", "")
-        expected = _os.environ.get("VOICEFLOW_INTERNAL_TOKEN", "")
-        if not hmac.compare_digest(token, expected):
+        token = (
+            request.headers.get("X-VoiceFlow-Internal-Token")
+            or request.headers.get("X-Internal-Token")
+            or request.headers.get("X-OmniIntel-Internal-Token")
+            or request.query_params.get("token", "")
+        )
+        expected_tokens = [
+            t for t in (
+                _os.environ.get("VOICEFLOW_INTERNAL_TOKEN"),
+                _os.environ.get("INTERNAL_TOKEN"),
+                _os.environ.get("OMNIINTEL_INTERNAL_TOKEN"),
+            ) if t
+        ]
+        if not token or not any(hmac.compare_digest(token, exp) for exp in expected_tokens):
             raise HTTPException(status_code=403, detail="Missing or invalid X-VoiceFlow-Internal-Token")
     target_url = req.agent_tools_url or request.headers.get("X-Agent-Tools-Url") or request.query_params.get("agent_tools_url")
     return await agent_tools_bridge.call_tool(req.name, req.arguments, target_url=target_url)
