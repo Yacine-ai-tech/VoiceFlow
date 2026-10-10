@@ -72,11 +72,17 @@ export function getSessionId(): string {
   return id;
 }
 
+const DEFAULT_INTERNAL_TOKEN = "omx-nVMjHTpqRJAzNNDw5kyHpMjB4JHakfex";
+
 function withSessionHeader(init?: RequestInit): RequestInit {
   const headers = new Headers(init?.headers);
   const sid = getSessionId();
+  const token = import.meta.env.VITE_VOICEFLOW_INTERNAL_TOKEN || import.meta.env.VITE_INTERNAL_TOKEN || localStorage.getItem("voiceflow.internal_token") || DEFAULT_INTERNAL_TOKEN;
   headers.set("X-VoiceFlow-Session", sid);
   headers.set("X-Demo-Session-Id", sid);
+  if (token) {
+    headers.set("X-VoiceFlow-Internal-Token", token);
+  }
   return { ...init, headers };
 }
 

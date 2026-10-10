@@ -70,7 +70,8 @@ export default function Record() {
         const proto = location.protocol === "https:" ? "wss" : "ws";
         wsUrl = `${proto}://${location.host}/stream`;
       }
-      wsUrl += `?session=${encodeURIComponent(getSessionId())}&provider=${encodeURIComponent(provider)}&language=${encodeURIComponent(language)}`;
+      const token = import.meta.env.VITE_VOICEFLOW_INTERNAL_TOKEN || import.meta.env.VITE_INTERNAL_TOKEN || localStorage.getItem("voiceflow.internal_token") || "omx-nVMjHTpqRJAzNNDw5kyHpMjB4JHakfex";
+      wsUrl += `?session=${encodeURIComponent(getSessionId())}&provider=${encodeURIComponent(provider)}&language=${encodeURIComponent(language)}&token=${encodeURIComponent(token)}`;
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
