@@ -103,8 +103,10 @@ const MAX_AUTO_RECONNECT_ATTEMPTS = 6;
 const CLOSED_TURN_MERGE_WINDOW_MS = 3000;
 const MIN_SPEECH_CONFIRM_MS = 250;
 
+const DEFAULT_INTERNAL_TOKEN = "omx-nVMjHTpqRJAzNNDw5kyHpMjB4JHakfex";
+
 function authToken() {
-  return import.meta.env.VITE_VOICEFLOW_INTERNAL_TOKEN || localStorage.getItem(TOKEN_KEY) || "";
+  return import.meta.env.VITE_VOICEFLOW_INTERNAL_TOKEN || import.meta.env.VITE_INTERNAL_TOKEN || localStorage.getItem(TOKEN_KEY) || DEFAULT_INTERNAL_TOKEN;
 }
 
 function withAuth(path: string) {
