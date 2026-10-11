@@ -35,6 +35,7 @@ from typing import Any, Dict, Optional
 
 _os = os
 
+import aiohttp
 import httpx
 from fastapi import (
     FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect,
@@ -47,7 +48,7 @@ from pydantic import BaseModel
 from core import db
 from core.config import settings
 from core.logger import get_logger
-from core.security import RateLimiter, client_ip, is_safe_public_url
+from core.security import PinnedResolver, RateLimiter, client_ip, resolve_public_url_addresses
 from services import agent_tools_bridge, relay_formatting, scenarios
 from services.meeting_analyzer import MeetingAnalyzer
 from services.transcription_router import transcribe as route_transcribe
@@ -704,12 +705,12 @@ async def integrations_relay(req: RelayRequest, request: Request) -> Dict[str, A
     downstream service."""
     if not req.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="invalid_url")
-    if not is_safe_public_url(req.url):
+    resolved = resolve_public_url_addresses(req.url)
+    if not resolved:
         # Blocks loopback/private/link-local/reserved/multicast destinations —
-        # this server fetches whatever URL the caller supplies on their behalf,
-        # which makes an unrestricted destination a server-side-request-forgery
-        # vector (internal network probing, cloud metadata endpoints, etc.).
+        # the same addresses are pinned into the outbound resolver below.
         raise HTTPException(status_code=400, detail="url_not_allowed: destination resolves to a non-public address")
+    hostname, _, addresses = resolved
     target = relay_formatting.resolve_target(req.url, req.target)
     body = relay_formatting.format_for_target(target, req.payload)
     body_bytes = json.dumps(body).encode()
@@ -717,15 +718,30 @@ async def integrations_relay(req: RelayRequest, request: Request) -> Dict[str, A
     if req.secret:
         header_name = (req.signature_header or "X-Signature-256").strip() or "X-Signature-256"
         headers[header_name] = relay_formatting.sign_body(body_bytes, req.secret)
-    import httpx
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(req.url, content=body_bytes, headers=headers)
+        connector = aiohttp.TCPConnector(
+            resolver=PinnedResolver(hostname, addresses),
+            use_dns_cache=False,
+        )
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
+            trust_env=False,
+        ) as client:
+            async with client.post(
+                req.url,
+                data=body_bytes,
+                headers=headers,
+                allow_redirects=False,
+            ) as resp:
+                status_code = resp.status
+                response_text = (await resp.content.read(501)).decode("utf-8", errors="replace")[:500]
         _session_stats(request)["relay"] += 1
-        return {"ok": resp.status_code < 400, "status": resp.status_code,
-                "response": (resp.text or "")[:500], "target": target,
+        return {"ok": status_code < 400, "status": status_code,
+                "response": response_text, "target": target,
                 "signed": bool(req.secret)}
-    except Exception as e:
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as e:
         detail = str(e) or type(e).__name__
         raise HTTPException(status_code=502, detail=f"relay_failed: {detail}")
 

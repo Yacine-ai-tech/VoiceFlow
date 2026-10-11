@@ -4,6 +4,8 @@ import httpx
 import websockets
 import json
 import asyncio
+from io import BytesIO
+import wave
 from fastapi.testclient import TestClient
 from api import app
 
@@ -24,8 +26,13 @@ async def test_e2e_tts_provider():
 
 @pytest.mark.asyncio
 async def test_e2e_transcribe_upload():
-    # Create dummy wav file in memory
-    dummy_audio = b"RIFF\\x24\\x00\\x00\\x00WAVEfmt \\x10\\x00\\x00\\x00\\x01\\x00\\x01\\x00D\\xac\\x00\\x00\\x88X\\x01\\x00\\x02\\x00\\x10\\x00data\\x00\\x00\\x00\\x00"
+    audio = BytesIO()
+    with wave.open(audio, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(b"\0\0" * 8000)
+    dummy_audio = audio.getvalue()
     files = {"file": ("test.wav", dummy_audio, "audio/wav")}
     data = {"provider": "LOCAL_WHISPERX", "language": "en", "diarize": "false"}
     
