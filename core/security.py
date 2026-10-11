@@ -24,8 +24,10 @@ import ipaddress
 import socket
 import time
 from collections import defaultdict, deque
-from typing import Deque, Dict
+from typing import Deque, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+
+from aiohttp.abc import AbstractResolver
 
 
 def _is_blocked_ip(ip_str: str) -> bool:
@@ -33,41 +35,79 @@ def _is_blocked_ip(ip_str: str) -> bool:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
         return True  # unparseable — refuse rather than guess
-    return (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    )
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return not ip.is_global
+
+
+def resolve_public_url_addresses(
+    url: str,
+) -> Optional[Tuple[str, int, List[Tuple[int, str, int]]]]:
+    """Resolve a public webhook once and return the addresses safe to pin."""
+    try:
+        parsed = urlparse(url)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return None
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except Exception:
+        return None
+    if not infos:
+        return None
+
+    addresses = []
+    for info in infos:
+        family, _, protocol, _, sockaddr = info
+        if family not in (socket.AF_INET, socket.AF_INET6):
+            continue
+        address = sockaddr[0]
+        if _is_blocked_ip(address):
+            return None
+        entry = (family, address, protocol)
+        if entry not in addresses:
+            addresses.append(entry)
+    return (host, port, addresses) if addresses else None
 
 
 def is_safe_public_url(url: str) -> bool:
-    """True only if `url` is http(s) and every address its host resolves to
-    is a real public address. Used to gate /integrations/relay — a
-    caller-supplied destination the server fetches on the caller's behalf,
-    which is exactly the shape of an SSRF vector without this check."""
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return False
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        return False
+    """True only when every address resolved for a webhook is globally routable."""
+    return resolve_public_url_addresses(url) is not None
 
-    host = parsed.hostname
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except Exception:
-        return False  # can't resolve — refuse rather than guess
-    if not infos:
-        return False
 
-    for info in infos:
-        addr = info[4][0]
-        if _is_blocked_ip(addr):
-            return False
-    return True
+class PinnedResolver(AbstractResolver):
+    """Return only the public addresses validated for this relay request."""
+
+    def __init__(self, hostname: str, addresses: List[Tuple[int, str, int]]):
+        self.hostname = hostname.rstrip(".").casefold()
+        self.addresses = addresses
+
+    async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET):
+        if host.rstrip(".").casefold() != self.hostname:
+            raise OSError("Unvalidated hostname requested")
+        results = [
+            {
+                "hostname": host,
+                "host": address,
+                "port": port,
+                "family": address_family,
+                "proto": protocol,
+                "flags": 0,
+            }
+            for address_family, address, protocol in self.addresses
+            if family in (socket.AF_UNSPEC, address_family)
+        ]
+        if not results:
+            raise OSError("No validated address for requested address family")
+        return results
+
+    async def close(self):
+        return None
 
 
 class RateLimiter:
