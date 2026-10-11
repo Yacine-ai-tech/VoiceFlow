@@ -1704,9 +1704,8 @@ async def ws_realtime(ws: WebSocket):
                 )
                 if is_quota and key_idx + 1 < len(gemini_keys):
                     log.warning(
-                        "Gemini Live quota or 1011 on key %d (%s...). Rotating to next available key...",
-                        key_idx,
-                        current_gemini_key[:8] if current_gemini_key else "",
+                        "Gemini Live quota or 1011 on configured key slot %d. Rotating to next available key...",
+                        key_idx + 1,
                     )
                     continue
                 else:
