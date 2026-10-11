@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator
+from typing import Any, Dict, Iterator, List, Optional
 
 from core.config import settings
 from core.logger import get_logger
@@ -217,7 +217,6 @@ def list_voice_records(
         return []
     try:
         ensure_schema()
-        clauses = []
         params: List[Any] = []
         if is_admin or session_id == "*":
             where_sql = ""
@@ -297,4 +296,3 @@ def clear_voice_records(session_id: Optional[str] = None, is_admin: bool = False
     except Exception as e:
         log.warning("clear_voice_records failed: %s", e)
         return 0
-
