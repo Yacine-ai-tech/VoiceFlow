@@ -52,3 +52,31 @@ def test_openai_realtime_ignores_openai_proxy_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "proxy-key")
     assert settings.REALTIME_API_KEY == ""
     assert settings.OPENAI_REALTIME_API_KEY == ""
+
+
+@pytest.mark.unit
+def test_gemini_key_pool_excludes_openai_realtime_key(monkeypatch):
+    from core.config import settings
+    monkeypatch.setattr(settings, "REALTIME_PROVIDER", "openai")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-one")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "gemini-two")
+    monkeypatch.setenv("GEMINI_API_KEY_3", "gemini-three")
+    monkeypatch.setenv("GEMINI_API_KEY_4", "gemini-four")
+    monkeypatch.setenv("REALTIME_API_KEY", "openai-realtime")
+
+    assert settings.GEMINI_API_KEYS == [
+        "gemini-one", "gemini-two", "gemini-three", "gemini-four"
+    ]
+
+
+@pytest.mark.unit
+def test_gemini_key_pool_includes_realtime_key_only_for_gemini(monkeypatch):
+    from core.config import settings
+    monkeypatch.setattr(settings, "REALTIME_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-one")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "")
+    monkeypatch.setenv("GEMINI_API_KEY_3", "")
+    monkeypatch.setenv("GEMINI_API_KEY_4", "")
+    monkeypatch.setenv("REALTIME_API_KEY", "gemini-realtime")
+
+    assert settings.GEMINI_API_KEYS == ["gemini-one", "gemini-realtime"]
