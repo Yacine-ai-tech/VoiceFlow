@@ -15,6 +15,8 @@
     <link rel="dns-prefetch" href="https://fonts.gstatic.com" />
     <link rel="preconnect" href="https://gateway.ysiddo-ai-projects.app" crossorigin />
     <link rel="dns-prefetch" href="https://gateway.ysiddo-ai-projects.app" />
+    <!-- Anonymous usage analytics respects browser DNT and Global Privacy Control signals. -->
+    <script defer src="https://gateway.ysiddo-ai-projects.app/track.js" data-service="VoiceFlow" data-source="demo"></script>
     <script>
       (function() {
         if (window.location.hostname.endsWith('.vercel.app')) {
@@ -47,11 +49,5 @@
   
     
 
-  <!-- Analytics pixel placeholder — disabled by default. Point the src at your own
-       analytics endpoint and uncomment to enable; the localhost:8000 example below
-       was firing (and failing) on every page load in production, since a dev-only
-       backend port isn't a real analytics endpoint for anyone who deploys this.
-  <img src="http://localhost:8000/pixel/voiceflow" width="1" height="1" style="display:none" alt="" aria-hidden="true">
-  -->
 </body>
 </html>
