@@ -794,6 +794,8 @@ async def list_records_endpoint(
     effective_session = session_id or x_voiceflow_session or x_demo_session_id or request.query_params.get("session_id") or request.headers.get("X-VoiceFlow-Session")
     admin_secret = os.getenv("ADMIN_TOKEN")
     is_admin = bool(x_admin_token and admin_secret and x_admin_token == admin_secret)
+    if effective_session == "*" and not is_admin:
+        raise HTTPException(status_code=403, detail="admin_required_for_unscoped_access")
     records = db.list_voice_records(session_id=effective_session, is_admin=is_admin, limit=limit)
     return {"records": records, "count": len(records)}
 
@@ -810,6 +812,8 @@ async def delete_record_endpoint(
     effective_session = session_id or x_voiceflow_session or x_demo_session_id or request.query_params.get("session_id") or request.headers.get("X-VoiceFlow-Session")
     admin_secret = os.getenv("ADMIN_TOKEN")
     is_admin = bool(x_admin_token and admin_secret and x_admin_token == admin_secret)
+    if effective_session == "*" and not is_admin:
+        raise HTTPException(status_code=403, detail="admin_required_for_unscoped_access")
     success = db.delete_voice_record(record_id, session_id=effective_session, is_admin=is_admin)
     return {"deleted": success, "id": record_id}
 
@@ -825,6 +829,8 @@ async def clear_records_endpoint(
     effective_session = session_id or x_voiceflow_session or x_demo_session_id or request.query_params.get("session_id") or request.headers.get("X-VoiceFlow-Session")
     admin_secret = os.getenv("ADMIN_TOKEN")
     is_admin = bool(x_admin_token and admin_secret and x_admin_token == admin_secret)
+    if effective_session == "*" and not is_admin:
+        raise HTTPException(status_code=403, detail="admin_required_for_unscoped_access")
     cleared = db.clear_voice_records(session_id=effective_session, is_admin=is_admin)
     return {"cleared": cleared}
 

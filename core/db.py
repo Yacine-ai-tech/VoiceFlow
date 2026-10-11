@@ -209,7 +209,7 @@ def list_voice_records(
 ) -> List[Dict[str, Any]]:
     """List voice records with session isolation.
     
-    - Admin or session_id='*': returns all records.
+    - Admin: returns all records.
     - session_id provided: returns records for that session OR initial seed records (NULL).
     - Anonymous (no session): returns ONLY seed records (NULL) — never leaks other users' records.
     """
@@ -218,7 +218,7 @@ def list_voice_records(
     try:
         ensure_schema()
         params: List[Any] = []
-        if is_admin or session_id == "*":
+        if is_admin:
             where_sql = ""
         elif session_id:
             where_sql = " WHERE (session_id = %s OR kind = 'seed' OR (metadata IS NOT NULL AND metadata->>'is_seed' = 'true'))"
@@ -258,7 +258,7 @@ def delete_voice_record(record_id: str, session_id: Optional[str] = None, is_adm
         ensure_schema()
         params: List[Any] = [record_id]
         where = "WHERE id = %s"
-        if not is_admin and session_id != "*":
+        if not is_admin:
             if session_id:
                 where += " AND (session_id = %s OR session_id IS NULL)"
                 params.append(session_id)
@@ -281,7 +281,7 @@ def clear_voice_records(session_id: Optional[str] = None, is_admin: bool = False
     try:
         ensure_schema()
         params: List[Any] = []
-        if is_admin or session_id == "*":
+        if is_admin:
             where = ""
         elif session_id:
             where = "WHERE session_id = %s"

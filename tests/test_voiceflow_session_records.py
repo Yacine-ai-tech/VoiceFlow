@@ -1,6 +1,7 @@
 """Tests for VoiceFlow session isolation and records scoping."""
 import pytest
 from core.db import list_voice_records
+from fastapi.testclient import TestClient
 
 
 def test_voiceflow_records_session_scoping_in_memory():
@@ -36,3 +37,29 @@ def test_voiceflow_records_session_scoping_in_memory():
     # Admin sees all 3
     admin = filter_records(is_admin=True)
     assert len(admin) == 3
+
+
+def test_record_wildcard_requires_admin(monkeypatch):
+    from api import app
+
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-test-token")
+    client = TestClient(app)
+    responses = [
+        client.get("/records?session_id=*"),
+        client.delete("/records?session_id=*"),
+        client.delete("/records/record-id?session_id=*"),
+    ]
+
+    assert [response.status_code for response in responses] == [403, 403, 403]
+
+
+def test_admin_can_use_record_wildcard(monkeypatch):
+    from api import app, db
+
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-test-token")
+    monkeypatch.setattr(db, "list_voice_records", lambda **kwargs: [])
+    response = TestClient(app).get(
+        "/records?session_id=*", headers={"X-Admin-Token": "admin-test-token"}
+    )
+
+    assert response.status_code == 200
