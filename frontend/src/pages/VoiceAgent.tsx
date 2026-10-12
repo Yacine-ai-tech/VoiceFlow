@@ -163,7 +163,6 @@ class GeminiWebSocketTransport implements RealtimeTransport {
     const params = new URLSearchParams();
     if (this.resumeHandle) params.set("resume", this.resumeHandle);
     if (this.cfg.voice) params.set("voice", this.cfg.voice);
-    if (this.cfg.agent_tools_url) params.set("agent_tools_url", this.cfg.agent_tools_url);
     const qs = params.toString() ? `?${params.toString()}` : "";
     const targetPath = this.customWsPath || this.cfg.gemini_ws_path || "/realtime/gemini";
     this.ws = new WebSocket(WS_BASE + targetPath + qs);
@@ -343,11 +342,10 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
     audioTracks.forEach((t) => { t.enabled = false; });
     try {
       const headers: HeadersInit = { "Content-Type": "application/json", "X-VoiceFlow-Session": getSessionId() };
-      if (this.cfg.agent_tools_url) headers["X-Agent-Tools-Url"] = this.cfg.agent_tools_url;
       const res = await fetch(BASE + withAuth("/realtime/tool-call"), {
         method: "POST",
         headers,
-        body: JSON.stringify({ name, arguments: args, agent_tools_url: this.cfg.agent_tools_url }),
+        body: JSON.stringify({ name, arguments: args }),
       });
       const result = await res.json();
       this.cb.onEvent({ type: "tool_result", name, result });
@@ -525,10 +523,6 @@ export default function VoiceAgent() {
   const [selectedVoice, setSelectedVoice] = useState<string>(
     () => localStorage.getItem("voiceflow.selected_voice") || localStorage.getItem("voiceflow.gemini_voice") || "Zephyr"
   );
-  const [agentToolsUrl, setAgentToolsUrl] = useState<string>(
-    () => localStorage.getItem("voiceflow.agent_tools_url") || ""
-  );
-  const [customAgentInput, setCustomAgentInput] = useState(agentToolsUrl);
   const [showAgentModal, setShowAgentModal] = useState(false);
   const [testingAgent, setTestingAgent] = useState(false);
   const [agentTestResult, setAgentTestResult] = useState<{ status: string; count?: number; message?: string; error?: string; url?: string } | null>(null);
@@ -976,7 +970,7 @@ export default function VoiceAgent() {
     reconnectTimerRef.current = setTimeout(() => connect(false), Math.min(1000 * 2 ** attempt, 8000));
   };
 
-  const connect = async (reset = false, overrideVoice?: string, overrideAgentUrl?: string, overrideProvider?: string) => {
+  const connect = async (reset = false, overrideVoice?: string, overrideProvider?: string) => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
@@ -999,9 +993,7 @@ export default function VoiceAgent() {
     addTelemetryLog("transport.connecting", "Negotiating realtime session", "info");
     try {
       const activeProvider = overrideProvider !== undefined ? overrideProvider : selectedProvider;
-      const activeAgent = (overrideAgentUrl !== undefined ? overrideAgentUrl : agentToolsUrl).trim();
       const params = new URLSearchParams();
-      if (activeAgent) params.set("agent_tools_url", activeAgent);
       if (activeProvider) params.set("provider", activeProvider === "openai_webrtc" ? "openai" : activeProvider);
       const qs = params.toString() ? `?${params.toString()}` : "";
       const cfg = await fetch(BASE + withAuth("/realtime/config" + qs), { headers: { "X-VoiceFlow-Session": getSessionId() } }).then((r) => r.json());
@@ -1010,7 +1002,7 @@ export default function VoiceAgent() {
         ...cfg,
         provider: activeProvider,
         voice: voiceToUse,
-        agent_tools_url: activeAgent || cfg.agent_tools_url || "",
+        agent_tools_url: cfg.agent_tools_url || "",
       };
       cfgRef.current = cfgWithVoice;
       transportRef.current?.close();
@@ -1059,7 +1051,7 @@ export default function VoiceAgent() {
     setSelectedVoice(defaultVoice);
     localStorage.setItem("voiceflow.selected_voice", defaultVoice);
     if (isRecording || state === "ready" || state === "connecting" || state === "provider_connecting") {
-      connect(false, defaultVoice, undefined, newProvider);
+      connect(false, defaultVoice, newProvider);
     } else if (cfgRef.current) {
       cfgRef.current = {
         ...cfgRef.current,
@@ -1082,41 +1074,11 @@ export default function VoiceAgent() {
     }
   };
 
-  const handleSaveAgentUrl = (newUrl: string) => {
-    const trimmed = newUrl.trim();
-    setAgentToolsUrl(trimmed);
-    localStorage.setItem("voiceflow.agent_tools_url", trimmed);
-    setShowAgentModal(false);
-    if (isRecording || state === "ready" || state === "connecting" || state === "provider_connecting") {
-      connect(false, undefined, trimmed);
-    } else if (cfgRef.current) {
-      cfgRef.current = {
-        ...cfgRef.current,
-        agent_tools_url: trimmed,
-      };
-    }
-  };
-
-  const handleResetAgentUrl = () => {
-    setAgentToolsUrl("");
-    setCustomAgentInput("");
-    localStorage.removeItem("voiceflow.agent_tools_url");
-    setShowAgentModal(false);
-    if (isRecording || state === "ready" || state === "connecting" || state === "provider_connecting") {
-      connect(false, undefined, "");
-    } else if (cfgRef.current) {
-      cfgRef.current = {
-        ...cfgRef.current,
-        agent_tools_url: "",
-      };
-    }
-  };
-
-  const testAgentEndpoint = async (urlToTest: string) => {
+  const testAgentEndpoint = async () => {
     setTestingAgent(true);
     setAgentTestResult(null);
     try {
-      const res = await fetch(BASE + withAuth(`/api/agent-tools/test?url=${encodeURIComponent(urlToTest.trim())}`));
+      const res = await fetch(BASE + withAuth("/api/agent-tools/test"));
       const data = await res.json();
       setAgentTestResult(data);
     } catch (err: any) {
@@ -1393,17 +1355,16 @@ export default function VoiceAgent() {
                     <button
                       type="button"
                       onClick={() => {
-                        setCustomAgentInput(agentToolsUrl);
                         setAgentTestResult(null);
                         setShowAgentModal(true);
                       }}
                       className="flex items-center gap-1.5 rounded bg-surface-2 hover:bg-surface px-2 py-0.5 text-[11px] font-medium text-body border border-line transition-colors ml-1"
                       title="Configure external agent tools endpoint"
                     >
-                      <Wrench size={11} className={agentToolsUrl ? "text-[var(--accent)]" : "text-muted"} />
+                      <Wrench size={11} className="text-muted" />
                       <span className="hidden sm:inline text-muted">Agent:</span>
                       <span className="truncate max-w-[110px]">
-                        {agentToolsUrl ? "Custom" : cfgRef.current?.tools_cached ? `${cfgRef.current.tools_cached} tools` : "Default"}
+                        {cfgRef.current?.tools_cached ? `${cfgRef.current.tools_cached} tools` : "Default"}
                       </span>
                     </button>
                   </div>
@@ -1767,7 +1728,7 @@ export default function VoiceAgent() {
         </div>
       )}
 
-      {/* Dynamic Agent Tools Bridge Modal */}
+      {/* Agent Tools Bridge Modal */}
       {showAgentModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="w-full max-w-lg rounded-2xl bg-surface border border-line shadow-2xl p-5 sm:p-6 text-body space-y-4">
@@ -1778,7 +1739,7 @@ export default function VoiceAgent() {
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-body">Agent Tools Bridge</h3>
-                  <p className="text-xs text-muted">Dynamically connect any external agent service</p>
+                  <p className="text-xs text-muted">Configured by the VoiceFlow operator</p>
                 </div>
               </div>
               <button
@@ -1791,35 +1752,25 @@ export default function VoiceAgent() {
             </div>
 
             <p className="text-xs text-muted leading-relaxed">
-              VoiceFlow is completely agent-agnostic. Point this session to any service implementing the discovery contract (<code>/api/tools</code>). Its tools, resources, and actions will be dynamically exposed to the live voice agent.
+              For security, browser sessions cannot choose an Agent Tools destination. VoiceFlow connects only to its operator-configured service, preventing service credentials from being sent to an untrusted URL.
             </p>
 
-            <div className="space-y-2">
-              <label className="text-[11px] font-semibold uppercase tracking-wider text-muted block">
-                Agent Service Base URL
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="url"
-                  value={customAgentInput}
-                  onChange={(e) => setCustomAgentInput(e.target.value)}
-                  placeholder={cfgRef.current?.agent_tools_url || "https://api-agentkit.ysiddo-ai-projects.app"}
-                  className="flex-1 rounded-xl bg-surface-2 px-3 py-2 text-xs font-mono text-body border border-line outline-none focus:border-[var(--accent)]"
-                />
-                <Button
-                  variant="secondary"
-                  onClick={() => testAgentEndpoint(customAgentInput || cfgRef.current?.agent_tools_url || "")}
-                  disabled={testingAgent}
-                  className="text-xs px-3 py-2 flex items-center gap-1.5 shrink-0"
-                >
-                  <RefreshCw size={12} className={testingAgent ? "animate-spin" : ""} />
-                  <span>Test</span>
-                </Button>
+            <div className="flex items-center justify-between gap-3 rounded-xl bg-surface-2 p-3">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-muted">Configured service</div>
+                <code className="block truncate font-mono text-xs text-body">
+                  {cfgRef.current?.agent_tools_url || "No Agent Tools service configured"}
+                </code>
               </div>
-              <div className="text-[10px] text-dim flex justify-between">
-                <span>Default: <code className="font-mono">{cfgRef.current?.agent_tools_url || "Default server agent"}</code></span>
-                <span>Active: <code className="font-mono">{agentToolsUrl || "Default"}</code></span>
-              </div>
+              <Button
+                variant="secondary"
+                onClick={testAgentEndpoint}
+                disabled={testingAgent || !cfgRef.current?.agent_tools_url}
+                className="text-xs px-3 py-2 flex items-center gap-1.5 shrink-0"
+              >
+                <RefreshCw size={12} className={testingAgent ? "animate-spin" : ""} />
+                <span>Test</span>
+              </Button>
             </div>
 
             {/* Test Results Output */}
@@ -1846,30 +1797,14 @@ export default function VoiceAgent() {
               </div>
             )}
 
-            <div className="flex items-center justify-between pt-2 border-t border-line">
+            <div className="flex justify-end pt-2 border-t border-line">
               <Button
-                variant="ghost"
-                onClick={handleResetAgentUrl}
-                className="text-xs text-muted hover:text-bad py-1.5 px-3"
+                variant="secondary"
+                onClick={() => setShowAgentModal(false)}
+                className="text-xs py-1.5 px-3"
               >
-                Reset to Default
+                Close
               </Button>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="secondary"
-                  onClick={() => setShowAgentModal(false)}
-                  className="text-xs py-1.5 px-3"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={() => handleSaveAgentUrl(customAgentInput)}
-                  className="text-xs py-1.5 px-4 font-semibold shadow-sm"
-                >
-                  Save & Connect
-                </Button>
-              </div>
             </div>
           </div>
         </div>
