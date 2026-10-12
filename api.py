@@ -1046,11 +1046,18 @@ async def ws_stream(ws: WebSocket):
         log.warning("stream error: %s", e)
 
 
+def _configured_agent_tools_url(candidate: Optional[str] = None) -> str:
+    configured = (settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    requested = (candidate or "").strip().rstrip("/")
+    if requested and requested != configured:
+        raise HTTPException(status_code=400, detail="custom_agent_tools_url_not_allowed")
+    return configured
+
+
 @app.get("/realtime/config")
 async def realtime_config(request: Request) -> Dict[str, Any]:
     provider = getattr(settings, "REALTIME_PROVIDER", "openai").lower()
-    custom_url = request.query_params.get("agent_tools_url")
-    active_url = (custom_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    active_url = _configured_agent_tools_url(request.query_params.get("agent_tools_url"))
     tools = agent_tools_bridge.cached_tools_snapshot(active_url)
     openai_key = (
         getattr(settings, "OPENAI_REALTIME_API_KEY", "")
@@ -1073,8 +1080,8 @@ async def realtime_config(request: Request) -> Dict[str, Any]:
 
 @app.get("/api/agent-tools/test")
 async def test_agent_tools(request: Request) -> Dict[str, Any]:
-    """Test connection to an agent tools service and return discovered tools."""
-    url = (request.query_params.get("url") or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    """Test the operator-configured agent tools service."""
+    url = _configured_agent_tools_url(request.query_params.get("url"))
     if not url:
         return {"status": "unconfigured", "tools": [], "message": "No agent tools URL configured."}
     try:
@@ -1122,8 +1129,9 @@ async def openai_webrtc_session(request: Request):
     if not sdp.strip():
         raise HTTPException(status_code=400, detail="SDP offer required")
 
-    custom_url = request.headers.get("X-Agent-Tools-Url") or request.query_params.get("agent_tools_url")
-    active_url = (custom_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
+    active_url = _configured_agent_tools_url(
+        request.headers.get("X-Agent-Tools-Url") or request.query_params.get("agent_tools_url")
+    )
 
     model = _os.getenv("OPENAI_REALTIME_MODEL") or getattr(settings, "OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview")
     voice = request.query_params.get("voice") or _os.getenv("OPENAI_REALTIME_VOICE") or getattr(settings, "OPENAI_REALTIME_VOICE", "alloy")
@@ -1197,7 +1205,9 @@ async def realtime_tool_call(req: RealtimeToolCallRequest, request: Request) -> 
         ]
         if not token or not any(hmac.compare_digest(token, exp) for exp in expected_tokens):
             raise HTTPException(status_code=403, detail="Missing or invalid X-VoiceFlow-Internal-Token")
-    target_url = req.agent_tools_url or request.headers.get("X-Agent-Tools-Url") or request.query_params.get("agent_tools_url")
+    target_url = _configured_agent_tools_url(
+        req.agent_tools_url or request.headers.get("X-Agent-Tools-Url") or request.query_params.get("agent_tools_url")
+    )
     return await agent_tools_bridge.call_tool(req.name, req.arguments, target_url=target_url)
 
 
@@ -1217,12 +1227,18 @@ async def ws_realtime(ws: WebSocket):
       - OpenAI: 24kHz PCM 16-bit input/output (binary frames or json-base64 buffer append).
       - Gemini: 16kHz PCM 16-bit input, 24kHz output (server downsamples input).
 
-    External tools: if AGENT_TOOLS_URL is set (or passed via ?agent_tools_url=),
-    the model on either provider is given whatever tools that service exposes.
+    External tools: if AGENT_TOOLS_URL is set, the model is given the tools
+    exposed by that operator-configured service. Caller-supplied destinations
+    are rejected so the service credential is never forwarded to an arbitrary URL.
     """
     reason = _ws_reject_reason(ws)
     if reason:
         await ws.close(code=4429 if reason == "rate_limited" else 4403, reason=reason)
+        return
+    try:
+        _agent_tools_url = _configured_agent_tools_url(ws.query_params.get("agent_tools_url"))
+    except HTTPException as exc:
+        await ws.close(code=1008, reason=str(exc.detail))
         return
     await ws.accept()
     trace = _RealtimeTrace(ws)
@@ -1312,9 +1328,6 @@ async def ws_realtime(ws: WebSocket):
         # turns completed cleanly in direct testing against production, versus 0 of
         # several dozen on the prior model.
         GEMINI_LIVE_MODEL = _os.getenv("GEMINI_LIVE_MODEL", "models/gemini-2.5-flash-native-audio-preview-09-2025")
-
-        _custom_agent_url = ws.query_params.get("agent_tools_url")
-        _agent_tools_url = (_custom_agent_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
 
         try:
             if _agent_tools_url:
@@ -1739,9 +1752,6 @@ async def ws_realtime(ws: WebSocket):
         url = f"wss://api.openai.com/v1/realtime?model={model}"
         headers = [("Authorization", f"Bearer {openai_key}"), ("OpenAI-Beta", "realtime=v1")]
         model_name = f"OpenAI Realtime ({model})"
-
-        _custom_agent_url = ws.query_params.get("agent_tools_url")
-        _agent_tools_url = (_custom_agent_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
 
         try:
             if _agent_tools_url:
