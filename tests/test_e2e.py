@@ -7,6 +7,7 @@ import asyncio
 from io import BytesIO
 import wave
 from fastapi.testclient import TestClient
+import api
 from api import app
 
 client = TestClient(app)
@@ -14,15 +15,20 @@ TOKEN = os.getenv("VOICEFLOW_INTERNAL_TOKEN", "")
 HEADERS = {"X-VoiceFlow-Internal-Token": TOKEN}
 
 @pytest.mark.asyncio
-async def test_e2e_tts_provider():
-    # Test TTS endpoint
+async def test_e2e_tts_provider(monkeypatch):
+    async def fake_generate_speech_with_meta(*args, **kwargs):
+        return b"test audio", "edge"
+
+    monkeypatch.setattr(api, "generate_speech_with_meta", fake_generate_speech_with_meta)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.post(
             "/tts", 
             json={"text": "Hello world", "language": "en", "provider": "edge", "voice_gender": "female"},
             headers=HEADERS
         )
-        assert response.status_code in (200, 501) # 501 if edge-tts not installed
+        assert response.status_code == 200
+        assert response.content == b"test audio"
+        assert response.headers["X-VoiceFlow-TTS-Provider"] == "edge"
 
 @pytest.mark.asyncio
 async def test_e2e_transcribe_upload():
