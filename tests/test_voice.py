@@ -13,11 +13,15 @@ def test_voice_service_imports_without_loading_models():
     assert asyncio.iscoroutinefunction(vs.detect_language)
 
 
-def test_whisperx_service_stub_safe():
+def test_whisperx_service_stub_safe(monkeypatch):
+    import services.whisperx_service as service
+
+    monkeypatch.setattr(service, "_WHISPERX", False)
+    monkeypatch.setattr(service, "_FASTER_WHISPER", False)
     from services.whisperx_service import WhisperXService
     svc = WhisperXService()
     out = svc.transcribe(b"not-real-audio")
-    assert isinstance(out, dict) and "method" in out  # stub or real, never raises
+    assert out == {"text": "", "method": "stub", "error": "whisper_not_installed"}
 
 
 def test_transcription_router_providers():
