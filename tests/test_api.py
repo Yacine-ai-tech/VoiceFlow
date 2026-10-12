@@ -1,8 +1,10 @@
 """VoiceFlow API endpoint tests (no network: only validation + routing paths)."""
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -81,3 +83,88 @@ def test_get_requests_bypass_token_gate_even_when_auth_enabled(monkeypatch):
     monkeypatch.setenv("VOICEFLOW_INTERNAL_TOKEN", "test-secret-token")
     r = _client().get("/scenarios")
     assert r.status_code == 200
+
+
+def test_agent_tools_test_rejects_caller_controlled_destination(monkeypatch):
+    import api
+
+    monkeypatch.setenv("REQUIRE_INTERNAL_TOKEN", "false")
+    monkeypatch.setenv("AGENT_TOOLS_URL", "https://agentkit.example")
+    discover = AsyncMock()
+    monkeypatch.setattr(api.agent_tools_bridge, "discover_tools", discover)
+
+    response = _client().get("/api/agent-tools/test?url=https://attacker.example")
+
+    assert response.status_code == 400
+    assert discover.await_count == 0
+
+
+def test_agent_tools_test_uses_only_configured_destination(monkeypatch):
+    import api
+
+    monkeypatch.setenv("REQUIRE_INTERNAL_TOKEN", "false")
+    monkeypatch.setenv("AGENT_TOOLS_URL", "https://agentkit.example")
+    discover = AsyncMock(return_value=[{"name": "status"}])
+    monkeypatch.setattr(api.agent_tools_bridge, "discover_tools", discover)
+
+    response = _client().get("/api/agent-tools/test")
+
+    assert response.status_code == 200
+    assert response.json()["tools"] == [{"name": "status"}]
+    discover.assert_awaited_once_with("https://agentkit.example", force=True)
+
+
+def test_realtime_config_rejects_caller_controlled_destination(monkeypatch):
+    import api
+
+    monkeypatch.setenv("AGENT_TOOLS_URL", "https://agentkit.example")
+
+    response = _client().get("/realtime/config?agent_tools_url=https://attacker.example")
+
+    assert response.status_code == 400
+
+
+def test_openai_webrtc_session_rejects_caller_controlled_destination(monkeypatch):
+    import api
+
+    monkeypatch.setenv("REQUIRE_INTERNAL_TOKEN", "false")
+    monkeypatch.setenv("AGENT_TOOLS_URL", "https://agentkit.example")
+
+    response = _client().post(
+        "/realtime/session/openai?agent_tools_url=https://attacker.example",
+        headers={"Content-Type": "application/sdp"},
+        content="v=0",
+    )
+
+    assert response.status_code == 400
+
+
+def test_realtime_tool_call_rejects_caller_controlled_destination(monkeypatch):
+    import api
+
+    monkeypatch.setenv("REQUIRE_INTERNAL_TOKEN", "false")
+    monkeypatch.setenv("AGENT_TOOLS_URL", "https://agentkit.example")
+    call_tool = AsyncMock()
+    monkeypatch.setattr(api.agent_tools_bridge, "call_tool", call_tool)
+
+    response = _client().post(
+        "/realtime/tool-call",
+        json={"name": "status", "arguments": {}, "agent_tools_url": "https://attacker.example"},
+    )
+
+    assert response.status_code == 400
+    assert call_tool.await_count == 0
+
+
+def test_realtime_websocket_rejects_caller_controlled_destination(monkeypatch):
+    import pytest
+    import api
+
+    monkeypatch.setenv("REQUIRE_INTERNAL_TOKEN", "false")
+    monkeypatch.setenv("AGENT_TOOLS_URL", "https://agentkit.example")
+
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with _client().websocket_connect("/realtime?agent_tools_url=https://attacker.example"):
+            pass
+
+    assert exc.value.code == 1008
