@@ -98,20 +98,14 @@ const BASE = import.meta.env.VITE_API_BASE_URL || "";
 const WS_BASE = BASE
   ? (location.protocol === "https:" ? BASE.replace(/^https?:\/\//, "wss://") : BASE.replace(/^http:\/\//, "ws://"))
   : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
-const TOKEN_KEY = "voiceflow.internal_token";
 const MAX_AUTO_RECONNECT_ATTEMPTS = 6;
 const CLOSED_TURN_MERGE_WINDOW_MS = 3000;
 const MIN_SPEECH_CONFIRM_MS = 250;
 
-const DEFAULT_INTERNAL_TOKEN = "omx-nVMjHTpqRJAzNNDw5kyHpMjB4JHakfex";
-
-function authToken() {
-  return import.meta.env.VITE_VOICEFLOW_INTERNAL_TOKEN || import.meta.env.VITE_INTERNAL_TOKEN || localStorage.getItem(TOKEN_KEY) || DEFAULT_INTERNAL_TOKEN;
-}
-
 function withAuth(path: string) {
-  const token = authToken();
-  return token ? path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token) : path;
+  const url = new URL(path, location.origin);
+  url.searchParams.delete("token");
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 /**
@@ -172,7 +166,7 @@ class GeminiWebSocketTransport implements RealtimeTransport {
     if (this.cfg.agent_tools_url) params.set("agent_tools_url", this.cfg.agent_tools_url);
     const qs = params.toString() ? `?${params.toString()}` : "";
     const targetPath = this.customWsPath || this.cfg.gemini_ws_path || "/realtime/gemini";
-    this.ws = new WebSocket(WS_BASE + withAuth(targetPath + qs));
+    this.ws = new WebSocket(WS_BASE + targetPath + qs);
     this.ws.binaryType = "arraybuffer";
 
     this.ws.onopen = () => {
@@ -298,8 +292,6 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
     const headers: HeadersInit = { "Content-Type": "application/sdp", "X-VoiceFlow-Session": getSessionId() };
-    const token = authToken();
-    if (token) headers["X-VoiceFlow-Internal-Token"] = token;
     const res = await fetch(BASE + withAuth(this.cfg.openai_webrtc_session_path), {
       method: "POST",
       headers,
@@ -351,8 +343,6 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
     audioTracks.forEach((t) => { t.enabled = false; });
     try {
       const headers: HeadersInit = { "Content-Type": "application/json", "X-VoiceFlow-Session": getSessionId() };
-      const token = authToken();
-      if (token) headers["X-VoiceFlow-Internal-Token"] = token;
       if (this.cfg.agent_tools_url) headers["X-Agent-Tools-Url"] = this.cfg.agent_tools_url;
       const res = await fetch(BASE + withAuth("/realtime/tool-call"), {
         method: "POST",
@@ -1023,11 +1013,6 @@ export default function VoiceAgent() {
         agent_tools_url: activeAgent || cfg.agent_tools_url || "",
       };
       cfgRef.current = cfgWithVoice;
-      if (cfg.auth_required && !authToken()) {
-        setErrorMsg("This deployment requires a WebSocket token. Set VITE_VOICEFLOW_INTERNAL_TOKEN or voiceflow.internal_token in localStorage.");
-        setState("unconfigured");
-        return;
-      }
       transportRef.current?.close();
       if (activeProvider === "openai_webrtc" && cfgWithVoice.openai_webrtc_available) {
         transportRef.current = new OpenAIWebRTCTransport(cfgWithVoice, {
