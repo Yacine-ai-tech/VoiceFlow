@@ -40,8 +40,9 @@ tool-calling.
   Multimodal Live, selected explicitly via `REALTIME_PROVIDER`.
 - **External tool-calling**: the real-time agent can call any service implementing the
   agent-tools discovery contract (see `services/agent_tools_bridge.py`) mid-conversation.
-  Setting `AGENT_TOOLS_URL` makes that service's tools discoverable and callable with no
-  VoiceFlow code change. The reference implementation used in this project's own demo is
+  The operator sets `AGENT_TOOLS_URL` to the one trusted service; browser clients cannot
+  override the destination, so the service token is never forwarded to a caller-selected host.
+  The reference implementation used in this project's own demo is
   [AgentKit](https://github.com/Yacine-ai-tech/AgentKit) ("talk to your business analyst" —
   ask about revenue, anomalies, or a forecast), but the bridge carries no AgentKit-specific
   code; any compliant service works.
@@ -103,6 +104,9 @@ pytest tests/ -q
 - **SSRF guard on `POST /integrations/relay`**: the destination URL must resolve to a public
   address; loopback, private, link-local, and reserved ranges are rejected before the server
   fetches it.
+- **Agent Tools destination restriction**: discovery and tool calls only target the operator's
+  configured `AGENT_TOOLS_URL`; caller-supplied URLs are rejected before any service credential
+  is attached.
 - **Optional shared-secret gate** (`X-VoiceFlow-Internal-Token` for HTTP, `?token=` for the
   two WebSocket routes) behind `REQUIRE_INTERNAL_TOKEN=true` — off by default, enforced on
   both WebSocket routes when enabled.

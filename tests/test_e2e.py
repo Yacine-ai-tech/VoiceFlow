@@ -84,7 +84,14 @@ async def test_e2e_realtime_voice_interaction_gemini_fallback(monkeypatch):
         assert "Gemini" in data.get("message", "") or "key" in data.get("message", "").lower() or "api" in data.get("message", "").lower()
 
 @pytest.mark.asyncio
-async def test_e2e_ws_stream_pipeline():
+async def test_e2e_ws_stream_pipeline(monkeypatch):
+    calls = []
+
+    async def fake_route_transcribe(audio, provider=None, language=None, diarize=False):
+        calls.append((audio, provider, language, diarize))
+        return {"text": "test transcript", "language": "en"}
+
+    monkeypatch.setattr(api, "route_transcribe", fake_route_transcribe)
     with client.websocket_connect("/stream", headers=HEADERS) as websocket:
         ready = websocket.receive_json()
         assert ready.get("type") == "ready"
@@ -100,4 +107,5 @@ async def test_e2e_ws_stream_pipeline():
         
         final = websocket.receive_json()
         assert final.get("type") == "final"
-        assert "text" in final
+        assert final["text"] == "test transcript"
+        assert calls == [(b"dummy audio buffer", "LOCAL_WHISPERX", "auto", False)]
