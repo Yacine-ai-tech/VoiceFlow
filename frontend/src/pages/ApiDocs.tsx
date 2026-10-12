@@ -449,7 +449,7 @@ export default function ApiDocs() {
       </div>
 
       <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "10px 16px", marginBottom: 20, fontSize: "0.78rem", color: "#94a3b8" }}>
-        Every GET request — page navigation, health checks, analytics, the scenario list — skips the token check. POST endpoints and both WebSocket routes (<code>WS /stream</code>, <code>WS /realtime</code>) are gated behind a shared secret only when the server sets <code>REQUIRE_INTERNAL_TOKEN=true</code> (off by default) — HTTP callers send <code>X-VoiceFlow-Internal-Token</code>, WebSocket callers send <code>?token=</code> since a handshake can't carry a custom header. Independent of that flag, every non-static request (GET included) is also subject to a per-IP rate limit.
+        Every GET request — page navigation, health checks, analytics, the scenario list — skips the token check. POST endpoints and both WebSocket routes (<code>WS /stream</code>, <code>WS /realtime</code>) are gated behind a shared secret only when the server sets <code>REQUIRE_INTERNAL_TOKEN=true</code> (off by default). When accessed through the hosted gateway, browser clients send no internal token; the gateway injects it server-side. Direct clients of a self-hosted deployment with the token gate enabled must send <code>X-VoiceFlow-Internal-Token</code> for HTTP or <code>?token=</code> for WebSockets. Independent of that flag, every non-static request (GET included) is also subject to a per-IP rate limit.
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 20 }}>
