@@ -52,6 +52,7 @@ def discover(provider: str, environ: Optional[Dict[str, str]] = None) -> List[st
     pattern = re.compile(rf"^{p}_API_KEY(?:_[A-Za-z0-9]+)?$")
     names = sorted(n for n in env if pattern.match(n))
     # Plain ``P_API_KEY`` first, then numeric suffixes in numeric order, then the rest.
+
     def order(n: str):
         suffix = n[len(f"{provider.upper()}_API_KEY"):].lstrip("_")
         return (0, 0, "") if not suffix else ((1, int(suffix), "") if suffix.isdigit() else (2, 0, suffix))
