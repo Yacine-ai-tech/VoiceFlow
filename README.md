@@ -11,7 +11,7 @@
 providers, five per-type analysis routes, and a real-time voice agent with external
 tool-calling.
 
-**Live Application (record in your browser):** [voiceflow.ysiddo-ai-projects.app](https://voiceflow.ysiddo-ai-projects.app) — bidirectional real-time audio with Gemini Live preview and multi-provider transcription.
+**Live application (record in your browser):** [voiceflow.ysiddo-ai-projects.app](https://voiceflow.ysiddo-ai-projects.app). Bidirectional real-time audio with Gemini Live and multi-provider transcription..
 - **Research Background:** [`RESEARCH.md`](RESEARCH.md) / [Online Research Documentation](https://voiceflow.ysiddo-ai-projects.app/research)
 - **Empirical Benchmarks:** [`BENCHMARK.md`](BENCHMARK.md) / [Online Benchmark Dashboard](https://voiceflow.ysiddo-ai-projects.app/benchmark)
 - **User Guide:** [Online User Guide](https://voiceflow.ysiddo-ai-projects.app/guide)
@@ -46,7 +46,7 @@ tool-calling.
   [AgentKit](https://github.com/Yacine-ai-tech/AgentKit) ("talk to your business analyst" —
   ask about revenue, anomalies, or a forecast), but the bridge carries no AgentKit-specific
   code; any compliant service works.
-- **35 tests** across smoke, API, analyzer, voice, end-to-end, WebSocket, and real-time paths.
+- **80+ tests** across smoke, API, analyzer, voice, end-to-end, WebSocket, and real-time paths.
 
 ## Quick Start
 
@@ -89,12 +89,21 @@ Then open http://localhost:8002/.
 
 ## Tests
 
-35 test functions across smoke, API, analyzer, voice, end-to-end, WebSocket, and real-time
+80+ test functions across smoke, API, analyzer, voice, end-to-end, WebSocket, and real-time
 paths:
 
 ```bash
 pytest tests/ -q
 ```
+
+## Provider keys and rate limits
+
+Free-tier provider limits apply per key. VoiceFlow discovers every configured key of a
+provider from the environment (`<PROVIDER>_API_KEY`, `<PROVIDER>_API_KEY_<suffix>`, or a
+comma-separated `<PROVIDER>_API_KEYS`), uses them round-robin, and parks a key that hits its
+quota until the provider's retry window passes. Realtime sessions start on the next usable
+key and move to another one on a quota error. `<PROVIDER>_KEY_SLOTS` pins a deployment to a
+subset of the discovered keys.
 
 ## Security and Reliability
 
