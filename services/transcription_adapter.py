@@ -303,7 +303,7 @@ async def _remote_transcribe(
 
     Strict (services/scenarios.py's "remote" provider): no such fallback —
     if LOCAL_ASR_ENGINE says nemo, only /nemo is tried, and a failure is
-    reported honestly rather than silently handing back whisper's output
+    reported rather than silently handing back whisper's output
     for what was asked to be a nemo run.
 
     _remote_whisper/_remote_nemo are synchronous (urllib) and can block for

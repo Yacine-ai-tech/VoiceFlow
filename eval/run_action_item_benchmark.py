@@ -29,7 +29,7 @@ a rate-limited Groq call internally with no upper bound the caller could see):
     once a daily quota is confirmed exhausted, retrying it per-meeting just
     burns time and (usually) more of the same exhausted quota.
 
-Honesty note: the 50 *meetings themselves* are LLM-generated synthetic
+Note: the 50 *meetings themselves* are LLM-generated synthetic
 scripts (see generate_corpus.py), not real recordings — real audio, real
 transcription, real analysis, real scoring all still happen on top of that
 synthetic source text. See ACTION_ITEM_BENCHMARK.md for exactly what this

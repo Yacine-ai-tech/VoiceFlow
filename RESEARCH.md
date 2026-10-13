@@ -107,7 +107,7 @@ The Groq row is a rerun against the current default model, replacing an earlier 
 measured against a since-deprecated model. A provider rate limit was reached partway through
 this run: 8 of 50 meetings were scored before the limit, and the remaining 42 are excluded
 from the score rather than counted as extraction failures, since a rate limit and a poor
-extraction are not the same kind of failure. Claude Sonnet has a separate quota and scored the
+extraction are not the same kind of failure. Claude Sonnet has a separate rate limit and scored the
 full 50-meeting run.
 
 The action-item benchmark's source meetings are LLM-generated synthetic scripts, not real
