@@ -77,14 +77,14 @@ class Settings:
 
     @property
     def GEMINI_API_KEYS(self) -> list[str]:
-        keys: list[str] = []
-        names = ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "GEMINI_API_KEY_4"]
+        """Every configured Gemini key, discovered from the environment by prefix
+        (see core.keypool); the realtime key is added when Gemini is the realtime provider."""
+        from core import keypool
+        keys = keypool.discover("gemini")
         if self.REALTIME_PROVIDER == "gemini":
-            names.append("REALTIME_API_KEY")
-        for k in names:
-            val = os.getenv(k, "").strip()
-            if val and val not in keys:
-                keys.append(val)
+            extra = os.getenv("REALTIME_API_KEY", "").strip()
+            if extra and extra not in keys:
+                keys.append(extra)
         return keys
 
     @property
