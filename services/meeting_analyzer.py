@@ -11,6 +11,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from core import keypool
 from core.config import settings
 from core.logger import get_logger
 
@@ -75,7 +76,7 @@ async def _llm_with_fallback(model: str, messages: list, fallback: str = "", **k
     last_exc = None
     for idx, candidate in enumerate(candidate_models):
         try:
-            return await acompletion(model=candidate, messages=messages, **call_kwargs)
+            return await keypool.acompletion_pooled(acompletion, candidate, messages=messages, **call_kwargs)
         except Exception as exc:
             last_exc = exc
             exc_str = (str(exc) + " " + type(exc).__name__).lower()
