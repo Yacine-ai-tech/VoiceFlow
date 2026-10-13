@@ -17,6 +17,10 @@ actual reference text.
 
 ## Results (this run)
 
+Only Groq produced measurements in the recorded run: no OpenAI key was configured, and every
+Gemini request failed (the cause was not recorded). Treat this as a harness smoke test, not a
+provider comparison.
+
 | Provider | Avg Latency | Success Rate |
 |----------|-------------|---------------|
 | Openai | — | 0% (no API key) |
