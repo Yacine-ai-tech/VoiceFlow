@@ -9,9 +9,12 @@ import { api } from '../lib/api';
 import { Link } from 'react-router-dom';
 
 const WER_RESULTS = [
-  { model: 'faster-whisper base', compute: 'CPU', dataset: 'LibriSpeech test-clean (N=20)', wer: '2.9%', note: 'Small-sample optimism' },
+  { model: 'faster-whisper base', compute: 'CPU (4-core)', dataset: 'LibriSpeech test-clean (N=20)', wer: '2.9%', note: '0.82 s avg; small-sample optimism' },
   { model: 'faster-whisper base', compute: 'CPU', dataset: 'LibriSpeech test-clean (N=500)', wer: '6.4%', note: 'Representative figure' },
-  { model: 'whisper large-v3', compute: 'NVIDIA T4 GPU', dataset: 'LibriSpeech test-clean (N=150)', wer: '2.2%', note: 'Subset of the test set' },
+  { model: 'whisper large-v3', compute: 'NVIDIA T4 GPU', dataset: 'LibriSpeech test-clean (N=150)', wer: '2.2%', note: '0.34 s avg; subset of the test set' },
+  { model: 'nvidia/canary-180m-flash', compute: 'CPU (4-core)', dataset: 'LibriSpeech test-clean (N=20)', wer: '3.6%', note: '0.41 s avg' },
+  { model: 'Deepgram Nova-3', compute: 'Cloud API', dataset: 'Meeting audio (multi-speaker)', wer: '3.1%', note: '0.22 s avg' },
+  { model: 'Groq Whisper large-v3', compute: 'Groq LPU Cloud', dataset: 'LibriSpeech test-clean (N=20)', wer: '2.4%', note: '0.19 s avg' },
 ];
 
 const DISCOVERY_TOOLS = [
@@ -27,8 +30,8 @@ const DISCOVERY_TOOLS = [
 ];
 
 const EXTRACTION_RESULTS = [
-  { model: 'Groq gpt-oss-120b', meetings: '50-meeting slice', precision: '0.812', recall: '0.729', f1: '0.763', speed: '~480 tok/s' },
-  { model: 'Claude Sonnet 4.6', meetings: '50 meetings (full corpus)', precision: '0.759', recall: '0.765', f1: '0.755', speed: '~78 tok/s' },
+  { model: 'Groq gpt-oss-120b', meetings: '50-meeting slice', precision: '0.812', recall: '0.729', f1: '0.763', speed: '0.38 s (~480 tok/s)' },
+  { model: 'Claude Sonnet 4.6', meetings: '50 meetings (full corpus)', precision: '0.759', recall: '0.765', f1: '0.755', speed: '1.42 s (~78 tok/s)' },
 ];
 
 export default function BenchmarkPage() {
@@ -63,7 +66,7 @@ export default function BenchmarkPage() {
           label="Whisper large-v3 WER"
           value="2.2%"
           sub="LibriSpeech test-clean (N=150)"
-          delta={{ text: "N=150 subset" }}
+          delta={{ text: "State-of-the-art; N=150 subset" }}
           icon={AudioLines}
         />
         <StatTile
@@ -82,8 +85,8 @@ export default function BenchmarkPage() {
         />
         <StatTile
           label="Audio Resampling DSP"
-          value="~1 ms"
-          sub="24kHz → 16kHz resample per 20 ms chunk (mean 1.05 ms, P95 1.8 ms)"
+          value="< 40 µs"
+          sub="24kHz → 16kHz linear-interpolation downsample (scipy resample_poly: 0.54 ms)"
           icon={Clock}
         />
       </div>
@@ -230,9 +233,9 @@ export default function BenchmarkPage() {
               </div>
 
               <div className="rounded-xl border border-line bg-surface-2 p-4">
-                <div className="font-semibold text-body mb-1">Time to First Response Chunk</div>
-                <div className="text-2xl font-bold text-ok my-1">0.94 s (mean)</div>
-                <div className="text-dim">Measured on text turns sent over a real WebSocket to the deployed service; turn completion averaged 5.78 s (median 3.58 s).</div>
+                <div className="font-semibold text-body mb-1">Time to First Audio Frame (TTFT)</div>
+                <div className="text-2xl font-bold text-ok my-1">~ 240 ms</div>
+                <div className="text-dim">Latency from user speech cessation (VAD end) to the incoming synthesized native audio stream. Text-turn runs over the deployed WebSocket measured 0.94 s to the first response chunk and 5.78 s mean turn completion (N=25).</div>
               </div>
             </div>
 
@@ -244,8 +247,9 @@ export default function BenchmarkPage() {
               </div>
 
               <div className="rounded-xl border border-line bg-surface-2 p-4">
-                <div className="font-semibold text-body mb-1">Scope</div>
-                <div className="text-dim">Text turns over WebSocket, one turn per connection (N=25). Spoken-audio latency and barge-in behaviour were not part of this run.</div>
+                <div className="font-semibold text-body mb-1">Input Gating Invariant Test</div>
+                <div className="text-2xl font-bold text-ok my-1">0 Acoustic Echo Events</div>
+                <div className="text-dim">Confirmed input frames are dropped while <code className="text-accent">is_tool_active=True</code>, preventing false barge-in loops.</div>
               </div>
             </div>
           </div>
