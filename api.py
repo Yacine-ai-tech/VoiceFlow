@@ -60,7 +60,7 @@ log = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Preload Kokoro in-memory pipeline during server boot to eliminate cold-start latency
+    # Preload the Kokoro pipeline during server boot so the first TTS request is fast
     try:
         asyncio.create_task(tts_service.preload_kokoro())
     except Exception as e:
@@ -280,10 +280,10 @@ _stats: "_SessionStats" = _SessionStats()
 def _hydrate_stats_from_db():
     """Reload persisted counters at startup so a restart/redeploy doesn't
     silently zero out usage history when a database is configured. Runs in
-    a background thread (like the telemetry pings above) so a slow/cold
-    database connection never delays the app actually starting to serve
-    requests — a few requests immediately after a cold start may not see
-    older history yet; this self-heals within seconds once it completes."""
+    a background thread (like the telemetry pings above) so a slow database
+    connection never delays the app starting to serve requests — requests
+    arriving immediately after startup may not see older history yet; it
+    appears within seconds once the load completes."""
     if not db.DB_ENABLED:
         return
     for session_id, counters in db.load_all_counters().items():
@@ -664,10 +664,8 @@ async def tts_voices_delete_endpoint(voice_id: str) -> Dict[str, Any]:
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except httpx.HTTPStatusError as e:
-        # delete_elevenlabs_voice's resp.raise_for_status() previously escaped
-        # uncaught here — a nonexistent/invalid voice_id (or any other
-        # ElevenLabs API error) surfaced as a bare 500 "Internal Server Error"
-        # instead of a real status/message. Confirmed live 2026-09-02.
+        # delete_elevenlabs_voice() raises on any ElevenLabs API error (for example a
+        # nonexistent voice_id); report that as a real status and message, not a 500.
         detail = e.response.text[:300] if e.response is not None else str(e)
         status = e.response.status_code if e.response is not None else 502
         raise HTTPException(status_code=status if 400 <= status < 500 else 502, detail=detail)
@@ -1463,12 +1461,9 @@ async def ws_realtime(ws: WebSocket):
                 )
             ),
             # Opt in to receiving LiveServerSessionResumptionUpdate messages so a
-            # dropped connection (network blip, the session-duration-limit close
-            # real production logs show: "The session duration limit was reached
-            # ... you may reconnect and resume this session using your
-            # resumption...") can actually resume the underlying Gemini session
-            # instead of just reconnecting to a brand-new one that has lost all
-            # conversational context server-side.
+            # dropped connection (network interruption, or the provider's session
+            # duration limit) can resume the underlying Gemini session instead of
+            # starting a new one that has lost all conversational context.
             session_resumption=_gtypes.SessionResumptionConfig(handle=_resume_handle),
         )
 
@@ -1491,32 +1486,23 @@ async def ws_realtime(ws: WebSocket):
                 is_tool_active = [False]
                 cancel_flag = [False]
                 # Set alongside cancel_flag[0]=True (by _client_to_gemini, on user
-                # barge-in) and consumed by _gemini_to_client below. Cancelling a
-                # turn used to just `continue`-skip every remaining response chunk
-                # for it, INCLUDING the eventual turn_complete check that sends
-                # {"type":"response.done"} — so the frontend's open turn/bubble for
-                # that cancelled reply was never closed. The next real turn's
-                # deltas then appended onto that dangling, half-received bubble
-                # instead of starting fresh, which is what produced garbled,
-                # multi-turn-merged transcript text in production (old partial
-                # replies / tool-call scaffolding glued onto the front of the next
-                # actual answer — reproduced live 2026-08-20 with "bonjour" /
-                # "comment ça va tu"). Only _gemini_to_client sends to the browser
-                # ws elsewhere in this handler; routing the notification through it
-                # (rather than sending directly from _client_to_gemini) avoids a
-                # second, concurrent writer on the same browser websocket.
+                # barge-in) and consumed by _gemini_to_client below. A cancelled turn
+                # must still send {"type":"response.done"} so the frontend closes
+                # that reply's bubble; otherwise the next turn's deltas would append
+                # onto a half-received one. Only _gemini_to_client sends to the
+                # browser ws elsewhere in this handler; routing the notification
+                # through it (rather than sending directly from _client_to_gemini)
+                # avoids a second, concurrent writer on the same browser websocket.
                 pending_cancel_notice = [False]
                 # True from a successful commit (activity_end sent) until this
                 # turn's turn_complete arrives. The frontend now gates its own
                 # commits on an equivalent "response pending" flag so it should
                 # never send a second commit before this clears — but a client is
-                # untrusted input, and live testing (feeding a continuously-looping
-                # audio source) reproduced exactly this: repeated commits before
-                # turn_complete, which corrupted the Gemini session into a close
-                # code 1011 "Internal error" and silently dropped every reply. If a
-                # commit still arrives while a turn is active, treat it the same as
-                # a client barge-in (cancel the stale turn first) instead of sending
-                # a second activity_end into an unfinished one.
+                # untrusted input, and repeated commits before turn_complete corrupt
+                # the Gemini session (close code 1011). If a commit still arrives
+                # while a turn is active, treat it the same as a client barge-in
+                # (cancel the stale turn first) instead of sending a second
+                # activity_end into an unfinished one.
                 turn_active = [False]
                 # _client_to_gemini() and _gemini_to_client() run concurrently via
                 # asyncio.gather() below, and BOTH write to the same upstream `session`
@@ -1746,15 +1732,9 @@ async def ws_realtime(ws: WebSocket):
                                     turn_active[0] = False
                                     await safe_ws_send({"type": "response.done"})
                     except Exception as e:
-                        # This used to be a bare `except: pass` — any exception here (a
-                        # malformed response, an SDK-internal error mid-stream, anything)
-                        # silently killed this relay task without ever sending
-                        # response.done. asyncio.gather() below doesn't surface it either,
-                        # since the task returns normally instead of raising, so the outer
-                        # handler's own except-block never saw it. The client was left
-                        # waiting on a turn that would never complete, with no error and no
-                        # sign anything had gone wrong server-side — indistinguishable from
-                        # a hang until its own transport-level keepalive eventually gave up.
+                        # Log and re-raise: swallowing the exception here would end this
+                        # relay task without sending response.done, leaving the client
+                        # waiting on a turn that never completes.
                         log.warning("Gemini _gemini_to_client relay died mid-turn: %s", e)
                         raise e
 

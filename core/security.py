@@ -133,7 +133,7 @@ class RateLimiter:
 
 
 def client_ip(headers, client_host: str) -> str:
-    """Best-effort real client IP behind Render's proxy — falls back to the
+    """Best-effort real client IP behind a reverse proxy — falls back to the
     direct connection's host if no forwarding header is present (local/dev)."""
     fwd = headers.get("x-forwarded-for")
     if fwd:
