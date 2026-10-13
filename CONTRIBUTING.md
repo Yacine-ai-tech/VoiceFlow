@@ -29,7 +29,7 @@ We are committed to maintaining a welcoming, professional, and harassment-free c
 VoiceFlow is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
 - **Open Source Contributions**: All code submissions become available under the AGPL-3.0.
-- **Commercial & Enterprise Licensing**: For proprietary telephony integration, closed-source on-premise deployments, or custom commercial distribution without AGPL-3.0 copyleft obligations, commercial licensing is provided via **OmniIntelOS**. See [`COMMERCIAL.md`](./COMMERCIAL.md) or reach out to `siddoyacinetech227@gmail.com`.
+- **Commercial & Enterprise Licensing**: For proprietary telephony integration, closed-source on-premise deployments, or custom commercial distribution without AGPL-3.0 copyleft obligations, commercial licensing is provided via **OmniIntelOS**. See [`COMMERCIAL.md`](./COMMERCIAL.md) or reach out to `contact@ysiddo-ai-projects.app`.
 
 ---
 
@@ -120,4 +120,4 @@ Use [Conventional Commits](https://www.conventionalcommits.org/):
 
 ## 🔒 Security & Vulnerability Disclosure
 
-Report security vulnerabilities privately to `siddoyacinetech227@gmail.com`.
+Report security vulnerabilities privately to `contact@ysiddo-ai-projects.app`.
