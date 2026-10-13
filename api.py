@@ -1731,6 +1731,15 @@ async def ws_realtime(ws: WebSocket):
                 await asyncio.gather(_client_to_gemini(), _gemini_to_client())
 
         gemini_keys = settings.GEMINI_API_KEYS or [gemini_key]
+        # Start on the next usable key (round-robin across sessions, skipping keys that
+        # recently hit their quota) and wrap, so concurrent sessions spread over the pool.
+        from core import keypool as _keypool
+        _pool = _keypool.pool("gemini")
+        _start = 0
+        _lease = _pool.acquire() if len(_pool) == len(gemini_keys) else None
+        if _lease is not None:
+            _start = _lease.index
+        gemini_keys = gemini_keys[_start:] + gemini_keys[:_start]
         for key_idx, current_gemini_key in enumerate(gemini_keys):
             _client = _genai.Client(
                 http_options={"api_version": "v1beta"},
@@ -1751,6 +1760,9 @@ async def ws_realtime(ws: WebSocket):
                     or "resource_exhausted" in err_str
                     or "rate_limit" in err_str
                 )
+                if is_quota and _lease is not None:
+                    _pool.cool_down(_keypool.KeyLease("gemini", (_start + key_idx) % len(_pool), current_gemini_key),
+                                    _keypool.retry_after_seconds(e))
                 if is_quota and key_idx + 1 < len(gemini_keys):
                     log.warning(
                         "Gemini Live quota or 1011 on configured key slot %d. Rotating to next available key...",
