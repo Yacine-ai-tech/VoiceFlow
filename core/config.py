@@ -311,7 +311,7 @@ class Settings:
         (see README.md's Telemetry section for the exact payloads). Defaults to the project
         gateway URL — disable entirely with TELEMETRY_OPT_OUT=true or DO_NOT_TRACK=1.
         """
-        return os.getenv("TELEMETRY_ENDPOINT", os.environ.get("TELEMETRY_URL", "https://gateway.ysiddo-ai-projects.app/telemetry")).strip()
+        return (os.getenv("TELEMETRY_ENDPOINT") or os.getenv("TELEMETRY_URL") or "https://gateway.ysiddo-ai-projects.app/telemetry").strip()
 
     @property
     def INTERNAL_TOKEN(self) -> str:
