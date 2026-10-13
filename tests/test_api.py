@@ -110,14 +110,19 @@ def test_post_endpoint_accepts_correct_token_when_auth_enabled(monkeypatch):
     assert r.status_code == 400
 
 
-def test_get_requests_bypass_token_gate_even_when_auth_enabled(monkeypatch):
-    # GET is documented as always-public (page navigation, /health, etc.) —
-    # verify_internal_token's own logic returns early for any GET before the
-    # token check runs at all.
+def test_get_data_routes_need_token_when_auth_enabled(monkeypatch):
     monkeypatch.setenv("REQUIRE_INTERNAL_TOKEN", "true")
     monkeypatch.setenv("VOICEFLOW_INTERNAL_TOKEN", "test-secret-token")
-    r = _client().get("/scenarios")
-    assert r.status_code == 200
+    for route in ("/scenarios", "/analytics", "/records", "/api/records"):
+        assert _client().get(route).status_code == 403, route
+    ok = _client().get("/scenarios", headers={"X-VoiceFlow-Internal-Token": "test-secret-token"})
+    assert ok.status_code == 200
+
+
+def test_health_stays_open_when_auth_enabled(monkeypatch):
+    monkeypatch.setenv("REQUIRE_INTERNAL_TOKEN", "true")
+    monkeypatch.setenv("VOICEFLOW_INTERNAL_TOKEN", "test-secret-token")
+    assert _client().get("/health").status_code == 200
 
 
 def test_agent_tools_test_rejects_caller_controlled_destination(monkeypatch):
@@ -146,6 +151,7 @@ def test_agent_tools_test_uses_only_configured_destination(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["tools"] == [{"name": "status"}]
+    assert "url" not in response.json()
     discover.assert_awaited_once_with("https://agentkit.example", force=True)
 
 
@@ -204,3 +210,13 @@ def test_realtime_websocket_rejects_caller_controlled_destination(monkeypatch):
             pass
 
     assert exc.value.code == 1008
+
+
+def test_transcribe_json_rejects_invalid_base64():
+    r = _client().post("/transcribe-json", json={"audio_b64": "not base64 !!!"})
+    assert r.status_code == 400
+
+
+def test_transcribe_json_rejects_empty_audio():
+    r = _client().post("/transcribe-json", json={"audio_b64": ""})
+    assert r.status_code == 400

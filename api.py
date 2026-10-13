@@ -163,12 +163,16 @@ def _send_telemetry():
 threading.Thread(target=_send_telemetry, daemon=True).start()
 
 
+_OPEN_GET_PATHS = {
+    "/", "/index.html", "/health", "/docs", "/openapi.json", "/api/redoc",
+    "/favicon.png", "/favicon.ico", "/mark.png", "/logo.png",
+}
+
+
 @app.middleware("http")
 async def verify_internal_token(request: Request, call_next):
-    # Allow health checks, public auth routes, frontend static assets. Any GET is
-    # also public — that's page navigation (the SPA shell + its static files) —
-    # except GET routes that trigger a real paid upstream call (e.g. /tts/voices),
-    # which the rate limiter below still applies to. /realtime and /stream are
+    # Allow health checks, public auth routes and frontend static assets without a
+    # token. /realtime and /stream are
     # WebSocket routes and never actually reach this HTTP-only middleware
     # regardless of this list (ASGI "websocket" scope bypasses @app.middleware
     # ("http") entirely) — their own auth/rate-limit gating lives in the WS
@@ -184,7 +188,12 @@ async def verify_internal_token(request: Request, call_next):
     if not _http_limiter.allow(ip):
         return JSONResponse(status_code=429, content={"detail": "rate_limited: too many requests, try again shortly"})
 
-    if request.method == "GET":
+    # Open GETs: the SPA shell and its static files only. Every other GET (records,
+    # analytics, tool listings, ...) needs the internal token like writes do; the
+    # gateway attaches it for the browser app.
+    if request.method == "GET" and (
+        request.url.path in _OPEN_GET_PATHS or request.url.path.startswith(("/assets/", "/static/"))
+    ):
         return await call_next(request)
 
     token = (
@@ -482,11 +491,32 @@ class TranscribeJsonRequest(BaseModel):
     diarize: bool = True
 
 
+async def _transcribe_audio(audio: bytes, **kwargs) -> Dict[str, Any]:
+    """route_transcribe with input validation: empty or undecodable audio is a client
+    error (4xx), not a server fault."""
+    if not audio:
+        raise HTTPException(status_code=400, detail="audio is empty")
+    try:
+        return await route_transcribe(audio, **kwargs)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        name = type(exc).__name__
+        text = str(exc)
+        if name in {"InvalidDataError", "FileNotFoundError"} or "Invalid data found" in text or "could not decode" in text.lower():
+            raise HTTPException(status_code=422, detail="audio could not be decoded; send WAV, MP3, M4A, OGG or FLAC")
+        raise
+
+
 @app.post("/transcribe-json")
 async def transcribe_json_endpoint(req: TranscribeJsonRequest) -> Dict[str, Any]:
     import base64
-    audio = base64.b64decode(req.audio_b64)
-    return await route_transcribe(audio, provider=req.provider, language=req.language, diarize=req.diarize)
+    import binascii
+    try:
+        audio = base64.b64decode(req.audio_b64, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="audio_b64 is not valid base64")
+    return await _transcribe_audio(audio, provider=req.provider, language=req.language, diarize=req.diarize)
 
 
 @app.post("/transcribe")
@@ -498,7 +528,7 @@ async def transcribe_endpoint(
     diarize: bool = Form(True),
 ) -> Dict[str, Any]:
     audio = await file.read()
-    trans = await route_transcribe(audio, provider=provider, language=language, diarize=diarize)
+    trans = await _transcribe_audio(audio, provider=provider, language=language, diarize=diarize)
     session_id = request.headers.get("X-VoiceFlow-Session") or request.headers.get("X-Demo-Session-Id")
     duration_sec = trans.get("duration") if isinstance(trans, dict) else None
     title = file.filename or "Transcription"
@@ -857,13 +887,13 @@ async def pipeline_endpoint(
 
     if spec:
         spec_diarize = spec.get("diarize", diarize)
-        trans = await route_transcribe(audio, provider=spec["transcription_provider"],
+        trans = await _transcribe_audio(audio, provider=spec["transcription_provider"],
                                        language=language, diarize=spec_diarize, strict=True)
         model = scenarios.resolve_analysis_model(settings, spec)
         text_for_analysis = trans.get("diarized_text") or trans.get("text", "")
         analysis = await analyzer.analyze(text_for_analysis, analysis_type=analysis_type, model=model, language=language)
     else:
-        trans = await route_transcribe(audio, provider=provider, language=language, diarize=diarize)
+        trans = await _transcribe_audio(audio, provider=provider, language=language, diarize=diarize)
         text_for_analysis = trans.get("diarized_text") or trans.get("text", "")
         analysis = await analyzer.analyze(text_for_analysis, analysis_type=analysis_type, language=language)
 
@@ -925,7 +955,7 @@ async def benchmarks_endpoint() -> Dict[str, Any]:
 @app.post("/meeting/process")
 async def meeting_process(request: Request, file: UploadFile = File(...)) -> Dict[str, Any]:
     audio = await file.read()
-    trans = await route_transcribe(audio, diarize=True)
+    trans = await _transcribe_audio(audio, diarize=True)
     text_for_analysis = trans.get("diarized_text") or trans.get("text", "")
     analysis = await analyzer.analyze_meeting(text_for_analysis)
     _session_stats(request)["meeting"] += 1
@@ -935,7 +965,7 @@ async def meeting_process(request: Request, file: UploadFile = File(...)) -> Dic
 @app.post("/call/analyze")
 async def call_analyze(request: Request, file: UploadFile = File(...), call_type: str = Form("sales_call")) -> Dict[str, Any]:
     audio = await file.read()
-    trans = await route_transcribe(audio, diarize=True)
+    trans = await _transcribe_audio(audio, diarize=True)
     text_for_analysis = trans.get("diarized_text") or trans.get("text", "")
     analysis = await analyzer.analyze(text_for_analysis, analysis_type=call_type)
     _session_stats(request)["call"] += 1
@@ -1114,9 +1144,10 @@ async def test_agent_tools(request: Request) -> Dict[str, Any]:
         return {"status": "unconfigured", "tools": [], "message": "No agent tools URL configured."}
     try:
         tools = await agent_tools_bridge.discover_tools(url, force=True)
-        return {"status": "ok", "url": url, "count": len(tools), "tools": tools}
+        return {"status": "ok", "count": len(tools), "tools": tools}
     except Exception as exc:
-        return {"status": "error", "url": url, "error": str(exc)}
+        log.warning("agent tools test failed: %s", exc)
+        return {"status": "error", "error": "agent tools service unreachable"}
 
 
 @app.post("/realtime/session/openai")
