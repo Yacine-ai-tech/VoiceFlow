@@ -145,20 +145,19 @@ def _send_telemetry():
     except Exception:
         pass
 
-    try:
-        import requests
-        requests.post(
-            endpoint,
-            json={
-                "service": "voiceflow",
-                "event": "startup",
-                "version": app.version,
-                "instance_id": _telemetry_instance_id(),
-            },
-            timeout=3,
-        )
-    except Exception:
-        pass
+    import requests
+    payload = {
+        "service": "voiceflow",
+        "event": "startup",
+        "version": app.version,
+        "instance_id": _telemetry_instance_id(),
+    }
+    for attempt in range(3):
+        try:
+            requests.post(endpoint, json=payload, timeout=3)
+            break
+        except Exception:
+            time.sleep(2 * (attempt + 1))
 
 
 threading.Thread(target=_send_telemetry, daemon=True).start()
@@ -356,7 +355,7 @@ def _telemetry_usage_loop():
     interval = int(os.environ.get("TELEMETRY_USAGE_INTERVAL_SECONDS", "1800"))
     while True:
         time.sleep(max(60, interval))
-        if os.environ.get("TELEMETRY_OPT_OUT", "").lower() in ("1", "true", "yes"):
+        if os.environ.get("TELEMETRY_OPT_OUT", "").strip().lower() in ("1", "true", "yes") or os.environ.get("DO_NOT_TRACK", "").strip() == "1":
             continue
         endpoint = settings.TELEMETRY_ENDPOINT
         if not endpoint:

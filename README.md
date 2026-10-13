@@ -167,13 +167,13 @@ projects. A commercial license is available for closed-source or enterprise use 
 
 ## Telemetry
 
-The app sends two kinds of anonymous ping. The first is a startup ping with the service name,
-version and a random install identifier. The second is a periodic aggregate usage snapshot
-(counters summed across all sessions plus the number of sessions seen; no session identifiers, audio
-or transcripts), sent only when there has been activity. Both go to the project's collector when
-`TELEMETRY_URL` (or `TELEMETRY_ENDPOINT`) is not defined, and nowhere when it is defined but
-empty, as in `.env.example`. `TELEMETRY_OPT_OUT=true` disables both; `DO_NOT_TRACK=1` also disables the startup ping.
+The app sends two kinds of anonymous ping, both on by default. The first is a startup ping with the
+service name, version and a random install identifier. The second is a periodic aggregate usage
+snapshot (counters summed across all sessions plus the number of sessions seen; no session identifiers,
+audio or transcripts), sent only when there has been activity. Both go to the project's collector unless
+`TELEMETRY_URL` (or `TELEMETRY_ENDPOINT`) names another endpoint. `TELEMETRY_OPT_OUT=true` or
+`DO_NOT_TRACK=1` disables both.
 This README also carries a tracking-pixel image below, independent of the app and unaffected
 by any environment variable.
 
-![telemetry](https://gateway.ysiddo-ai-projects.app/pixel.png)
+![views](https://gateway.ysiddo-ai-projects.app/pixel/readme/VoiceFlow.png)
