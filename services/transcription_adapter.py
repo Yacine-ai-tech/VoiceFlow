@@ -161,7 +161,9 @@ def _enrich_diarization_if_needed(text: str, segments: list[dict[str, Any]]) -> 
     # Try LLM turn attribution if multiple segments exist
     if len(norm_segs) > 1:
         try:
-            groq_key = os.getenv("GROQ_API_KEY", "").strip() or getattr(settings, "GROQ_API_KEY", "")
+            from core import keypool as _keypool
+            _lease = _keypool.pool("groq").acquire()
+            groq_key = (_lease.key if _lease else "") or os.getenv("GROQ_API_KEY", "").strip() or getattr(settings, "GROQ_API_KEY", "")
             if groq_key:
                 from groq import Groq
                 client = Groq(api_key=groq_key)
@@ -187,6 +189,7 @@ def _enrich_diarization_if_needed(text: str, segments: list[dict[str, Any]]) -> 
                     if i in assigned:
                         s["speaker"] = assigned[i]
         except Exception as e:
+            _keypool.note_failure(_lease, e)
             log.debug("LLM speaker enrichment pass skipped: %s", e)
 
     d_text = _format_diarized_text(norm_segs)
@@ -318,7 +321,9 @@ async def _remote_transcribe(
 # ─── Groq Whisper ─────────────────────────────────────────────────────────────
 
 def _groq_whisper_sync(audio_bytes: bytes, language: Optional[str] = None, diarize: bool = True) -> Optional[Dict[str, Any]]:
-    key = os.getenv("GROQ_API_KEY", "").strip() or getattr(settings, "GROQ_API_KEY", "") or ""
+    from core import keypool as _keypool
+    _lease = _keypool.pool("groq").acquire()
+    key = (_lease.key if _lease else "") or os.getenv("GROQ_API_KEY", "").strip() or getattr(settings, "GROQ_API_KEY", "") or ""
     if not key:
         return None
     try:
@@ -365,6 +370,7 @@ def _groq_whisper_sync(audio_bytes: bytes, language: Optional[str] = None, diari
             "diarized": is_diarized,
         }
     except Exception as e:
+        _keypool.note_failure(_lease, e)
         log.warning("groq whisper failed: %s", e)
         return None
 
