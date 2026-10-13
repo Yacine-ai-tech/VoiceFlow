@@ -974,6 +974,35 @@ def _ws_reject_reason(ws: WebSocket) -> Optional[str]:
     return None
 
 
+class _GeminiAudioActivity:
+    def __init__(self, session: Any, gtypes: Any, send_lock: asyncio.Lock):
+        self._session = session
+        self._types = gtypes
+        self._send_lock = send_lock
+        self._active = False
+
+    async def send_audio(self, pcm_16k: bytes) -> None:
+        async with self._send_lock:
+            if not self._active:
+                await self._session.send_realtime_input(
+                    activity_start=self._types.ActivityStart()
+                )
+                self._active = True
+            await self._session.send_realtime_input(
+                media=self._types.Blob(data=pcm_16k, mime_type="audio/pcm;rate=16000")
+            )
+
+    async def end(self) -> bool:
+        async with self._send_lock:
+            if not self._active:
+                return False
+            await self._session.send_realtime_input(
+                activity_end=self._types.ActivityEnd()
+            )
+            self._active = False
+            return True
+
+
 @app.websocket("/stream")
 async def ws_stream(ws: WebSocket):
     """Real incremental transcription. The browser sends audio chunks as binary frames;
@@ -1398,6 +1427,11 @@ async def ws_realtime(ws: WebSocket):
             # conversation was never transcribed at all, let alone shown
             # on-screen. Populates server_content.input_transcription below.
             input_audio_transcription=_gtypes.AudioTranscriptionConfig(),
+            realtime_input_config=_gtypes.RealtimeInputConfig(
+                automatic_activity_detection=_gtypes.AutomaticActivityDetection(
+                    disabled=True
+                )
+            ),
             # Opt in to receiving LiveServerSessionResumptionUpdate messages so a
             # dropped connection (network blip, the session-duration-limit close
             # real production logs show: "The session duration limit was reached
@@ -1442,7 +1476,7 @@ async def ws_realtime(ws: WebSocket):
                 # (rather than sending directly from _client_to_gemini) avoids a
                 # second, concurrent writer on the same browser websocket.
                 pending_cancel_notice = [False]
-                # True from a successful commit (audio_stream_end sent) until this
+                # True from a successful commit (activity_end sent) until this
                 # turn's turn_complete arrives. The frontend now gates its own
                 # commits on an equivalent "response pending" flag so it should
                 # never send a second commit before this clears — but a client is
@@ -1452,7 +1486,7 @@ async def ws_realtime(ws: WebSocket):
                 # code 1011 "Internal error" and silently dropped every reply. If a
                 # commit still arrives while a turn is active, treat it the same as
                 # a client barge-in (cancel the stale turn first) instead of sending
-                # a second audio_stream_end into an unfinished one.
+                # a second activity_end into an unfinished one.
                 turn_active = [False]
                 # _client_to_gemini() and _gemini_to_client() run concurrently via
                 # asyncio.gather() below, and BOTH write to the same upstream `session`
@@ -1469,6 +1503,7 @@ async def ws_realtime(ws: WebSocket):
                 # send_tool_response() fires. This lock serializes all writes to the
                 # session so no two coroutines can be mid-`send` on it at once.
                 session_send_lock = asyncio.Lock()
+                audio_activity = _GeminiAudioActivity(session, _gtypes, session_send_lock)
 
                 import base64
 
@@ -1519,10 +1554,7 @@ async def ws_realtime(ws: WebSocket):
                                     if is_tool_active[0]:
                                         continue  # gate audio strictly while tool execution is active
                                     await trace.first("first_input_audio")
-                                    async with session_send_lock:
-                                        await session.send_realtime_input(
-                                            media=_gtypes.Blob(data=msg_bytes, mime_type="audio/pcm;rate=16000")
-                                        )
+                                    await audio_activity.send_audio(msg_bytes)
                                     continue
 
                                 if not msg_text:
@@ -1538,13 +1570,11 @@ async def ws_realtime(ws: WebSocket):
                                         pcm_24k = base64.b64decode(b64)
                                         sample_rate = int(data.get("sample_rate") or 24000)
                                         pcm_16k = _resample_pcm(pcm_24k, sample_rate, 16000)
-                                        async with session_send_lock:
-                                            await session.send_realtime_input(
-                                                media=_gtypes.Blob(data=pcm_16k, mime_type="audio/pcm;rate=16000")
-                                            )
+                                        await audio_activity.send_audio(pcm_16k)
                                         await trace.first("first_input_audio", mode="json_base64")
 
                                 elif evt == "input_audio_buffer.commit":
+                                    await audio_activity.end()
                                     cancel_flag[0] = False
                                     pending_cancel_notice[0] = False
                                     turn_active[0] = True
