@@ -44,7 +44,7 @@ export default function ResearchPage() {
           <div className="rounded-xl border border-line bg-surface-2 p-4">
             <div className="text-xs font-semibold uppercase tracking-wider text-ok mb-1">Audio DSP</div>
             <div className="font-semibold text-body text-sm mb-1">24kHz → 16kHz Decimation</div>
-            <div className="text-xs text-dim">3:2 linear resampling cutting bitrate by 33.3% at about a millisecond per 20 ms chunk.</div>
+            <div className="text-xs text-dim">3:2 linear resampling cutting bitrate by 33.3% with microsecond-scale overhead per 20 ms chunk (under 40 µs for the linear-interpolation path).</div>
           </div>
           <div className="rounded-xl border border-line bg-surface-2 p-4">
             <div className="text-xs font-semibold uppercase tracking-wider text-primary mb-1">Feedback Immunity</div>
@@ -97,7 +97,7 @@ export default function ResearchPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
             <div className="rounded-lg bg-surface-2 p-3 border border-line">
               <div className="font-semibold text-body mb-1">Faster-Whisper (Local)</div>
-              <div>CTranslate2 INT8 inference on CPU/GPU. 2.9% WER on a 20-utterance LibriSpeech sample and 6.4% on 500 utterances (base model). No external service required.</div>
+              <div>CTranslate2 INT8 inference on CPU/GPU. 2.9% WER on LibriSpeech test-clean (20-utterance sample; 6.4% on 500 utterances). Zero external dependencies.</div>
             </div>
             <div className="rounded-lg bg-surface-2 p-3 border border-line">
               <div className="font-semibold text-body mb-1">NeMo Canary (Local)</div>
