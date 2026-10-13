@@ -13,7 +13,7 @@ On CPU this will run but slowly enough that it's a research/benchmarking
 tool, not something to point production traffic at — that's exactly why
 it's config-selectable rather than a default.
 
-Same honesty contract as every other service here: if nemo_toolkit isn't
+Like every other service here: if nemo_toolkit isn't
 installed, or the model fails to load, this returns a clear error — never a
 fabricated transcript, never a silently-wrong result.
 """

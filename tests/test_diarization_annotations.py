@@ -44,7 +44,7 @@ def test_enrich_diarization_empty():
 
 def test_synthesize_annotations():
     raw_data = {
-        "decisions": ["Deploy VoiceFlow on Contabo VPS", {"title": "Frontend on Vercel", "note": "Zero cold starts"}],
+        "decisions": ["Deploy VoiceFlow to production", {"title": "Frontend on Vercel", "note": "Static hosting"}],
         "action_items": [{"owner": "Yacine", "action": "Implement speaker diarization", "priority": "high", "due": "2026-10-05"}],
         "objections": [{"type": "Latency", "content": "WhisperX CPU alignment may add latency"}],
         "key_insights": ["Nova-3 delivers sub-300ms ASR turnaround"],

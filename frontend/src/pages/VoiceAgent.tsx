@@ -284,9 +284,8 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
     if (!this.pc) throw new Error("OpenAI transport not connected");
     this.stream = stream;
     // addTrack() alone creates one sendrecv audio transceiver (mic out, model's
-    // voice back on the same m-line via ontrack). A separate addTransceiver()
-    // here used to add a second, recvonly-only audio m-line to the same offer —
-    // two audio sections in one SDP offer instead of one bidirectional one.
+    // voice back on the same m-line via ontrack). Adding a separate transceiver would
+    // create a second, receive-only audio section in the offer.
     stream.getAudioTracks().forEach((track) => this.pc!.addTrack(track, stream));
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);

@@ -17,8 +17,7 @@ This is what eval/run_scenario_benchmark.py runs across to produce
 comparative results instead of "whichever provider happened to answer."
 
 Rough cost figures are public list-price ballparks (USD), not measured —
-labeled as estimates everywhere they're shown, same honesty standard as
-WER_BENCHMARK.md.
+labeled as estimates everywhere they're shown, as in WER_BENCHMARK.md.
 """
 from __future__ import annotations
 

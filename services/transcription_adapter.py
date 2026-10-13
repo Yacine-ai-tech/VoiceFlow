@@ -3,7 +3,7 @@ VoiceFlow Transcription Adapter
 ================================
 Unified adapter for speech-to-text. Two modes:
 
-  local   — WhisperX on the machine running this process (needs >= 4GB RAM + ffmpeg).
+  local   — WhisperX on the machine running this process (needs a machine with enough RAM, plus ffmpeg).
   remote  — Forward to a remote ASR endpoint.
 
 Default fallback chain (tried in this order; `provider` moves one to the
@@ -23,7 +23,7 @@ front; a failure falls through to the next):
 
 Set `strict=True` (what named scenarios in services/scenarios.py use) to
 turn off the fallback entirely: only the requested `provider` is tried, and
-a failure returns an honest error instead of a different provider's result.
+a failure returns an error instead of a different provider's result.
 This matters for benchmarking — "accurate" silently running on whatever
 answered first isn't a comparable trial.
 
@@ -631,7 +631,7 @@ async def transcribe(
             via conversational analysis for Groq Whisper.
         strict: If True and `provider` is set, use *only* that provider —
             no fallback to the rest of the chain, no local-as-last-resort.
-            A failure returns an honest error instead of a result from a
+            A failure returns an error instead of a result from a
             different provider than the one asked for. This is what named
             scenarios (services/scenarios.py) use: a benchmark comparing
             "accurate" vs "fast" is meaningless if "accurate" can silently
