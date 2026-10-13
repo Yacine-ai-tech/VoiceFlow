@@ -27,6 +27,41 @@ def test_all_routes_registered():
         assert p in paths, p
 
 
+def test_gemini_audio_activity_brackets_audio_and_ends_once():
+    import asyncio
+    from types import SimpleNamespace
+
+    from api import _GeminiAudioActivity
+
+    calls = []
+
+    class FakeSession:
+        async def send_realtime_input(self, **kwargs):
+            calls.append(kwargs)
+
+    types = SimpleNamespace(
+        ActivityStart=lambda: "start",
+        ActivityEnd=lambda: "end",
+        Blob=lambda data, mime_type: (data, mime_type),
+    )
+
+    async def exercise():
+        activity = _GeminiAudioActivity(FakeSession(), types, asyncio.Lock())
+        await activity.send_audio(b"first")
+        await activity.send_audio(b"second")
+        assert await activity.end()
+        assert not await activity.end()
+
+    asyncio.run(exercise())
+
+    assert calls == [
+        {"activity_start": "start"},
+        {"media": (b"first", "audio/pcm;rate=16000")},
+        {"media": (b"second", "audio/pcm;rate=16000")},
+        {"activity_end": "end"},
+    ]
+
+
 # ── Auth-disabled behavior (REQUIRE_INTERNAL_TOKEN unset/false — the actual
 #    live-deployment default; see ARCHITECTURE.md) ──────────────────────────
 #
@@ -129,6 +164,7 @@ def test_openai_webrtc_session_rejects_caller_controlled_destination(monkeypatch
 
     monkeypatch.setenv("REQUIRE_INTERNAL_TOKEN", "false")
     monkeypatch.setenv("AGENT_TOOLS_URL", "https://agentkit.example")
+    monkeypatch.setenv("OPENAI_REALTIME_API_KEY", "test-openai-key")
 
     response = _client().post(
         "/realtime/session/openai?agent_tools_url=https://attacker.example",
