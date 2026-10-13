@@ -144,6 +144,12 @@ Results are served live by `GET /benchmarks` and reported in
 [MULTI_PROVIDER_BENCHMARK.md](eval/MULTI_PROVIDER_BENCHMARK.md), and
 [ACTION_ITEM_BENCHMARK.md](eval/ACTION_ITEM_BENCHMARK.md).
 
+## Support the project
+
+If VoiceFlow is useful to you, a star on the repository helps other engineers find it, and following [@Yacine-ai-tech](https://github.com/Yacine-ai-tech) is the simplest way to hear about new releases. Passing the link to a colleague who has the same problem is just as welcome.
+
+Questions and field notes go to [Discussions](https://github.com/Yacine-ai-tech/VoiceFlow/discussions); reproducible bugs go to [Issues](https://github.com/Yacine-ai-tech/VoiceFlow/issues).
+
 ## License
 
 Open-source under the AGPL-3.0 License, free for researchers, students, and open-source
