@@ -167,9 +167,12 @@ projects. A commercial license is available for closed-source or enterprise use 
 
 ## Telemetry
 
-Running the app sends two anonymous pings if `TELEMETRY_ENDPOINT`/`TELEMETRY_URL` is
-configured: a startup ping and a periodic aggregate usage snapshot. `TELEMETRY_OPT_OUT=true`
-disables both. Neither includes user data — see `.env.example` for the exact payload shape.
+The app sends two kinds of anonymous ping. The first is a startup ping with the service name,
+version and a random install identifier. The second is a periodic aggregate usage snapshot
+(counters summed across all sessions plus the number of sessions seen; no session identifiers, audio
+or transcripts), sent only when there has been activity. Both go to the project's collector when
+`TELEMETRY_URL` (or `TELEMETRY_ENDPOINT`) is not defined, and nowhere when it is defined but
+empty, as in `.env.example`. `TELEMETRY_OPT_OUT=true` disables both; `DO_NOT_TRACK=1` also disables the startup ping.
 This README also carries a tracking-pixel image below, independent of the app and unaffected
 by any environment variable.
 
