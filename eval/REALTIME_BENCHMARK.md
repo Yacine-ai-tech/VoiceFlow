@@ -37,7 +37,7 @@ work the handler does before it can respond, not network/infra wake time.
 > **Why `openai` shows a fast failure, not a slow one.** The OpenAI relay path
 > doesn't do the same pre-handshake setup — it fails immediately on the provider's
 > own key-validation response (`invalid_api_key`) rather than after building a
-> session. That's a real, honestly-reported result: `REALTIME_API_KEY` in this
+> session. That's a real, reported result: `REALTIME_API_KEY` in this
 > environment is currently set to a Gemini credential, not a working OpenAI Realtime
 > key, so the `openai` path cannot be validated end-to-end without one. This is not
 > fabricated as a pass — it's reported as the actual failure it is.

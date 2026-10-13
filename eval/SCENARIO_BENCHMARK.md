@@ -35,7 +35,7 @@ provider than the one the scenario asked for, not a bug.
 >    particular proxy rejects a literal empty `user` message content outright (unlike a direct
 >    OpenAI-compatible endpoint, which generally accepts it). Fixed in
 >    `services/meeting_analyzer.py`: an empty/whitespace-only transcript is now sent as the
->    honest placeholder `"[no speech detected in this audio]"` instead of `""`, so the request is
+>    placeholder `"[no speech detected in this audio]"` instead of `""`, so the request is
 >    well-formed. Also hardened `services/transcription_adapter.py`'s Deepgram/AssemblyAI paths,
 >    which used `dict.get(key, "")` — that only substitutes the default when the *key is
 >    absent*, not when the API returns the key with an explicit `null` value (which both

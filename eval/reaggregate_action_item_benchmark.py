@@ -101,7 +101,7 @@ def main():
         "with `python3 eval/run_action_item_benchmark.py` (and re-aggregate with "
         "`eval/reaggregate_action_item_benchmark.py` if a provider rate-limits mid-run).",
         "",
-        "**Honesty note:** the 50 meetings are LLM-generated synthetic scripts (see "
+        "**Note:** the 50 meetings are LLM-generated synthetic scripts (see "
         "`eval/data/action_item_corpus.jsonl`), not real recorded meetings — a real 50-meeting "
         "corpus needs real people and real recordings, which is a data-collection task, not "
         "something a coding session can produce. Everything downstream of the script — the TTS "

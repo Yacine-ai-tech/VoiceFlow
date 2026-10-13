@@ -15,7 +15,7 @@ datasets; GPU auto-used if present).
 | **WER** | **2.9%** |
 | **CER** | **0.9%** |
 
-**Honest caveat:** N=20 is a small clean subset — the published whisper-`base` WER on full
+**Limitation:** N=20 is a small clean subset — the published whisper-`base` WER on full
 test-clean is ~5–6%, so 2.9% here is optimistic. Raise `--n` (and try `--model small/medium`)
 for a tighter, more representative number; GPU makes large N fast.
 

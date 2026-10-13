@@ -60,7 +60,7 @@ export default function Models() {
           Speaker diarization is engine-selectable (<code className="font-mono text-[12px]">LOCAL_DIARIZATION_ENGINE</code>):
           <Chip tone="accent">PYANNOTE</Chip> (default, needs <code className="font-mono text-[12px]">HF_TOKEN</code>, GPU-recommended) or
           <Chip>NEMO</Chip> (CPU-capable alternative). If neither is available, the transcript comes back without
-          speaker labels — <code className="font-mono text-[12px]">diarized: false</code>, honestly, never a fabricated result.
+          speaker labels — <code className="font-mono text-[12px]">diarized: false</code>, never a fabricated result.
         </p>
         <p className="mt-3 text-[13px] leading-6 text-dim">
           Every heavy local model (WhisperX, NeMo Canary, pyannote/NeMo diarization, Kokoro TTS) can run
@@ -75,7 +75,7 @@ export default function Models() {
           <code className="font-mono text-[12px]">POST /pipeline</code> with a <code className="font-mono text-[12px]">scenario</code> field
           (<code className="font-mono text-[12px]">fast</code>, <code className="font-mono text-[12px]">accurate</code>, <code className="font-mono text-[12px]">cheap</code>, <code className="font-mono text-[12px]">streaming</code>)
           pins an exact provider + diarization + model combination with no fallback substitution —
-          a failure is reported honestly instead of silently running on a different provider than
+          a failure is reported instead of silently running on a different provider than
           the one requested. See <code className="font-mono text-[12px]">GET /scenarios</code> for the full catalog — the same selector is
           available right on the Analyze page.
         </p>

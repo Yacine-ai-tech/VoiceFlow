@@ -210,7 +210,7 @@ scenario:        fast | accurate | cheap |
   "analysis_type": "meeting",
   "scenario": null
 }`,
-    note: "When `scenario` is given, it overrides `provider` entirely and pins the exact transcription provider, diarize flag, and analysis model from services/scenarios.py, run in strict mode — a failure is reported honestly ({\"method\":\"error\",\"error\":\"provider_failed:...\"}) instead of silently substituting a different provider than the one the scenario promises. 400 unknown_scenario for an unrecognized name.",
+    note: "When `scenario` is given, it overrides `provider` entirely and pins the exact transcription provider, diarize flag, and analysis model from services/scenarios.py, run in strict mode — a failure is reported ({\"method\":\"error\",\"error\":\"provider_failed:...\"}) instead of silently substituting a different provider than the one the scenario promises. 400 unknown_scenario for an unrecognized name.",
   },
   {
     method: "POST", path: "/meeting/process", category: "Composite Pipelines", auth: "token",
