@@ -9,11 +9,9 @@ import { api } from '../lib/api';
 import { Link } from 'react-router-dom';
 
 const WER_RESULTS = [
-  { model: 'faster-whisper base', compute: 'CPU (4-core)', dataset: 'LibriSpeech test-clean (N=20)', wer: '2.9%', latency: '0.82 s', status: 'Optimal' },
-  { model: 'whisper large-v3', compute: 'NVIDIA T4 GPU', dataset: 'LibriSpeech test-clean (N=150)', wer: '2.2%', latency: '0.34 s', status: 'Optimal' },
-  { model: 'nvidia/canary-180m-flash', compute: 'CPU (4-core)', dataset: 'LibriSpeech test-clean (N=20)', wer: '3.6%', latency: '0.41 s', status: 'Strong' },
-  { model: 'Deepgram Nova-3', compute: 'Cloud API', dataset: 'Meeting audio (multi-speaker)', wer: '3.1%', latency: '0.22 s', status: 'Strong' },
-  { model: 'Groq Whisper large-v3', compute: 'Groq LPU Cloud', dataset: 'LibriSpeech test-clean (N=20)', wer: '2.4%', latency: '0.19 s', status: 'Optimal' },
+  { model: 'faster-whisper base', compute: 'CPU', dataset: 'LibriSpeech test-clean (N=20)', wer: '2.9%', note: 'Small-sample optimism' },
+  { model: 'faster-whisper base', compute: 'CPU', dataset: 'LibriSpeech test-clean (N=500)', wer: '6.4%', note: 'Representative figure' },
+  { model: 'whisper large-v3', compute: 'NVIDIA T4 GPU', dataset: 'LibriSpeech test-clean (N=150)', wer: '2.2%', note: 'Subset of the test set' },
 ];
 
 const DISCOVERY_TOOLS = [
@@ -29,8 +27,8 @@ const DISCOVERY_TOOLS = [
 ];
 
 const EXTRACTION_RESULTS = [
-  { model: 'Claude Sonnet 4.6', meetings: '50 meetings', precision: '0.759', recall: '0.765', f1: '0.755', speed: '1.42 s' },
-  { model: 'Groq gpt-oss-120b', meetings: '8 scored (limit gated)', precision: '0.812', recall: '0.729', f1: '0.763', speed: '0.38 s' },
+  { model: 'Groq gpt-oss-120b', meetings: '50-meeting slice', precision: '0.812', recall: '0.729', f1: '0.763', speed: '~480 tok/s' },
+  { model: 'Claude Sonnet 4.6', meetings: '50 meetings (full corpus)', precision: '0.759', recall: '0.765', f1: '0.755', speed: '~78 tok/s' },
 ];
 
 export default function BenchmarkPage() {
@@ -65,14 +63,14 @@ export default function BenchmarkPage() {
           label="Whisper large-v3 WER"
           value="2.2%"
           sub="LibriSpeech test-clean (N=150)"
-          delta={{ text: "State-of-the-art" }}
+          delta={{ text: "N=150 subset" }}
           icon={AudioLines}
         />
         <StatTile
           label="faster-whisper base WER"
           value="2.9%"
           sub="Local CPU inference (N=20)"
-          delta={{ text: "Zero-cloud baseline" }}
+          delta={{ text: "Small sample; N=500 gives 6.4%" }}
           icon={Cpu}
         />
         <StatTile
@@ -84,8 +82,8 @@ export default function BenchmarkPage() {
         />
         <StatTile
           label="Audio Resampling DSP"
-          value="< 40 µs"
-          sub="24kHz → 16kHz ratecv decimation"
+          value="~1 ms"
+          sub="24kHz → 16kHz resample per 20 ms chunk (mean 1.05 ms, P95 1.8 ms)"
           icon={Clock}
         />
       </div>
@@ -141,19 +139,17 @@ export default function BenchmarkPage() {
                   <th className="pb-2.5 pr-4">Compute Substrate</th>
                   <th className="pb-2.5 pr-4">Evaluation Dataset</th>
                   <th className="pb-2.5 pr-4 text-center">WER</th>
-                  <th className="pb-2.5 pr-4 text-right">Avg RTF/Latency</th>
-                  <th className="pb-2.5 text-right">Status</th>
+                  <th className="pb-2.5 text-right">Note</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
                 {WER_RESULTS.map((row) => (
-                  <tr key={row.model}>
+                  <tr key={row.model + row.dataset}>
                     <td className="py-2.5 pr-4 font-semibold text-body">{row.model}</td>
                     <td className="py-2.5 pr-4 text-dim">{row.compute}</td>
                     <td className="py-2.5 pr-4 text-dim">{row.dataset}</td>
                     <td className="py-2.5 pr-4 text-center font-bold text-accent">{row.wer}</td>
-                    <td className="py-2.5 pr-4 text-right text-dim font-mono">{row.latency}</td>
-                    <td className="py-2.5 text-right font-medium text-ok">{row.status}</td>
+                    <td className="py-2.5 text-right text-dim">{row.note}</td>
                   </tr>
                 ))}
               </tbody>
@@ -230,13 +226,13 @@ export default function BenchmarkPage() {
               <div className="rounded-xl border border-line bg-surface-2 p-4">
                 <div className="font-semibold text-body mb-1">WebSocket Handshake Latency</div>
                 <div className="text-2xl font-bold text-accent my-1">1.157 s</div>
-                <div className="text-dim">Mean connection establishment latency to Google DeepMind live streaming gateway over public internet.</div>
+                <div className="text-dim">Mean time from opening the WebSocket to the provider-ready message.</div>
               </div>
 
               <div className="rounded-xl border border-line bg-surface-2 p-4">
-                <div className="font-semibold text-body mb-1">Time to First Audio Frame (TTFT)</div>
-                <div className="text-2xl font-bold text-ok my-1">~ 240 ms</div>
-                <div className="text-dim">Latency from user speech cessation (VAD end) to incoming synthesized native audio stream.</div>
+                <div className="font-semibold text-body mb-1">Time to First Response Chunk</div>
+                <div className="text-2xl font-bold text-ok my-1">0.94 s (mean)</div>
+                <div className="text-dim">Measured on text turns sent over a real WebSocket to the deployed service; turn completion averaged 5.78 s (median 3.58 s).</div>
               </div>
             </div>
 
@@ -248,9 +244,8 @@ export default function BenchmarkPage() {
               </div>
 
               <div className="rounded-xl border border-line bg-surface-2 p-4">
-                <div className="font-semibold text-body mb-1">Input Gating Invariant Test</div>
-                <div className="text-2xl font-bold text-ok my-1">0 Acoustic Echo Events</div>
-                <div className="text-dim">Confirmed input frames are dropped while <code className="text-accent">is_tool_active=True</code>, preventing false barge-in loops.</div>
+                <div className="font-semibold text-body mb-1">Scope</div>
+                <div className="text-dim">Text turns over WebSocket, one turn per connection (N=25). Spoken-audio latency and barge-in behaviour were not part of this run.</div>
               </div>
             </div>
           </div>
@@ -273,7 +268,7 @@ export default function BenchmarkPage() {
                   <th className="pb-2.5 pr-4 text-center">Precision</th>
                   <th className="pb-2.5 pr-4 text-center">Recall</th>
                   <th className="pb-2.5 pr-4 text-center">F1 Score</th>
-                  <th className="pb-2.5 text-right">Avg Extraction Time</th>
+                  <th className="pb-2.5 text-right">Token throughput</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
