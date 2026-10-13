@@ -98,7 +98,7 @@ pytest tests/ -q
 
 ## Provider keys and rate limits
 
-Free-tier provider limits apply per key. VoiceFlow discovers every configured key of a
+Provider rate limits apply per key. VoiceFlow discovers every configured key of a
 provider from the environment (`<PROVIDER>_API_KEY`, `<PROVIDER>_API_KEY_<suffix>`, or a
 comma-separated `<PROVIDER>_API_KEYS`), uses them round-robin, and parks a key that hits its
 quota until the provider's retry window passes. Realtime sessions start on the next usable

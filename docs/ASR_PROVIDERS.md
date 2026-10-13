@@ -30,7 +30,7 @@ POST /transcribe
 **3. Named scenarios** (`scenario` field on `POST /pipeline`) — for
 reproducible comparisons, this goes further than (2): it pins the provider
 with `strict=True`, so there's no fallback substitution at all — a failure
-is reported honestly instead of quietly running on a different provider
+is reported instead of quietly running on a different provider
 than the one asked for. See `services/scenarios.py` and `GET /scenarios`.
 This is what `eval/run_scenario_benchmark.py` uses.
 
@@ -58,7 +58,7 @@ directly on this host.
 
 **Delegate to remote (`VOICEFLOW_TRANSCRIPTION_MODE=remote` +
 `VOICEFLOW_REMOTE_ENDPOINT`) when:** this host is resource-constrained (a
-small/free-tier container on whatever platform you deploy to is the common
+small container on whatever platform you deploy to is the common
 case). `VOICEFLOW_REMOTE_ENDPOINT` is a black box you control: point it at
 your own GPU box, an on-demand cloud worker, whatever — VoiceFlow only
 knows its `/whisper` contract, not what's running behind it. This is

@@ -4,7 +4,7 @@ transcripts with known ground-truth action items, for
 run_action_item_benchmark.py to score real transcription+analysis output
 against.
 
-Honesty note: these are LLM-generated meeting scripts, not real recorded
+Note: these are LLM-generated meeting scripts, not real recorded
 meetings. A real 50-meeting corpus (real people, real recordings, human-
 labeled ground truth) is a data-collection task outside what a coding
 session can produce — see ACTION_ITEM_BENCHMARK.md for what this

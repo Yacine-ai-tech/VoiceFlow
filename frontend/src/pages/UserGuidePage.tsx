@@ -31,7 +31,7 @@ export default function UserGuidePage() {
             <div><Chip tone="accent">INTEGRATIONS</Chip> push a result to a Slack, n8n, Zapier, or custom webhook — the server relays it so your browser doesn't need CORS access to that third-party URL.</div>
             <div><Chip tone="accent">ANALYTICS</Chip> your own browser's usage counters only — never anyone else's.</div>
             <div><Chip tone="accent">HISTORY</Chip> your last 30 results, kept in this browser's <code className="font-mono text-[12px]">localStorage</code>, never sent to a server-side database.</div>
-            <div><Chip tone="accent">MODELS / API DOCS / BENCHMARK</Chip> reference pages — real provider routing, real endpoint contracts, real measured (or honestly-empty) benchmark reports.</div>
+            <div><Chip tone="accent">MODELS / API DOCS / BENCHMARK</Chip> reference pages — real provider routing, real endpoint contracts, real measured (or empty) benchmark reports.</div>
           </div>
         </Card>
 
