@@ -164,6 +164,7 @@ def test_openai_webrtc_session_rejects_caller_controlled_destination(monkeypatch
 
     monkeypatch.setenv("REQUIRE_INTERNAL_TOKEN", "false")
     monkeypatch.setenv("AGENT_TOOLS_URL", "https://agentkit.example")
+    monkeypatch.setenv("OPENAI_REALTIME_API_KEY", "test-openai-key")
 
     response = _client().post(
         "/realtime/session/openai?agent_tools_url=https://attacker.example",
