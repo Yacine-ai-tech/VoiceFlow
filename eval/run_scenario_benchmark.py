@@ -43,8 +43,8 @@ from core.config import settings  # noqa: E402
 
 def _generate_test_audio(seconds: float = 3.0, freq_hz: float = 440.0, sample_rate: int = 16000) -> bytes:
     """A short mono 16-bit PCM WAV tone — real, valid audio, used when no
-    --file is given. This exercises the full pipeline honestly (it will
-    correctly transcribe to near-silence — there's no speech in a tone) but
+    --file is given. This exercises the full pipeline (it correctly transcribes
+    to near-silence, since a tone has no speech) but
     is not a substitute for real speech when you actually care about
     transcript quality. Pass --file for that."""
     n_samples = int(seconds * sample_rate)

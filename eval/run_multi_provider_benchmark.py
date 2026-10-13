@@ -53,9 +53,7 @@ class MultiProviderBenchmark:
                 "model": "whisper-1"
             },
             "gemini": {
-                # gemini-1.5-pro was retired from the v1 REST API (confirmed live: 404
-                # "models/gemini-1.5-pro is not found for API version v1") — gemini-3.5-flash
-                # is the current, working multimodal model, confirmed live via a real API call.
+                # gemini-1.5-pro is retired; gemini-3.5-flash is the current multimodal model.
                 "url": "https://generativelanguage.googleapis.com/v1/models/gemini-3.5-flash:generateContent",
                 "api_key": os.environ.get("GEMINI_API_KEY", ""),
                 "model": "gemini-3.5-flash"

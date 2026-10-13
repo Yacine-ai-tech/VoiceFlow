@@ -38,7 +38,7 @@ export default function Analytics() {
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <StatTile label="Analyses run" value={st.total_analyses} icon={Activity} sub="this session only" />
+            <StatTile label="Analyses run" value={st.total_analyses} icon={Activity} sub="this browser session" />
             <StatTile label="Live recordings" value={st.stream_sessions} icon={Mic} sub="streamed to /stream" />
             <StatTile label="Integration relays" value={st.relays} icon={Send} sub="webhooks fired" />
             <StatTile label="This browser" value={history.length} icon={Layers} sub="conversations processed" />

@@ -139,13 +139,13 @@ def get_or_create_kokoro_pipeline(lang_code: str = "a"):
 
 
 async def preload_kokoro() -> None:
-    """Preload Kokoro pipeline into memory during server startup to eliminate cold-start latency."""
+    """Preload the Kokoro pipeline into memory during server startup so the first request is fast."""
     default_lang = (settings.KOKORO_LANG_CODE or "a").strip().lower()
     log.info("Preloading Kokoro TTS pipeline in memory (lang_code=%r)...", default_lang)
     loop = asyncio.get_running_loop()
     pipe = await loop.run_in_executor(None, get_or_create_kokoro_pipeline, default_lang)
     if pipe is not None:
-        log.info("Kokoro TTS pipeline successfully preloaded in memory with zero cold start.")
+        log.info("Kokoro TTS pipeline preloaded.")
     else:
         log.info("Kokoro TTS not available for preloading (fallback providers will be used).")
 
