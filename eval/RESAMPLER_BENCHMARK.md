@@ -5,7 +5,7 @@ resampling (`_resample_pcm()` in api.py). Reproducible:
 `python eval/test_resampler_perf.py --iterations 500`
 
 ## Setup
-- Backend: scipy.signal.resample_poly
+- Backend measured: `scipy.signal.resample_poly` (the fallback path; `soxr` is used first when installed)
 - Chunk size: 20ms @ 24000Hz -> 16000Hz (real Gemini Live frame size)
 - Iterations: 500 (+50 warmup, discarded)
 
@@ -19,4 +19,4 @@ resampling (`_resample_pcm()` in api.py). Reproducible:
 | **P99 latency** | 2.098ms | — | — |
 
 Historical baseline this remediates: synchronous Python `audioop.ratecv` added **+42ms** TTFT
-buffer overhead before Python 3.13 removed `audioop` and this SIMD (`soxr`) path replaced it.
+buffer overhead before Python 3.13 removed `audioop`. It was replaced by `soxr` with the scipy path above as the fallback.

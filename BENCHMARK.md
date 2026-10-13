@@ -136,23 +136,30 @@ Reproducible via `python eval/run_wer_benchmark.py`:
 | faster-whisper `large-v3` | T4 GPU | 150 | **2.2%** | **0.8%** |
 | faster-whisper `base` | CPU | 500 (full test-clean) | **6.4%** | **2.6%** |
 
-Tuning to `whisper-large-v3` achieves a top-tier **2.2% WER**, placing VoiceFlow in the top competitive tier for conversational speech-to-text.
+The larger model lowers WER on this sample; both figures are on read speech (LibriSpeech), not conversational audio, and N=150 is a subset of the test set.
 
-### 5b. Multi-Domain Action Item & Sentiment Extraction
+### 5b. Action Item Extraction
 
-Measured across structured conversational corpora spanning executive syncs, technical interviews, and support calls (`eval/ACTION_ITEM_BENCHMARK.md`):
+Measured on a 50-meeting synthetic corpus: dialogues are synthesized to audio with a neural TTS
+engine, transcribed with Whisper, and passed through the action-item extractor. Items are matched
+to the ground truth by owner and statement overlap (threshold 0.50). Full methodology:
+[`eval/ACTION_ITEM_BENCHMARK.md`](eval/ACTION_ITEM_BENCHMARK.md).
 
-| Evaluation Metric | Measured Score | Standard Benchmark Reference |
-|---|---|---|
-| Action Item Precision | **92.4%** | Multi-judge verified |
-| Assignee Identification Accuracy | **94.8%** | Ground-truth role alignment |
-| Meeting Sentiment Concordance | **89.6%** | 3-judge panel consensus |
+| Extraction model | Precision | Recall | F1 |
+|---|---|---|---|
+| `groq/openai/gpt-oss-120b` | 0.812 | 0.729 | 0.763 |
+| `anthropic/claude-sonnet-4-6` | 0.759 | 0.765 | 0.755 |
+
+The corpus is synthetic, so these figures describe extraction from clean synthesized speech and
+should not be read as accuracy on recorded meetings.
 
 ## Limitations
 
 - Turn-completion time has a spread driven by generative token volume per reply.
-- AgentKit's `resources` and `prompts` discovery channels are implemented by VoiceFlow's
-  bridge and remain available for extended enterprise tool suites.
+- The tool-calling checks in §2 and §3 were run against one AgentKit deployment; the
+  `resources` and `prompts` channels are implemented by the bridge but were not exercised.
+- Sections 5a and 5b use read or synthesized speech and do not measure accuracy on noisy,
+  overlapping or accented meeting audio.
 
 ## Further Reading
 
