@@ -17,8 +17,8 @@ COPY . .
 
 EXPOSE 8002
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8002}/health || exit 1
+HEALTHCHECK --interval=15s --timeout=10s --start-period=180s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8002}/ready || exit 1
 
 # Honor an injected $PORT; default 8002.
 # exec via sh so $PORT expands AND uvicorn becomes PID 1 (clean SIGTERM shutdown).

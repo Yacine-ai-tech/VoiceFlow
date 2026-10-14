@@ -58,6 +58,9 @@ from services.tts_service import generate_speech, generate_speech_with_meta
 log = get_logger(__name__)
 
 
+_stt_ready = asyncio.Event()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Preload the Kokoro pipeline during server boot so the first TTS request is fast
@@ -65,6 +68,18 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(tts_service.preload_kokoro())
     except Exception as e:
         log.warning("Background Kokoro preloading initialization error: %s", e)
+
+    async def _preload_stt() -> None:
+        try:
+            from services.transcription_adapter import _whisperx_service
+            await asyncio.to_thread(_whisperx_service.preload)
+            log.info("Speech-to-text model preloaded")
+        except Exception as exc:
+            log.warning("Speech-to-text preload skipped: %s", exc)
+        finally:
+            _stt_ready.set()
+
+    asyncio.create_task(_preload_stt())
     if db.DB_ENABLED:
         try:
             db.ensure_schema()
@@ -178,7 +193,7 @@ async def verify_internal_token(request: Request, call_next):
     # ("http") entirely) — their own auth/rate-limit gating lives in the WS
     # handlers themselves (see ws_realtime / ws_stream), not here.
     if (request.method == "OPTIONS"
-            or request.url.path == "/health"
+            or request.url.path in ("/health", "/ready")
             or request.url.path.startswith("/api/v1/auth/")
             or request.url.path.startswith("/assets/")
             or request.url.path.startswith("/static/")):
@@ -482,6 +497,14 @@ async def dashboard():
 @app.get("/health")
 async def health() -> Dict[str, Any]:
     return {"status": "ok", "service": "voiceflow", "version": "0.1.0"}
+
+
+@app.get("/ready")
+async def ready() -> Dict[str, Any]:
+    """200 once the speech-to-text model is loaded and exercised, 503 before."""
+    if not _stt_ready.is_set():
+        raise HTTPException(status_code=503, detail="warming_up")
+    return {"status": "ready", "service": "voiceflow"}
 
 
 class TranscribeJsonRequest(BaseModel):
