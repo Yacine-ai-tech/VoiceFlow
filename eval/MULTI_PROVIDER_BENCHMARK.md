@@ -1,5 +1,7 @@
 # VoiceFlow — Multi-Provider ASR Latency Benchmark
 
+> Figures recorded: 2026-10. Document last reviewed: 2026-10-14.
+
 Reproducible: `python eval/run_multi_provider_benchmark.py`
 
 ## What this measures

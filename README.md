@@ -19,7 +19,10 @@ tool-calling.
 
 ## What It Does
 
-- **Transcription router**: local WhisperX (default), Groq Whisper, Deepgram, or AssemblyAI.
+- **Transcription router**: an optional remote host, Groq Whisper, Deepgram and AssemblyAI in the
+  order set by `ASR_PROVIDER`, with local WhisperX (or NeMo Canary) as the local engine and last
+  resort. A failing provider falls through to the next; named scenarios run in strict mode with no
+  substitution.
 - **Five analysis types**, each routed to its own model:
   - `meeting` → Groq (`gpt-oss-120b`)
   - `sales_call` → Claude Sonnet 4.6
@@ -60,6 +63,12 @@ uvicorn api:app --port 8002
 Then open http://localhost:8002/.
 
 ## Architecture
+
+The components, request paths and design decisions are described in
+[`ARCHITECTURE.md`](ARCHITECTURE.md) (interactive version in the app under **Architecture**), and
+every configuration variable is described in [`.env.example`](.env.example).
+`GET /ready` returns 503 `warming_up` until the speech-to-text model is loaded; `GET /health`
+is a liveness probe.
 
 ```
             ┌──────────┐

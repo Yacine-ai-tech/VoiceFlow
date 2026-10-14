@@ -1,5 +1,7 @@
 # VoiceFlow — Action Item Extraction Benchmark
 
+> Figures recorded: 2026-09. Document last reviewed: 2026-10-14.
+
 End-to-end evaluation pipeline (neural TTS audio synthesis → Whisper ASR speech-to-text → LLM reasoning extraction and structured schema synthesis), benchmarked across a standardized multi-speaker meeting test corpus (50 meetings) with verified ground truth.
 
 For reproduction scripts, see `eval/generate_corpus.py` and `eval/run_action_item_benchmark.py`.

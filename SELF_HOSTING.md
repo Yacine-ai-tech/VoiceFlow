@@ -34,3 +34,15 @@ If you opt for cloud-based providers instead of local execution, ensure the foll
 - **External agent tools for the voice agent**: `AGENT_TOOLS_URL` pointing at any service implementing the discovery contract in `services/agent_tools_bridge.py` (unset by default — no tools, voice-only). If that service enforces its own internal-token auth, set `AGENT_TOOLS_TOKEN` to the matching value (falls back to `AGENTKIT_INTERNAL_TOKEN`/`INTERNAL_TOKEN` if unset — separate from this project's own `VOICEFLOW_INTERNAL_TOKEN`, which gates VoiceFlow's own endpoints, not calls it makes outward).
 - **Durable session analytics** (optional): set `POSTGRES_URL` to persist `GET /analytics`'s usage counters across restarts (see `core/db.py`). Unset by default — analytics still work without it, just reset on every restart.
 - **Abuse mitigation** (optional to tune): `RATE_LIMIT_HTTP_PER_MIN` (default 30) and `RATE_LIMIT_WS_CONNECTS_PER_MIN` (default 10) cap per-IP request/connection rates; `REQUIRE_INTERNAL_TOKEN=true` additionally gates every POST endpoint and both WebSocket routes behind `VOICEFLOW_INTERNAL_TOKEN`.
+
+## 4. Start-up, readiness and memory
+
+The speech-to-text model (and Kokoro, when selected) is preloaded in the background when the
+server starts. `GET /ready` returns 503 `warming_up` until the speech model has been loaded and
+exercised, then 200; gate traffic on `/ready` and use `/health` for liveness. The first
+transcription after readiness does not pay for model loading.
+
+`WHISPER_MODEL` controls the resident size of the local model (`tiny` to `large-v3`). On a host
+with limited memory choose a smaller model, or set `VOICEFLOW_TRANSCRIPTION_MODE=remote` and
+`ALLOW_LOCAL_ASR_FALLBACK=false` so the local model is never loaded on demand. Every variable is
+described in [`.env.example`](.env.example).

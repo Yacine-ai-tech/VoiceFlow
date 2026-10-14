@@ -46,7 +46,7 @@ STATUS.md
 # Internal dev-session architecture notes (not committed) — session-specific
 # commentary ("fixed this session", live-verification notes) that belongs in
 # a local reference doc, not the public repo history.
-ARCHITECTURE.md
+FULL_ARCHITECTURE.md
 architecture.md
 Architecture.md
 

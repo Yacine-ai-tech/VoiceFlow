@@ -1,5 +1,7 @@
 # VoiceFlow — Audio Resampler Micro-Benchmark
 
+> Figures recorded: 2026-10. Document last reviewed: 2026-10-14.
+
 SIMD vector downsampler latency for the live Gemini audio path's 24kHz -> 16kHz PCM
 resampling (`_resample_pcm()` in api.py). Reproducible:
 `python eval/test_resampler_perf.py --iterations 500`
