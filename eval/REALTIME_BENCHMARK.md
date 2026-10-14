@@ -1,5 +1,7 @@
 # Realtime WebSocket Benchmark
 
+> Figures recorded: 2026-10. Document last reviewed: 2026-10-14.
+
 This benchmark evaluates the latency and connection stability of the `/realtime`
 WebSocket endpoint against whichever provider `REALTIME_PROVIDER` selects —
 an explicit, env-driven choice with no auto-fallback between OpenAI and Gemini.

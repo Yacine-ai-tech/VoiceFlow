@@ -1,5 +1,7 @@
 # VoiceFlow — Scenario Comparison Benchmark
 
+> Figures recorded: 2026-10. Document last reviewed: 2026-10-14.
+
 Reproducible: `python eval/run_scenario_benchmark.py [--file audio.wav] [--scenarios fast,accurate,cheap,streaming]`
 
 ## What this measures

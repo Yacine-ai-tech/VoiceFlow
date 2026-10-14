@@ -1,5 +1,7 @@
 # Benchmark Results
 
+> Figures recorded: 2026-10. Document last reviewed: 2026-10-14.
+
 This document reports VoiceFlow's external tool-calling integration — the `/realtime` voice
 agent's ability to call an external "agent tools" service mid-conversation, via the discovery
 contract implemented in `services/agent_tools_bridge.py`. For per-provider benchmarks (ASR,

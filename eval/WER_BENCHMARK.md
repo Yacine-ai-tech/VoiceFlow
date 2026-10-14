@@ -1,5 +1,7 @@
 # VoiceFlow — ASR WER Benchmark (LibriSpeech test-clean)
 
+> Figures recorded: 2026-10. Document last reviewed: 2026-10-14.
+
 Standard ASR evaluation of the local faster-whisper route. Reproducible:
 `python eval/run_wer_benchmark.py --n 20 --model base` (needs faster-whisper, jiwer, soundfile,
 datasets; GPU auto-used if present).

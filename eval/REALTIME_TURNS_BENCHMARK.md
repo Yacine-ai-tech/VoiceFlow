@@ -1,5 +1,7 @@
 # N-Turn Realtime Benchmark (Gemini Multimodal Live)
 
+> Figures recorded: 2026-09. Document last reviewed: 2026-10-14.
+
 Extends section 4 of `BENCHMARK.md` (originally N=8) to N=25: one WebSocket
 connection and one conversational text turn per iteration against `/realtime/gemini`,
 matching that section's own methodology exactly.
