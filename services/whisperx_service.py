@@ -247,6 +247,24 @@ class WhisperXService:
         self.device = device or settings.WHISPER_DEVICE
         self._model = None
 
+    def preload(self) -> None:
+        """Load the model and run a second of silence through it, so the first real request
+        is served at steady-state speed."""
+        import io
+        import wave
+
+        self._ensure_loaded()
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(b"\x00\x00" * 16000)
+        try:
+            self.transcribe(buf.getvalue(), language="en")
+        except Exception as exc:  # warm-up is best effort
+            log.warning("speech-to-text warm-up transcription skipped: %s", exc)
+
     def _ensure_loaded(self):
         if self._model is not None:
             return
