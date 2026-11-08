@@ -1433,7 +1433,8 @@ async def ws_realtime(ws: WebSocket):
         # The model reads each tool's own description to determine when to invoke it.
         _system_instruction = (
             "You are VoiceFlow's voice agent — a natural, fluent, and concise spoken AI assistant. "
-            "Speak fluently, warmly, and empathetically in whatever language the caller uses (French, English, Spanish, German, etc.).\n\n"
+            "Speak fluently, warmly, and empathetically in French or English — the caller's language. If the caller switches between French and English mid-conversation, follow them naturally. "
+            "Never translate unless the caller explicitly asks. If speech is unclear or in another language, ask for clarification in the same language rather than guessing.\n\n"
             "CRITICAL CONVERSATIONAL RULES:\n"
             "1. CONVERSATION FIRST: You are primarily a conversational voice assistant. For greetings ('hello', 'bonjour', 'salut', 'hi', 'how are you'), "
             "pleasantries, introductions, small talk, chit-chat, opinions, explanations, or general knowledge questions (math, science, history, coding, languages), "
@@ -1477,7 +1478,9 @@ async def ws_realtime(ws: WebSocket):
             # (server_content.output_transcription); the human half of the
             # conversation was never transcribed at all, let alone shown
             # on-screen. Populates server_content.input_transcription below.
-            input_audio_transcription=_gtypes.AudioTranscriptionConfig(),
+            input_audio_transcription=_gtypes.AudioTranscriptionConfig(
+                language_codes=["en-US", "fr-FR"]
+            ),
             realtime_input_config=_gtypes.RealtimeInputConfig(
                 automatic_activity_detection=_gtypes.AutomaticActivityDetection(
                     disabled=True
@@ -1580,6 +1583,28 @@ async def ws_realtime(ws: WebSocket):
                     indices = np.round(np.linspace(0, len(arr) - 1, n_samples)).astype(int)
                     return arr[indices].astype(np.int16).tobytes()
 
+                _gate_hangover = [0]
+
+                def _pcm_noise_gate(pcm_bytes: bytes) -> bytes:
+                    """Drop near-silent PCM frames (room noise, fan, keyboard) before they
+                    reach Gemini as 'speech'. Energy gate with ~100ms hangover so speech
+                    onsets aren't clipped; returns b"" for frames to suppress."""
+                    try:
+                        import numpy as np
+                        arr = np.frombuffer(pcm_bytes, dtype=np.int16)
+                        if arr.size < 320:
+                            return pcm_bytes
+                        rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
+                        if rms < 400.0:
+                            _gate_hangover[0] = min(_gate_hangover[0] + 1, 10)
+                            if _gate_hangover[0] > 5:
+                                return b""
+                        else:
+                            _gate_hangover[0] = 0
+                    except Exception:
+                        pass
+                    return pcm_bytes
+
 
                 async def _client_to_gemini():
                     """Forward browser audio/text frames to Gemini session."""
@@ -1609,7 +1634,9 @@ async def ws_realtime(ws: WebSocket):
                                         pcm_24k = base64.b64decode(b64)
                                         sample_rate = int(data.get("sample_rate") or 24000)
                                         pcm_16k = _resample_pcm(pcm_24k, sample_rate, 16000)
-                                        await audio_activity.send_audio(pcm_16k)
+                                        gated = _pcm_noise_gate(pcm_16k)
+                                        if gated:
+                                            await audio_activity.send_audio(gated)
                                         await trace.first("first_input_audio", mode="json_base64")
 
                                 elif evt == "input_audio_buffer.commit":
@@ -1856,7 +1883,7 @@ async def ws_realtime(ws: WebSocket):
                         "type": "server_vad",
                         "threshold": 0.5,
                         "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500,
+                        "silence_duration_ms": 800,
                     },
                 }
                 if _external_tools:
