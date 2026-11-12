@@ -250,6 +250,30 @@ def list_voice_records(
         return []
 
 
+def get_voice_record(record_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch one voice record by id (admin/internal use — no session scoping)."""
+    if not DB_ENABLED:
+        return None
+    try:
+        ensure_schema()
+        with get_conn() as conn:
+            cur = conn.execute(
+                "SELECT id, session_id, kind, title, duration_sec, transcript, analysis, metadata, created_at FROM voice_records WHERE id = %s",
+                (record_id,),
+            )
+            r = cur.fetchone()
+            if not r:
+                return None
+            return {
+                "id": r[0], "session_id": r[1], "kind": r[2], "title": r[3],
+                "duration_sec": r[4], "transcript": r[5], "analysis": r[6],
+                "metadata": r[7], "created_at": r[8].isoformat() if hasattr(r[8], "isoformat") else str(r[8]),
+            }
+    except Exception as e:
+        log.warning("get_voice_record failed: %s", e)
+        return None
+
+
 def delete_voice_record(record_id: str, session_id: Optional[str] = None, is_admin: bool = False) -> bool:
     """Delete a single voice record scoped to the owner session unless admin."""
     if not DB_ENABLED:
