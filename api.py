@@ -338,6 +338,54 @@ def _persist_voice_record(
         log.warning("Async voice record persistence error: %s", e)
 
 
+_MEDIA_ROOT = _os.environ.get("VOICEFLOW_MEDIA_DIR") or _os.environ.get("FILE_STORAGE_DIR") or "/data/voiceflow_media"
+_MEDIA_EXT = {
+    "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
+    "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/mp4": "m4a", "audio/m4a": "m4a",
+    "audio/ogg": "ogg", "audio/webm": "webm", "audio/flac": "flac", "audio/aac": "aac",
+}
+
+def _store_audio(audio: bytes, filename: Optional[str], content_type: Optional[str]) -> Optional[str]:
+    """Persist uploaded audio for admin review. Returns a path relative to
+    VOICEFLOW_MEDIA_DIR, or None on failure — never blocks the request."""
+    if not audio:
+        return None
+    try:
+        import time, uuid
+        ext = _MEDIA_EXT.get((content_type or "").split(";")[0].strip().lower())
+        if not ext:
+            guess = (filename or "").rsplit(".", 1)
+            ext = guess[1].lower()[:8] if len(guess) == 2 and guess[1].isalnum() else "bin"
+        rel = f"{time.strftime('%Y/%m')}/{uuid.uuid4().hex}.{ext}"
+        dest = _os.path.join(_MEDIA_ROOT, rel)
+        _os.makedirs(_os.path.dirname(dest), exist_ok=True)
+        with open(dest, "wb") as f:
+            f.write(audio)
+        return rel
+    except Exception as e:
+        log.warning("audio persistence failed: %s", e)
+        return None
+
+
+@app.get("/admin/media/{record_id}")
+async def admin_media(record_id: str):
+    """Stream a stored audio file for omni-admin review. Gated by the
+    internal-token middleware like every non-open GET."""
+    import mimetypes
+    rec = db.get_voice_record(record_id) if hasattr(db, "get_voice_record") else None
+    rel = None
+    if rec:
+        meta = rec.get("metadata") or {}
+        rel = meta.get("audio_path") if isinstance(meta, dict) else None
+    if not rel or ".." in rel or rel.startswith("/"):
+        raise HTTPException(status_code=404, detail="media_not_found")
+    path = _os.path.normpath(_os.path.join(_MEDIA_ROOT, rel))
+    if not path.startswith(_os.path.normpath(_MEDIA_ROOT)) or not _os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="media_not_found")
+    ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=ctype, filename=_os.path.basename(path))
+
+
 
 threading.Thread(target=_hydrate_stats_from_db, daemon=True).start()
 
@@ -555,6 +603,7 @@ async def transcribe_endpoint(
     session_id = request.headers.get("X-VoiceFlow-Session") or request.headers.get("X-Demo-Session-Id")
     duration_sec = trans.get("duration") if isinstance(trans, dict) else None
     title = file.filename or "Transcription"
+    audio_path = _store_audio(audio, file.filename, file.content_type)
     _persist_voice_record(
         session_id=session_id,
         kind="transcription",
@@ -562,7 +611,7 @@ async def transcribe_endpoint(
         duration_sec=duration_sec,
         transcript=trans if isinstance(trans, dict) else {"raw": trans},
         analysis=None,
-        metadata={"provider": provider, "language": language, "diarize": diarize},
+        metadata={"provider": provider, "language": language, "diarize": diarize, "audio_path": audio_path},
     )
     return trans
 
@@ -918,6 +967,17 @@ async def pipeline_endpoint(
         text_for_analysis = trans.get("diarized_text") or trans.get("text", "")
         analysis = await analyzer.analyze(text_for_analysis, analysis_type=analysis_type, language=language)
 
+    audio_path = _store_audio(audio, file.filename, file.content_type)
+    session_id = request.headers.get("X-VoiceFlow-Session") or request.headers.get("X-Demo-Session-Id")
+    _persist_voice_record(
+        session_id=session_id,
+        kind="pipeline",
+        title=file.filename or "Pipeline",
+        duration_sec=(trans.get("duration") if isinstance(trans, dict) else None),
+        transcript=trans if isinstance(trans, dict) else {"raw": trans},
+        analysis=analysis if isinstance(analysis, dict) else None,
+        metadata={"analysis_type": analysis_type, "scenario": scenario, "audio_path": audio_path},
+    )
     stats = _session_stats(request)
     stats["pipeline"] += 1
     if scenario:
