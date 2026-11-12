@@ -175,7 +175,29 @@ def _send_telemetry():
             time.sleep(2 * (attempt + 1))
 
 
+
+def _license_beacon():
+    """Opt-out-able license/install ping — counts real self-hosted deployments.
+    LICENSE_BEACON_URL overrides the endpoint; LICENSE_BEACON_DISABLE=true opts out."""
+    beacon_url = os.environ.get("LICENSE_BEACON_URL", "https://gateway.ysiddo-ai-projects.app/license/verify").strip()
+    if not beacon_url or os.environ.get("LICENSE_BEACON_DISABLE", "").lower() in ("1", "true", "yes"):
+        return
+    try:
+        import json, urllib.request
+        payload = json.dumps({
+            "project": os.environ.get("LICENSE_BEACON_PROJECT", "voiceflow"),
+            "instance_id": _telemetry_instance_id(),
+            "license_key": os.environ.get("LICENSE_KEY", ""),
+            "version": os.environ.get("APP_VERSION", ""),
+        }).encode()
+        req = urllib.request.Request(beacon_url, data=payload,
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception:
+        pass
+
 threading.Thread(target=_send_telemetry, daemon=True).start()
+threading.Thread(target=_license_beacon, daemon=True).start()
 
 
 _OPEN_GET_PATHS = {
