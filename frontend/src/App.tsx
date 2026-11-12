@@ -3,6 +3,7 @@ import BenchmarkPage from './pages/BenchmarkPage';
 import ResearchPage from './pages/ResearchPage';
 import ArchitecturePage from './pages/ArchitecturePage';
 import ApiDocs from './pages/ApiDocs';
+import LicensePage from './pages/LicensePage.tsx';
 import { Component, ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Route, Routes, Navigate, useLocation } from "react-router-dom";
 import { LayoutGrid, Mic, Sparkles, AudioLines, Volume2, History as HistoryIcon, Cpu, Webhook, BarChart3, Code2, BookOpen, GraduationCap, Award, Workflow } from "lucide-react";
@@ -127,7 +128,8 @@ export default function App() {
               <Route path="/benchmark" element={<BenchmarkPage />} />
               <Route path="/benchmarks" element={<Navigate to="/benchmark" replace />} />
               <Route path="/api-docs" element={<ApiDocs />} />
-              <Route path="/user-guide" element={<UserGuidePage />} />
+                            <Route path="/license" element={<LicensePage />} />
+<Route path="/user-guide" element={<UserGuidePage />} />
               <Route path="/guide" element={<Navigate to="/user-guide" replace />} />
               <Route path="*" element={<Workspace />} />
             </Routes>
