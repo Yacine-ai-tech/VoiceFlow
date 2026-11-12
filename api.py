@@ -361,6 +361,27 @@ def _persist_voice_record(
 
 
 _MEDIA_ROOT = _os.environ.get("VOICEFLOW_MEDIA_DIR") or _os.environ.get("FILE_STORAGE_DIR") or "/data/voiceflow_media"
+_S3_CLIENT = None
+
+def _s3():
+    """S3-compatible store (Garage/MinIO/S3) when MEDIA_S3_* envs are set."""
+    global _S3_CLIENT
+    if _S3_CLIENT is None:
+        ep = _os.environ.get("MEDIA_S3_ENDPOINT", "").strip()
+        if not ep:
+            return None
+        try:
+            import boto3
+            from botocore.client import Config
+            _S3_CLIENT = boto3.client("s3", endpoint_url=ep,
+                aws_access_key_id=_os.environ.get("MEDIA_S3_ACCESS_KEY", ""),
+                aws_secret_access_key=_os.environ.get("MEDIA_S3_SECRET_KEY", ""),
+                region_name=_os.environ.get("MEDIA_S3_REGION", "garage"),
+                config=Config(signature_version="s3v4"))
+        except Exception as e:
+            log.warning("S3 client init failed: %s", e)
+            return None
+    return _S3_CLIENT
 _MEDIA_EXT = {
     "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
     "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/mp4": "m4a", "audio/m4a": "m4a",
@@ -379,6 +400,12 @@ def _store_audio(audio: bytes, filename: Optional[str], content_type: Optional[s
             guess = (filename or "").rsplit(".", 1)
             ext = guess[1].lower()[:8] if len(guess) == 2 and guess[1].isalnum() else "bin"
         rel = f"{time.strftime('%Y/%m')}/{uuid.uuid4().hex}.{ext}"
+        s3 = _s3()
+        if s3:
+            ctype = (content_type or "").split(";")[0].strip() or "application/octet-stream"
+            s3.put_object(Bucket=_os.environ.get("MEDIA_S3_BUCKET", "oss-media"), Key=rel,
+                          Body=audio, ContentType=ctype)
+            return rel
         dest = _os.path.join(_MEDIA_ROOT, rel)
         _os.makedirs(_os.path.dirname(dest), exist_ok=True)
         with open(dest, "wb") as f:
@@ -401,6 +428,15 @@ async def admin_media(record_id: str):
         rel = meta.get("audio_path") if isinstance(meta, dict) else None
     if not rel or ".." in rel or rel.startswith("/"):
         raise HTTPException(status_code=404, detail="media_not_found")
+    s3 = _s3()
+    if s3:
+        try:
+            obj = s3.get_object(Bucket=_os.environ.get("MEDIA_S3_BUCKET", "oss-media"), Key=rel)
+            body = obj["Body"].read()
+            ctype = obj.get("ContentType") or mimetypes.guess_type(rel)[0] or "application/octet-stream"
+            return Response(content=body, media_type=ctype)
+        except Exception:
+            raise HTTPException(status_code=404, detail="media_not_found")
     path = _os.path.normpath(_os.path.join(_MEDIA_ROOT, rel))
     if not path.startswith(_os.path.normpath(_MEDIA_ROOT)) or not _os.path.isfile(path):
         raise HTTPException(status_code=404, detail="media_not_found")
