@@ -61,7 +61,10 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /** A random ID this browser generates once and keeps in localStorage — not
  * an account, not PII. Sent as X-VoiceFlow-Session so GET /analytics can
- * scope counters to this visitor and never show anyone else's usage. */
+ * scope counters to this visitor and never show anyone else's usage. The
+ * server upgrades it to a signed "<id>.<hmac>" token (returned in the
+ * X-VoiceFlow-Session-Token response header) which we store here instead —
+ * record reads/deletes only trust the signed form. */
 const SESSION_KEY = "voiceflow.session_id";
 export function getSessionId(): string {
   let id = localStorage.getItem(SESSION_KEY);
@@ -70,6 +73,14 @@ export function getSessionId(): string {
     localStorage.setItem(SESSION_KEY, id);
   }
   return id;
+}
+
+/** Persist the server-minted signed session token (if the response carried
+ * one) so later requests — especially /records reads and deletes, which
+ * require the signed credential — stay scoped to this browser. */
+export function captureSessionToken(res: Response): void {
+  const token = res.headers.get("X-VoiceFlow-Session-Token");
+  if (token) localStorage.setItem(SESSION_KEY, token);
 }
 
 function withSessionHeader(init?: RequestInit): RequestInit {
@@ -83,6 +94,7 @@ function withSessionHeader(init?: RequestInit): RequestInit {
 async function req<T>(path: string, init?: RequestInit, retryCount = 0): Promise<T> {
   try {
     const res = await fetch(BASE + path, withSessionHeader(init));
+    captureSessionToken(res);
     if (!res.ok) {
       if (res.status >= 500 && retryCount < 5) {
         await delay(2000 * (retryCount + 1));

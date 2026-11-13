@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "../kit/AppShell";
 import { Button, Card } from "../kit/primitives";
-import { getSessionId } from "../lib/api";
+import { captureSessionToken, getSessionId } from "../lib/api";
 
 type Role = "user" | "assistant" | "tool";
 
@@ -295,6 +295,7 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
       headers,
       body: offer.sdp || "",
     });
+    captureSessionToken(res);
     if (!res.ok) throw new Error(await res.text());
     await this.pc.setRemoteDescription({ type: "answer", sdp: await res.text() });
     this.cb.onEvent({ type: "provider_ready", provider: "openai", message: "Connected to OpenAI Realtime WebRTC" });
@@ -346,6 +347,7 @@ class OpenAIWebRTCTransport implements RealtimeTransport {
         headers,
         body: JSON.stringify({ name, arguments: args }),
       });
+      captureSessionToken(res);
       const result = await res.json();
       this.cb.onEvent({ type: "tool_result", name, result });
       this.dc.send(
@@ -995,7 +997,9 @@ export default function VoiceAgent() {
       const params = new URLSearchParams();
       if (activeProvider) params.set("provider", activeProvider === "openai_webrtc" ? "openai" : activeProvider);
       const qs = params.toString() ? `?${params.toString()}` : "";
-      const cfg = await fetch(BASE + withAuth("/realtime/config" + qs), { headers: { "X-VoiceFlow-Session": getSessionId() } }).then((r) => r.json());
+      const cfgRes = await fetch(BASE + withAuth("/realtime/config" + qs), { headers: { "X-VoiceFlow-Session": getSessionId() } });
+      captureSessionToken(cfgRes);
+      const cfg = await cfgRes.json();
       const voiceToUse = overrideVoice || selectedVoice;
       const cfgWithVoice: RealtimeConfig = {
         ...cfg,
