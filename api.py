@@ -43,7 +43,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core import db
 from core.config import settings
@@ -103,6 +103,21 @@ app = FastAPI(
 # existing in-memory /analytics counters.
 _http_limiter = RateLimiter(limit=int(_os.getenv("RATE_LIMIT_HTTP_PER_MIN", "30")), window_seconds=60)
 _ws_connect_limiter = RateLimiter(limit=int(_os.getenv("RATE_LIMIT_WS_CONNECTS_PER_MIN", "10")), window_seconds=60)
+
+# Hard cap on any single uploaded payload — every endpoint here is reachable
+# by anyone, so unbounded file.read()/base64 bodies would let a caller exhaust
+# memory. ~4/3 expansion covers base64-encoded audio in /transcribe-json.
+_MAX_UPLOAD_BYTES = int(_os.getenv("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+_MAX_AUDIO_B64_CHARS = ((_MAX_UPLOAD_BYTES + 2) // 3) * 4 + 8
+
+
+async def _read_upload_capped(file: UploadFile) -> bytes:
+    """Read an upload with a hard size cap — rejects oversized bodies with
+    413 instead of buffering them fully into memory."""
+    data = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="file_too_large")
+    return data
 
 
 def _telemetry_instance_id() -> str:
@@ -360,6 +375,21 @@ def _persist_voice_record(
         log.warning("Async voice record persistence error: %s", e)
 
 
+def _duration_from_transcript(trans: Any) -> Optional[float]:
+    """Best-effort clip duration for record persistence: the provider's own
+    `duration` field when present, else the max segment `end` timestamp."""
+    if not isinstance(trans, dict):
+        return None
+    dur = trans.get("duration")
+    if isinstance(dur, (int, float)):
+        return float(dur)
+    ends = [
+        s["end"] for s in (trans.get("segments") or [])
+        if isinstance(s, dict) and isinstance(s.get("end"), (int, float))
+    ]
+    return float(max(ends)) if ends else None
+
+
 _MEDIA_ROOT = _os.environ.get("VOICEFLOW_MEDIA_DIR") or _os.environ.get("FILE_STORAGE_DIR") or "/data/voiceflow_media"
 _S3_CLIENT = None
 
@@ -398,7 +428,11 @@ def _store_audio(audio: bytes, filename: Optional[str], content_type: Optional[s
         ext = _MEDIA_EXT.get((content_type or "").split(";")[0].strip().lower())
         if not ext:
             guess = (filename or "").rsplit(".", 1)
-            ext = guess[1].lower()[:8] if len(guess) == 2 and guess[1].isalnum() else "bin"
+            candidate = guess[1].lower() if len(guess) == 2 else ""
+            # Whitelist to known audio extensions — an arbitrary filename
+            # extension would let a caller store e.g. ".html" and have it
+            # served back from /admin/media.
+            ext = candidate if candidate in set(_MEDIA_EXT.values()) else "bin"
         rel = f"{time.strftime('%Y/%m')}/{uuid.uuid4().hex}.{ext}"
         s3 = _s3()
         if s3:
@@ -432,16 +466,22 @@ async def admin_media(record_id: str):
     if s3:
         try:
             obj = s3.get_object(Bucket=_os.environ.get("MEDIA_S3_BUCKET", "oss-media"), Key=rel)
-            body = obj["Body"].read()
+            # Bound the read — a corrupt/oversized object must not be buffered
+            # fully into memory.
+            body = obj["Body"].read(_MAX_UPLOAD_BYTES + 1)
+            if len(body) > _MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=404, detail="media_not_found")
             ctype = obj.get("ContentType") or mimetypes.guess_type(rel)[0] or "application/octet-stream"
-            return Response(content=body, media_type=ctype)
+            return Response(content=body, media_type=ctype,
+                            headers={"X-Content-Type-Options": "nosniff"})
         except Exception:
             raise HTTPException(status_code=404, detail="media_not_found")
     path = _os.path.normpath(_os.path.join(_MEDIA_ROOT, rel))
     if not path.startswith(_os.path.normpath(_MEDIA_ROOT)) or not _os.path.isfile(path):
         raise HTTPException(status_code=404, detail="media_not_found")
     ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
-    return FileResponse(path, media_type=ctype, filename=_os.path.basename(path))
+    return FileResponse(path, media_type=ctype, filename=_os.path.basename(path),
+                        headers={"X-Content-Type-Options": "nosniff"})
 
 
 
@@ -454,8 +494,12 @@ def _session_id(request: Request) -> str:
         or request.headers.get("X-Demo-Session-Id")
         or request.query_params.get("session_id")
         or "anonymous"
-    )
-    return raw.strip() or "anonymous"
+    ).strip()
+    # Session IDs are caller-controlled keys into the in-memory _stats map —
+    # bound length and charset so arbitrary strings can't grow it unboundedly.
+    if not raw or len(raw) > 128 or not all(c.isalnum() or c in "-_." for c in raw):
+        return "anonymous"
+    return raw
 
 
 def _session_stats(request: Request) -> "_Counter[str]":
@@ -614,7 +658,7 @@ async def ready() -> Dict[str, Any]:
 
 
 class TranscribeJsonRequest(BaseModel):
-    audio_b64: str
+    audio_b64: str = Field(max_length=_MAX_AUDIO_B64_CHARS)
     provider: Optional[str] = None
     language: Optional[str] = None
     diarize: bool = True
@@ -656,10 +700,10 @@ async def transcribe_endpoint(
     language: str = Form("auto"),
     diarize: bool = Form(True),
 ) -> Dict[str, Any]:
-    audio = await file.read()
+    audio = await _read_upload_capped(file)
     trans = await _transcribe_audio(audio, provider=provider, language=language, diarize=diarize)
     session_id = request.headers.get("X-VoiceFlow-Session") or request.headers.get("X-Demo-Session-Id")
-    duration_sec = trans.get("duration") if isinstance(trans, dict) else None
+    duration_sec = _duration_from_transcript(trans)
     title = file.filename or "Transcription"
     audio_path = _store_audio(audio, file.filename, file.content_type)
     _persist_voice_record(
@@ -779,7 +823,7 @@ async def tts_voices_clone_endpoint(
     samples of a voice, get back a voice_id usable via /tts's
     {"provider": "elevenlabs", "voice_id": "..."}. This is the actual
     ElevenLabs differentiator (not just picking between 2 stock voices)."""
-    samples = [await f.read() for f in files]
+    samples = [await _read_upload_capped(f) for f in files]
     try:
         result = await tts_service.clone_elevenlabs_voice(name, samples, description)
     except RuntimeError as e:
@@ -950,9 +994,10 @@ async def list_records_endpoint(
     """Retrieve voice records scoped to the visitor's session with admin bypass for Omni-Admin."""
     effective_session = session_id or x_voiceflow_session or x_demo_session_id or request.query_params.get("session_id") or request.headers.get("X-VoiceFlow-Session")
     admin_secret = os.getenv("ADMIN_TOKEN")
-    is_admin = bool(x_admin_token and admin_secret and x_admin_token == admin_secret)
+    is_admin = bool(x_admin_token and admin_secret and hmac.compare_digest(x_admin_token, admin_secret))
     if effective_session == "*" and not is_admin:
         raise HTTPException(status_code=403, detail="admin_required_for_unscoped_access")
+    limit = max(1, min(limit, 200))
     records = db.list_voice_records(session_id=effective_session, is_admin=is_admin, limit=limit)
     return {"records": records, "count": len(records)}
 
@@ -968,9 +1013,11 @@ async def delete_record_endpoint(
 ) -> Dict[str, Any]:
     effective_session = session_id or x_voiceflow_session or x_demo_session_id or request.query_params.get("session_id") or request.headers.get("X-VoiceFlow-Session")
     admin_secret = os.getenv("ADMIN_TOKEN")
-    is_admin = bool(x_admin_token and admin_secret and x_admin_token == admin_secret)
+    is_admin = bool(x_admin_token and admin_secret and hmac.compare_digest(x_admin_token, admin_secret))
     if effective_session == "*" and not is_admin:
         raise HTTPException(status_code=403, detail="admin_required_for_unscoped_access")
+    if not is_admin and not effective_session:
+        raise HTTPException(status_code=403, detail="session_required")
     success = db.delete_voice_record(record_id, session_id=effective_session, is_admin=is_admin)
     return {"deleted": success, "id": record_id}
 
@@ -985,9 +1032,11 @@ async def clear_records_endpoint(
 ) -> Dict[str, Any]:
     effective_session = session_id or x_voiceflow_session or x_demo_session_id or request.query_params.get("session_id") or request.headers.get("X-VoiceFlow-Session")
     admin_secret = os.getenv("ADMIN_TOKEN")
-    is_admin = bool(x_admin_token and admin_secret and x_admin_token == admin_secret)
+    is_admin = bool(x_admin_token and admin_secret and hmac.compare_digest(x_admin_token, admin_secret))
     if effective_session == "*" and not is_admin:
         raise HTTPException(status_code=403, detail="admin_required_for_unscoped_access")
+    if not is_admin and not effective_session:
+        raise HTTPException(status_code=403, detail="session_required")
     cleared = db.clear_voice_records(session_id=effective_session, is_admin=is_admin)
     return {"cleared": cleared}
 
@@ -1007,7 +1056,7 @@ async def pipeline_endpoint(
     model, with no fallback substitution, for reproducible comparisons.
     See GET /scenarios for the catalog and eval/run_scenario_benchmark.py
     for the comparison harness this feeds."""
-    audio = await file.read()
+    audio = await _read_upload_capped(file)
 
     spec = scenarios.resolve(scenario) if scenario else None
     if scenario and not spec:
@@ -1031,7 +1080,7 @@ async def pipeline_endpoint(
         session_id=session_id,
         kind="pipeline",
         title=file.filename or "Pipeline",
-        duration_sec=(trans.get("duration") if isinstance(trans, dict) else None),
+        duration_sec=_duration_from_transcript(trans),
         transcript=trans if isinstance(trans, dict) else {"raw": trans},
         analysis=analysis if isinstance(analysis, dict) else None,
         metadata={"analysis_type": analysis_type, "scenario": scenario, "audio_path": audio_path},
@@ -1040,19 +1089,6 @@ async def pipeline_endpoint(
     stats["pipeline"] += 1
     if scenario:
         stats[f"scenario:{scenario}"] += 1
-
-    session_id = request.headers.get("X-VoiceFlow-Session") or request.headers.get("X-Demo-Session-Id")
-    duration_sec = trans.get("duration") if isinstance(trans, dict) else None
-    title = file.filename or "Audio Pipeline"
-    _persist_voice_record(
-        session_id=session_id,
-        kind=analysis_type,
-        title=title,
-        duration_sec=duration_sec,
-        transcript=trans if isinstance(trans, dict) else {"raw": trans},
-        analysis=analysis if isinstance(analysis, dict) else {"raw": analysis},
-        metadata={"scenario": scenario, "provider": provider, "language": language},
-    )
 
     return {"transcript": trans, "analysis": analysis, "analysis_type": analysis_type,
             "scenario": scenario}
@@ -1093,7 +1129,7 @@ async def benchmarks_endpoint() -> Dict[str, Any]:
 
 @app.post("/meeting/process")
 async def meeting_process(request: Request, file: UploadFile = File(...)) -> Dict[str, Any]:
-    audio = await file.read()
+    audio = await _read_upload_capped(file)
     trans = await _transcribe_audio(audio, diarize=True)
     text_for_analysis = trans.get("diarized_text") or trans.get("text", "")
     analysis = await analyzer.analyze_meeting(text_for_analysis)
@@ -1103,7 +1139,7 @@ async def meeting_process(request: Request, file: UploadFile = File(...)) -> Dic
 
 @app.post("/call/analyze")
 async def call_analyze(request: Request, file: UploadFile = File(...), call_type: str = Form("sales_call")) -> Dict[str, Any]:
-    audio = await file.read()
+    audio = await _read_upload_capped(file)
     trans = await _transcribe_audio(audio, diarize=True)
     text_for_analysis = trans.get("diarized_text") or trans.get("text", "")
     analysis = await analyzer.analyze(text_for_analysis, analysis_type=call_type)
@@ -1729,6 +1765,8 @@ async def ws_realtime(ws: WebSocket):
                     try:
                         while True:
                             msg = await ws.receive()
+                            if msg.get("type") == "websocket.disconnect":
+                                return
                             msg_text = msg.get("text")
                             msg_bytes = msg.get("bytes")
                             try:
@@ -1906,7 +1944,26 @@ async def ws_realtime(ws: WebSocket):
                         log.warning("Gemini _gemini_to_client relay died mid-turn: %s", e)
                         raise e
 
-                await asyncio.gather(_client_to_gemini(), _gemini_to_client())
+                # When the client task ends (disconnect or upstream error),
+                # cancel the sibling so the Gemini session below is closed
+                # instead of leaking upstream.
+                _relay_tasks = [
+                    asyncio.ensure_future(_client_to_gemini()),
+                    asyncio.ensure_future(_gemini_to_client()),
+                ]
+                _done, _pending = await asyncio.wait(
+                    _relay_tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                for _t in _pending:
+                    _t.cancel()
+                if _pending:
+                    await asyncio.gather(*_pending, return_exceptions=True)
+                for _t in _done:
+                    if _t.cancelled():
+                        continue
+                    _exc = _t.exception()
+                    if _exc is not None:
+                        raise _exc
 
         gemini_keys = settings.GEMINI_API_KEYS or [gemini_key]
         # Start on the next usable key (round-robin across sessions, skipping keys that
@@ -2027,6 +2084,8 @@ async def ws_realtime(ws: WebSocket):
                     try:
                         while True:
                             msg = await ws.receive()
+                            if msg.get("type") == "websocket.disconnect":
+                                return
                             msg_text = msg.get("text")
                             msg_bytes = msg.get("bytes")
 
@@ -2164,7 +2223,28 @@ async def ws_realtime(ws: WebSocket):
                     except Exception:
                         log.exception("OpenAI upstream_to_client error")
 
-                await asyncio.gather(client_to_upstream(), upstream_to_client())
+                # Client disconnect must cancel the upstream relay too —
+                # otherwise the OpenAI websocket stays open until it times
+                # out on its own. FIRST_COMPLETED + cancel pending achieves
+                # that; exiting the `async with websockets.connect` block
+                # then closes the upstream connection.
+                _relay_tasks = [
+                    asyncio.ensure_future(client_to_upstream()),
+                    asyncio.ensure_future(upstream_to_client()),
+                ]
+                _done, _pending = await asyncio.wait(
+                    _relay_tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                for _t in _pending:
+                    _t.cancel()
+                if _pending:
+                    await asyncio.gather(*_pending, return_exceptions=True)
+                for _t in _done:
+                    if _t.cancelled():
+                        continue
+                    _exc = _t.exception()
+                    if _exc is not None:
+                        raise _exc
         except WebSocketDisconnect:
             log.info("realtime openai client disconnected")
         except Exception as e:

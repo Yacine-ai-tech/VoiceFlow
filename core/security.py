@@ -21,6 +21,7 @@ Security helpers shared across api.py:
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 import time
 from collections import defaultdict, deque
@@ -132,10 +133,26 @@ class RateLimiter:
         return True
 
 
+def _trusted_proxy_ips() -> set:
+    """Comma-separated IPs allowed to supply X-Forwarded-For (e.g. the
+    reverse proxy in front of this app). Empty by default: with no trusted
+    proxies configured the header is ignored entirely, so a direct client
+    can't spoof its rate-limit key."""
+    return {
+        ip.strip()
+        for ip in os.getenv("TRUSTED_PROXY_IPS", "").split(",")
+        if ip.strip()
+    }
+
+
 def client_ip(headers, client_host: str) -> str:
-    """Best-effort real client IP behind a reverse proxy — falls back to the
-    direct connection's host if no forwarding header is present (local/dev)."""
-    fwd = headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    """Best-effort real client IP behind a trusted reverse proxy — falls
+    back to the direct connection's host otherwise. X-Forwarded-For is only
+    honored when the direct peer is in TRUSTED_PROXY_IPS; trusting it
+    unconditionally would let any client pick its own rate-limit bucket."""
+    client_host = client_host or ""
+    if client_host and client_host in _trusted_proxy_ips():
+        fwd = headers.get("x-forwarded-for")
+        if fwd:
+            return fwd.split(",")[0].strip()
     return client_host or "unknown"

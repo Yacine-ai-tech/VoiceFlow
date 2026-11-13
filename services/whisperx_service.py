@@ -102,9 +102,13 @@ def _nemo_diarize(audio_path: str) -> Optional[List[Dict[str, Any]]]:
                  "(pip install nemo_toolkit[asr] to enable; see requirements-ml.txt)")
         return None
     try:
+        work_dir = tempfile.mkdtemp(prefix="nemo_diarize_")
+    except Exception as e:
+        log.warning("NeMo diarization failed: %s", e)
+        return None
+    try:
         import json
         import uuid
-        work_dir = tempfile.mkdtemp(prefix="nemo_diarize_")
         uri = f"clip_{uuid.uuid4().hex[:8]}"
         manifest_path = os.path.join(work_dir, "manifest.json")
         with open(manifest_path, "w") as f:
@@ -148,6 +152,9 @@ def _nemo_diarize(audio_path: str) -> Optional[List[Dict[str, Any]]]:
     except Exception as e:
         log.warning("NeMo diarization failed: %s", e)
         return None
+    finally:
+        import shutil
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def diarize_only(audio_bytes: bytes, transcription: Dict[str, Any]) -> Dict[str, Any]:

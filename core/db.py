@@ -63,6 +63,10 @@ def _get_pool():
                 check=ConnectionPool.check_connection,
                 open=False,
             )
+            # open=False defers pool startup; without this the pool stays
+            # closed and every getconn() raises PoolClosed("not open yet").
+            # wait=False returns immediately — connections are created lazily.
+            _pool.open(wait=False)
             log.info("✅ VoiceFlow Neon connection pool initialized (min=2, max=10, pooler enabled)")
     return _pool
 
@@ -284,10 +288,15 @@ def delete_voice_record(record_id: str, session_id: Optional[str] = None, is_adm
         where = "WHERE id = %s"
         if not is_admin:
             if session_id:
-                where += " AND (session_id = %s OR session_id IS NULL)"
+                # Own records only — session_id IS NULL rows are shared
+                # session-less records and must not be deletable by any
+                # session holder (honor-system session IDs aren't proof of
+                # ownership of NULL rows).
+                where += " AND session_id = %s"
                 params.append(session_id)
             else:
-                where += " AND session_id IS NULL"
+                # Anonymous non-admin delete is not permitted at all.
+                return False
 
         with get_conn() as conn:
             cur = conn.execute(f"DELETE FROM voice_records {where}", params)
@@ -311,7 +320,10 @@ def clear_voice_records(session_id: Optional[str] = None, is_admin: bool = False
             where = "WHERE session_id = %s"
             params.append(session_id)
         else:
-            where = "WHERE session_id IS NULL"
+            # Anonymous non-admin clear is not permitted — it would wipe
+            # every session_id IS NULL row (seeds and other session-less
+            # records). Admin token required for unscoped clears.
+            return 0
 
         with get_conn() as conn:
             cur = conn.execute(f"DELETE FROM voice_records {where}", params)
