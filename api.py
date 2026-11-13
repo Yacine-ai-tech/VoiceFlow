@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from contextlib import asynccontextmanager
+import hashlib
 import hmac
 import json
 import os
@@ -56,6 +57,125 @@ from services import tts_service
 from services.tts_service import generate_speech, generate_speech_with_meta
 
 log = get_logger(__name__)
+
+
+# --- Signed session tokens -------------------------------------------------
+# X-VoiceFlow-Session is a client-generated bearer id: anyone who learns or
+# guesses one can read/delete that session's voice records. The server mints
+# an unforgeable credential for it — "<sid>.<hmac_sha256(sid)[:16]>" — and
+# returns it as X-VoiceFlow-Session-Token on every response (the HTTP
+# middleware below attaches it whenever a usable session id is present).
+# Session-scoped record reads/deletes only trust the signed form; the bare
+# id still works for first-contact writes (which are what mint the token)
+# and for the usage counters, but never for record access.
+#
+# Secret priority: SESSION_SIGNING_SECRET, then the existing internal-token
+# envs, then ADMIN_TOKEN. With none configured a random secret is generated
+# once and persisted under LOGS_DIR (same pattern as the telemetry instance
+# id) so tokens survive restarts and are shared by every worker on the host
+# — the secret never leaves the machine and cannot be guessed remotely.
+_LOCAL_SESSION_SECRET: Optional[str] = None
+SESSION_TOKEN_HEADER = "X-VoiceFlow-Session-Token"
+_SESSION_ID_MAX = 128
+
+
+def _session_signing_secret() -> str:
+    env_secret = (
+        _os.environ.get("SESSION_SIGNING_SECRET")
+        or _os.environ.get("VOICEFLOW_INTERNAL_TOKEN")
+        or _os.environ.get("INTERNAL_TOKEN")
+        or _os.environ.get("OMNIINTEL_INTERNAL_TOKEN")
+        or _os.environ.get("ADMIN_TOKEN")
+    )
+    if env_secret:
+        return env_secret.strip()
+    global _LOCAL_SESSION_SECRET
+    if _LOCAL_SESSION_SECRET:
+        return _LOCAL_SESSION_SECRET
+    secret_file = _os.path.join(settings.LOGS_DIR, ".session_signing_secret")
+    try:
+        if _os.path.exists(secret_file):
+            existing = open(secret_file).read().strip()
+            if existing:
+                _LOCAL_SESSION_SECRET = existing
+                return existing
+    except Exception:
+        pass
+    secret = uuid.uuid4().hex + uuid.uuid4().hex
+    try:
+        _os.makedirs(settings.LOGS_DIR, exist_ok=True)
+        fd = _os.open(secret_file, _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
+        with _os.fdopen(fd, "w") as f:
+            f.write(secret)
+    except Exception as e:
+        log.warning("session signing secret persistence failed: %s", e)
+    _LOCAL_SESSION_SECRET = secret
+    return secret
+
+
+def _sign_session_id(session_id: str) -> str:
+    sig = hmac.new(
+        _session_signing_secret().encode(), session_id.encode(), hashlib.sha256
+    ).hexdigest()[:16]
+    return f"{session_id}.{sig}"
+
+
+def _verify_session_token(token: str) -> Optional[str]:
+    """Canonical session id iff `token` is a valid signed credential
+    ("<sid>.<16 hex hmac>"). Bare ids and bad signatures return None."""
+    sid, sep, sig = (token or "").strip().rpartition(".")
+    if not sep or not sid or len(sig) != 16:
+        return None
+    expected = hmac.new(
+        _session_signing_secret().encode(), sid.encode(), hashlib.sha256
+    ).hexdigest()[:16]
+    return sid if hmac.compare_digest(sig, expected) else None
+
+
+def _canonical_session_id(raw: Optional[str]) -> Optional[str]:
+    """Session id safe to persist records under.
+
+    Signed token → verified canonical id; bare client id → accepted (first
+    contact — the response mints its signed token); anything malformed or
+    carrying an invalid signature → None, so the record lands unscoped
+    rather than under an attacker-chosen key."""
+    if not raw:
+        return None
+    raw = raw.strip()
+    if not raw or len(raw) > _SESSION_ID_MAX:
+        return None
+    if "." in raw:
+        return _verify_session_token(raw)
+    if all(c.isalnum() or c in "-_" for c in raw):
+        return raw
+    return None
+
+
+def _request_session_id(request: Request) -> Optional[str]:
+    """Canonical session id for record persistence, from the usual
+    session headers / query param."""
+    return _canonical_session_id(
+        request.headers.get("X-VoiceFlow-Session")
+        or request.headers.get("X-Demo-Session-Id")
+        or request.query_params.get("session_id")
+    )
+
+
+def _trusted_session_id(raw: Optional[str]) -> Optional[str]:
+    """Session id trusted for record reads/deletes — signed form only."""
+    return _verify_session_token(raw) if raw else None
+
+
+def _with_session_token(request: Request, response):
+    """Attach the signed session credential so the client can echo it back
+    on subsequent requests (record reads/deletes require the signed form)."""
+    sid = _request_session_id(request)
+    if sid:
+        try:
+            response.headers[SESSION_TOKEN_HEADER] = _sign_session_id(sid)
+        except Exception:
+            pass
+    return response
 
 
 _stt_ready = asyncio.Event()
@@ -234,7 +354,7 @@ async def verify_internal_token(request: Request, call_next):
             or request.url.path.startswith("/api/v1/auth/")
             or request.url.path.startswith("/assets/")
             or request.url.path.startswith("/static/")):
-        return await call_next(request)
+        return _with_session_token(request, await call_next(request))
 
     ip = client_ip(request.headers, request.client.host if request.client else "")
     if not _http_limiter.allow(ip):
@@ -266,7 +386,7 @@ async def verify_internal_token(request: Request, call_next):
         if not token or not any(hmac.compare_digest(token, exp) for exp in expected_tokens):
             return JSONResponse(status_code=403, content={"detail": "Missing or invalid X-VoiceFlow-Internal-Token"})
 
-    return await call_next(request)
+    return _with_session_token(request, await call_next(request))
 
 
 app.add_middleware(
@@ -279,6 +399,7 @@ app.add_middleware(
         "X-VoiceFlow-TTS-Provider",
         "X-VoiceFlow-Translated",
         "X-VoiceFlow-Translated-Text",
+        "X-VoiceFlow-Session-Token",
     ],
 )
 
@@ -499,7 +620,9 @@ def _session_id(request: Request) -> str:
     # bound length and charset so arbitrary strings can't grow it unboundedly.
     if not raw or len(raw) > 128 or not all(c.isalnum() or c in "-_." for c in raw):
         return "anonymous"
-    return raw
+    # Counters aren't sensitive, but key them by the canonical id so a
+    # signed token and its bare id share one bucket.
+    return _verify_session_token(raw) or raw
 
 
 def _session_stats(request: Request) -> "_Counter[str]":
@@ -702,7 +825,7 @@ async def transcribe_endpoint(
 ) -> Dict[str, Any]:
     audio = await _read_upload_capped(file)
     trans = await _transcribe_audio(audio, provider=provider, language=language, diarize=diarize)
-    session_id = request.headers.get("X-VoiceFlow-Session") or request.headers.get("X-Demo-Session-Id")
+    session_id = _request_session_id(request)
     duration_sec = _duration_from_transcript(trans)
     title = file.filename or "Transcription"
     audio_path = _store_audio(audio, file.filename, file.content_type)
@@ -850,7 +973,7 @@ async def tts_voices_delete_endpoint(voice_id: str) -> Dict[str, Any]:
 async def analyze_endpoint(req: AnalyzeRequest, request: Request) -> Dict[str, Any]:
     _session_stats(request)[f"analyze:{req.analysis_type}"] += 1
     analysis = await analyzer.analyze(req.text, analysis_type=req.analysis_type, language=req.language)
-    session_id = request.headers.get("X-VoiceFlow-Session") or request.headers.get("X-Demo-Session-Id")
+    session_id = _request_session_id(request)
     title = req.text[:40].strip() + ("..." if len(req.text) > 40 else "")
     _persist_voice_record(
         session_id=session_id,
@@ -991,14 +1114,21 @@ async def list_records_endpoint(
     x_demo_session_id: Optional[str] = Header(default=None, alias="X-Demo-Session-Id"),
     x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
 ) -> Dict[str, Any]:
-    """Retrieve voice records scoped to the visitor's session with admin bypass for Omni-Admin."""
+    """Retrieve voice records scoped to the visitor's session with admin bypass for Omni-Admin.
+
+    Session scope requires the server-minted signed token
+    (X-VoiceFlow-Session-Token, echoed back as the session header value) —
+    a bare/self-asserted session id no longer grants access to that
+    session's records; it degrades to the shared anonymous view (seed
+    rows), same as sending no session at all."""
     effective_session = session_id or x_voiceflow_session or x_demo_session_id or request.query_params.get("session_id") or request.headers.get("X-VoiceFlow-Session")
     admin_secret = os.getenv("ADMIN_TOKEN")
     is_admin = bool(x_admin_token and admin_secret and hmac.compare_digest(x_admin_token, admin_secret))
     if effective_session == "*" and not is_admin:
         raise HTTPException(status_code=403, detail="admin_required_for_unscoped_access")
     limit = max(1, min(limit, 200))
-    records = db.list_voice_records(session_id=effective_session, is_admin=is_admin, limit=limit)
+    session_scope = None if is_admin else _trusted_session_id(effective_session)
+    records = db.list_voice_records(session_id=session_scope, is_admin=is_admin, limit=limit)
     return {"records": records, "count": len(records)}
 
 
@@ -1016,9 +1146,17 @@ async def delete_record_endpoint(
     is_admin = bool(x_admin_token and admin_secret and hmac.compare_digest(x_admin_token, admin_secret))
     if effective_session == "*" and not is_admin:
         raise HTTPException(status_code=403, detail="admin_required_for_unscoped_access")
-    if not is_admin and not effective_session:
-        raise HTTPException(status_code=403, detail="session_required")
-    success = db.delete_voice_record(record_id, session_id=effective_session, is_admin=is_admin)
+    if not is_admin:
+        # Deletes are destructive — require the signed session credential;
+        # a bare/self-asserted id is rejected outright.
+        session_scope = _trusted_session_id(effective_session)
+        if effective_session and not session_scope:
+            raise HTTPException(status_code=403, detail="invalid_session_token")
+        if not session_scope:
+            raise HTTPException(status_code=403, detail="session_required")
+    else:
+        session_scope = effective_session
+    success = db.delete_voice_record(record_id, session_id=session_scope, is_admin=is_admin)
     return {"deleted": success, "id": record_id}
 
 
@@ -1035,9 +1173,16 @@ async def clear_records_endpoint(
     is_admin = bool(x_admin_token and admin_secret and hmac.compare_digest(x_admin_token, admin_secret))
     if effective_session == "*" and not is_admin:
         raise HTTPException(status_code=403, detail="admin_required_for_unscoped_access")
-    if not is_admin and not effective_session:
-        raise HTTPException(status_code=403, detail="session_required")
-    cleared = db.clear_voice_records(session_id=effective_session, is_admin=is_admin)
+    if not is_admin:
+        # Same signed-credential requirement as single-record delete.
+        session_scope = _trusted_session_id(effective_session)
+        if effective_session and not session_scope:
+            raise HTTPException(status_code=403, detail="invalid_session_token")
+        if not session_scope:
+            raise HTTPException(status_code=403, detail="session_required")
+    else:
+        session_scope = effective_session
+    cleared = db.clear_voice_records(session_id=session_scope, is_admin=is_admin)
     return {"cleared": cleared}
 
 
@@ -1075,7 +1220,7 @@ async def pipeline_endpoint(
         analysis = await analyzer.analyze(text_for_analysis, analysis_type=analysis_type, language=language)
 
     audio_path = _store_audio(audio, file.filename, file.content_type)
-    session_id = request.headers.get("X-VoiceFlow-Session") or request.headers.get("X-Demo-Session-Id")
+    session_id = _request_session_id(request)
     _persist_voice_record(
         session_id=session_id,
         kind="pipeline",
@@ -1222,7 +1367,9 @@ async def ws_stream(ws: WebSocket):
         await ws.close(code=4429 if reason == "rate_limited" else 4403, reason=reason)
         return
     await ws.accept()
-    session_stats = _stats[ws.query_params.get("session", "anonymous").strip() or "anonymous"]
+    # Same canonicalization as HTTP sessions: a signed token maps back to
+    # its bare id, anything malformed falls into the shared "anonymous" bucket.
+    session_stats = _stats[_canonical_session_id(ws.query_params.get("session")) or "anonymous"]
     buf = bytearray()
     provider = ws.query_params.get("provider") or None
     language = ws.query_params.get("language") or "auto"
