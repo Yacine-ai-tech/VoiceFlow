@@ -1,24 +1,26 @@
-import UserGuidePage from './pages/UserGuidePage';
-import BenchmarkPage from './pages/BenchmarkPage';
-import ResearchPage from './pages/ResearchPage';
-import ArchitecturePage from './pages/ArchitecturePage';
-import ApiDocs from './pages/ApiDocs';
-import LicensePage from './pages/LicensePage.tsx';
-import { Component, ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Component, ReactNode, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Route, Routes, Navigate, useLocation } from "react-router-dom";
 import { LayoutGrid, Mic, Sparkles, AudioLines, Volume2, History as HistoryIcon, Cpu, Webhook, BarChart3, Code2, BookOpen, GraduationCap, Award, Workflow } from "lucide-react";
 import { AppShell } from "./kit/AppShell";
 import { WakingBackend } from "./kit/misc";
+import { Skeleton } from "./kit/primitives";
 import { api } from "./lib/api";
-import Workspace from "./pages/Workspace";
-import Record from "./pages/Record";
-import Analyze from "./pages/Analyze";
-import VoiceAgent from "./pages/VoiceAgent";
-import Speech from "./pages/Speech";
-import History from "./pages/History";
-import Models from "./pages/Models";
-import Integrations from "./pages/Integrations";
-import Analytics from "./pages/Analytics";
+
+const Workspace = lazy(() => import("./pages/Workspace"));
+const Record = lazy(() => import("./pages/Record"));
+const Analyze = lazy(() => import("./pages/Analyze"));
+const VoiceAgent = lazy(() => import("./pages/VoiceAgent"));
+const Speech = lazy(() => import("./pages/Speech"));
+const History = lazy(() => import("./pages/History"));
+const Models = lazy(() => import("./pages/Models"));
+const Integrations = lazy(() => import("./pages/Integrations"));
+const Analytics = lazy(() => import("./pages/Analytics"));
+const ArchitecturePage = lazy(() => import("./pages/ArchitecturePage"));
+const ResearchPage = lazy(() => import("./pages/ResearchPage"));
+const BenchmarkPage = lazy(() => import("./pages/BenchmarkPage"));
+const UserGuidePage = lazy(() => import("./pages/UserGuidePage"));
+const ApiDocs = lazy(() => import("./pages/ApiDocs"));
+const LicensePage = lazy(() => import("./pages/LicensePage"));
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -113,26 +115,28 @@ export default function App() {
           <WakingBackend waking={attempts < 6} onRetry={() => setAttempts(0)} />
         ) : (
           <RouteErrorBoundary>
-            <Routes>
-              <Route path="/" element={<Workspace />} />
-              <Route path="/record" element={<Record />} />
-              <Route path="/analyze" element={<Analyze />} />
-              <Route path="/agent" element={<VoiceAgent />} />
-              <Route path="/speech" element={<Speech />} />
-              <Route path="/integrations" element={<Integrations />} />
-              <Route path="/analytics" element={<Analytics />} />
-              <Route path="/history" element={<History />} />
-              <Route path="/models" element={<Models />} />
-              <Route path="/architecture" element={<ArchitecturePage />} />
-              <Route path="/research" element={<ResearchPage />} />
-              <Route path="/benchmark" element={<BenchmarkPage />} />
-              <Route path="/benchmarks" element={<Navigate to="/benchmark" replace />} />
-              <Route path="/api-docs" element={<ApiDocs />} />
-                            <Route path="/license" element={<LicensePage />} />
-<Route path="/user-guide" element={<UserGuidePage />} />
-              <Route path="/guide" element={<Navigate to="/user-guide" replace />} />
-              <Route path="*" element={<Workspace />} />
-            </Routes>
+            <Suspense fallback={<Skeleton className="h-64 w-full" />}>
+              <Routes>
+                <Route path="/" element={<Workspace />} />
+                <Route path="/record" element={<Record />} />
+                <Route path="/analyze" element={<Analyze />} />
+                <Route path="/agent" element={<VoiceAgent />} />
+                <Route path="/speech" element={<Speech />} />
+                <Route path="/integrations" element={<Integrations />} />
+                <Route path="/analytics" element={<Analytics />} />
+                <Route path="/history" element={<History />} />
+                <Route path="/models" element={<Models />} />
+                <Route path="/architecture" element={<ArchitecturePage />} />
+                <Route path="/research" element={<ResearchPage />} />
+                <Route path="/benchmark" element={<BenchmarkPage />} />
+                <Route path="/benchmarks" element={<Navigate to="/benchmark" replace />} />
+                <Route path="/api-docs" element={<ApiDocs />} />
+                <Route path="/license" element={<LicensePage />} />
+                <Route path="/user-guide" element={<UserGuidePage />} />
+                <Route path="/guide" element={<Navigate to="/user-guide" replace />} />
+                <Route path="*" element={<Workspace />} />
+              </Routes>
+            </Suspense>
           </RouteErrorBoundary>
         )}
       </AppShell>
