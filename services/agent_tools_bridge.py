@@ -519,7 +519,7 @@ async def fetch_resource(uri: str) -> Dict[str, Any]:
 
 # ── Prompt invocation ─────────────────────────────────────────────────────────
 
-async def invoke_prompt(name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def invoke_prompt(name: str, arguments: Optional[Dict[str, Any]] = None, target_url: Optional[str] = None) -> Dict[str, Any]:
     """Invoke a named prompt template from the agent tools service.
 
     Returns {"name", "content"} where `content` is the rendered prompt string,
@@ -532,7 +532,7 @@ async def invoke_prompt(name: str, arguments: Optional[Dict[str, Any]] = None) -
       if "content" in prompt:
           session_instructions += "\\n\\n" + prompt["content"]
     """
-    base = settings.AGENT_TOOLS_URL
+    base = (target_url or settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
     if not base:
         return {"error": "agent_tools_url_not_configured"}
 

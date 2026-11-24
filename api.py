@@ -1727,19 +1727,55 @@ async def ws_realtime(ws: WebSocket):
         # "start a new session" — the normal case for a first connect.
         _resume_handle = ws.query_params.get("resume") or None
 
-        # The system instruction is intentionally domain-agnostic: it must not bias
-        # the model toward any specific tool category because the available tools
-        # are discovered dynamically from agent_tools_bridge and can be anything
-        # (business intelligence, task management, communications, CRM, search, custom APIs).
-        # The model reads each tool's own description to determine when to invoke it.
+        # Dynamic persona resolution & language adherence
+        _caller_lang = (ws.query_params.get("lang") or ws.query_params.get("language") or "").strip().lower()
+        _persona_content = ""
+        if _agent_tools_url:
+            try:
+                _prompt_data = await asyncio.wait_for(
+                    agent_tools_bridge.invoke_prompt("portfolio_voice_persona", target_url=_agent_tools_url),
+                    timeout=2.0
+                )
+                if isinstance(_prompt_data, dict) and _prompt_data.get("content"):
+                    _persona_content = _prompt_data["content"].strip()
+            except Exception as _p_err:
+                log.debug("portfolio_voice_persona fetch failed or timed out: %s", _p_err)
+
+        if not _persona_content:
+            _persona_content = (
+                "You are the official voice agent of Yaçine Seybou Siddo. Yaçine is an independent AI systems engineer, "
+                "researcher, educator, and entrepreneur based in Niger. He has shipped six production-grade open-source systems: "
+                "IntelAI, RAGeval, DocIntel, StreamPulse, VoiceFlow, and AgentKit, and is building his first entrepreneurial venture Cibiyar Karatu.\n"
+                "CRITICAL GUARDRAIL: Never mention unreleased or internal research blocks (such as Ancre, Falaisa, Gargi). "
+                "Never offer freelance services, consulting packages, or pricing roadmaps."
+            )
+
+        if _caller_lang.startswith("en"):
+            _lang_rule = (
+                "LANGUAGE REQUIREMENT (MANDATORY):\n"
+                "The caller interface is set to English. You MUST respond EXCLUSIVELY in fluent, natural English. "
+                "Do not switch or drift to French or other languages unless the user explicitly asks to speak in French."
+            )
+        elif _caller_lang.startswith("fr"):
+            _lang_rule = (
+                "EXIGENCE LINGUISTIQUE (OBLIGATOIRE):\n"
+                "L'interface du visiteur est en français. Vous DEVEZ répondre EXCLUSIVEMENT en français fluide et naturel. "
+                "Ne basculez pas vers l'anglais sauf demande explicite du visiteur."
+            )
+        else:
+            _lang_rule = (
+                "LANGUAGE DISCIPLINE:\n"
+                "Speak fluently, warmly, and empathetically in French or English — the caller's language. Follow the caller's spoken language naturally."
+            )
+
         _system_instruction = (
-            "You are VoiceFlow's voice agent — a natural, fluent, and concise spoken AI assistant. "
-            "Speak fluently, warmly, and empathetically in French or English — the caller's language. If the caller switches between French and English mid-conversation, follow them naturally. "
-            "Never translate unless the caller explicitly asks. If speech is unclear or in another language, ask for clarification in the same language rather than guessing.\n\n"
+            f"{_persona_content}\n\n"
+            f"{_lang_rule}\n\n"
             "CRITICAL CONVERSATIONAL RULES:\n"
-            "1. CONVERSATION FIRST: You are primarily a conversational voice assistant. For greetings ('hello', 'bonjour', 'salut', 'hi', 'how are you'), "
-            "pleasantries, introductions, small talk, chit-chat, opinions, explanations, or general knowledge questions (math, science, history, coding, languages), "
-            "NEVER call any tool. Answer directly, warmly, and naturally in 1-2 conversational sentences using your own voice.\n"
+            "1. CONVERSATION FIRST & AUTHORITATIVE KNOWLEDGE: You are primarily a conversational voice assistant. "
+            "For questions about Yaçine Seybou Siddo, his background, his six open-source systems (IntelAI, RAGeval, DocIntel, StreamPulse, VoiceFlow, AgentKit), "
+            "his venture Cibiyar Karatu, or general greetings and discussions, speak authoritatively and directly from your briefing in 1-3 conversational spoken sentences. "
+            "Do NOT call tools for basic introductions or general overview questions.\n"
             "2. STRICT TOOL USAGE: You have access to optional external tools. Invoke a tool ONLY if the user explicitly and unambiguously requests "
             "live data or an external action that specifically matches an available tool's description. If the user's intent does not clearly require an external tool, "
             "DO NOT call any tool — simply respond conversationally.\n"
