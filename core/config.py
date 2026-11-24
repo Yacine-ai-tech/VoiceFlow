@@ -327,6 +327,15 @@ class Settings:
         return os.getenv("AGENT_TOOLS_URL", "").rstrip("/")
 
     @property
+    def ALLOWED_AGENT_TOOLS_URLS(self) -> list[str]:
+        raw = os.getenv("ALLOWED_AGENT_TOOLS_URLS", "")
+        urls = [u.strip().rstrip("/") for u in raw.split(",") if u.strip()]
+        default_url = self.AGENT_TOOLS_URL
+        if default_url and default_url not in urls:
+            urls.append(default_url)
+        return urls
+
+    @property
     def AGENT_TOOLS_CACHE_TTL(self) -> int:
         return int(os.getenv("AGENT_TOOLS_CACHE_TTL", "300"))
 

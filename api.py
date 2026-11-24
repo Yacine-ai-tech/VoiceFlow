@@ -1429,9 +1429,12 @@ async def ws_stream(ws: WebSocket):
 def _configured_agent_tools_url(candidate: Optional[str] = None) -> str:
     configured = (settings.AGENT_TOOLS_URL or "").strip().rstrip("/")
     requested = (candidate or "").strip().rstrip("/")
-    if requested and requested != configured:
-        raise HTTPException(status_code=400, detail="custom_agent_tools_url_not_allowed")
-    return configured
+    if not requested:
+        return configured
+    allowed = getattr(settings, "ALLOWED_AGENT_TOOLS_URLS", [configured])
+    if requested in allowed:
+        return requested
+    raise HTTPException(status_code=400, detail="custom_agent_tools_url_not_allowed")
 
 
 @app.get("/realtime/config")
@@ -1727,54 +1730,45 @@ async def ws_realtime(ws: WebSocket):
         # "start a new session" — the normal case for a first connect.
         _resume_handle = ws.query_params.get("resume") or None
 
-        # Dynamic persona resolution & language adherence
-        _caller_lang = (ws.query_params.get("lang") or ws.query_params.get("language") or "").strip().lower()
-        _persona_content = ""
-        if _agent_tools_url:
+        # ── Dynamic prompt resolution & language configuration ──
+        _requested_prompt = (ws.query_params.get("prompt") or _os.getenv("DEFAULT_VOICE_PROMPT") or "").strip()
+        _prompt_content = ""
+        if _agent_tools_url and _requested_prompt:
             try:
                 _prompt_data = await asyncio.wait_for(
-                    agent_tools_bridge.invoke_prompt("portfolio_voice_persona", target_url=_agent_tools_url),
+                    agent_tools_bridge.invoke_prompt(_requested_prompt, target_url=_agent_tools_url),
                     timeout=2.0
                 )
                 if isinstance(_prompt_data, dict) and _prompt_data.get("content"):
-                    _persona_content = _prompt_data["content"].strip()
+                    _prompt_content = _prompt_data["content"].strip()
             except Exception as _p_err:
-                log.debug("portfolio_voice_persona fetch failed or timed out: %s", _p_err)
+                log.debug("Prompt '%s' fetch failed or timed out: %s", _requested_prompt, _p_err)
 
-        if not _persona_content:
-            _persona_content = (
-                "You are the official voice agent of Yaçine Seybou Siddo. Yaçine is an independent AI systems engineer, "
-                "researcher, educator, and entrepreneur based in Niger. He builds production-grade open-source AI systems, "
-                "conducts applied research, and is building his first venture Cibiyar Karatu.\n"
-                "Ground all answers in verified facts and published records from the portfolio context. For items not yet marked published or visible, do not disclose unpublished internal details."
+        if not _prompt_content:
+            _prompt_content = (
+                "You are VoiceFlow's voice agent — a natural, fluent, and concise spoken AI assistant."
             )
 
-        if _caller_lang.startswith("en"):
+        _caller_lang = (ws.query_params.get("lang") or ws.query_params.get("language") or "").strip()
+        if _caller_lang:
             _lang_rule = (
-                "LANGUAGE REQUIREMENT (MANDATORY):\n"
-                "The caller interface is set to English. You MUST respond EXCLUSIVELY in fluent, natural English. "
-                "Do not switch or drift to French or other languages unless the user explicitly asks to speak in French."
-            )
-        elif _caller_lang.startswith("fr"):
-            _lang_rule = (
-                "EXIGENCE LINGUISTIQUE (OBLIGATOIRE):\n"
-                "L'interface du visiteur est en français. Vous DEVEZ répondre EXCLUSIVEMENT en français fluide et naturel. "
-                "Ne basculez pas vers l'anglais sauf demande explicite du visiteur."
+                f"LANGUAGE REQUIREMENT (MANDATORY):\n"
+                f"The caller interface language is '{_caller_lang}'. You MUST respond EXCLUSIVELY in fluent, natural {_caller_lang}. "
+                "Do not switch or drift to other languages unless the caller explicitly asks to switch languages."
             )
         else:
             _lang_rule = (
                 "LANGUAGE DISCIPLINE:\n"
-                "Speak fluently, warmly, and empathetically in French or English — the caller's language. Follow the caller's spoken language naturally."
+                "Speak fluently, warmly, and empathetically in French or English — the caller's language. If the caller switches languages mid-conversation, follow them naturally."
             )
 
         _system_instruction = (
-            f"{_persona_content}\n\n"
+            f"{_prompt_content}\n\n"
             f"{_lang_rule}\n\n"
             "CRITICAL CONVERSATIONAL RULES:\n"
-            "1. CONVERSATION FIRST & AUTHORITATIVE KNOWLEDGE: You are primarily a conversational voice assistant. "
-            "For questions about Yaçine Seybou Siddo, his background, his open-source systems, his venture Cibiyar Karatu, "
-            "or general greetings and discussions, speak authoritatively and directly from your briefing in 1-3 conversational spoken sentences. "
-            "Do NOT call tools for basic introductions or general overview questions.\n"
+            "1. CONVERSATION FIRST: You are primarily a conversational voice assistant. For greetings, pleasantries, "
+            "introductions, small talk, chit-chat, opinions, explanations, or general knowledge questions, "
+            "NEVER call any tool. Answer directly, warmly, and naturally in 1-2 conversational sentences using your own voice.\n"
             "2. STRICT TOOL USAGE: You have access to optional external tools. Invoke a tool ONLY if the user explicitly and unambiguously requests "
             "live data or an external action that specifically matches an available tool's description. If the user's intent does not clearly require an external tool, "
             "DO NOT call any tool — simply respond conversationally.\n"
