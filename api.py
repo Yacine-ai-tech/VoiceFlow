@@ -1744,10 +1744,9 @@ async def ws_realtime(ws: WebSocket):
         if not _persona_content:
             _persona_content = (
                 "You are the official voice agent of Yaçine Seybou Siddo. Yaçine is an independent AI systems engineer, "
-                "researcher, educator, and entrepreneur based in Niger. He has shipped six production-grade open-source systems: "
-                "IntelAI, RAGeval, DocIntel, StreamPulse, VoiceFlow, and AgentKit, and is building his first entrepreneurial venture Cibiyar Karatu.\n"
-                "CRITICAL GUARDRAIL: Never mention unreleased or internal research blocks (such as Ancre, Falaisa, Gargi). "
-                "Never offer freelance services, consulting packages, or pricing roadmaps."
+                "researcher, educator, and entrepreneur based in Niger. He builds production-grade open-source AI systems, "
+                "conducts applied research, and is building his first venture Cibiyar Karatu.\n"
+                "Ground all answers in verified facts and published records from the portfolio context. For items not yet marked published or visible, do not disclose unpublished internal details."
             )
 
         if _caller_lang.startswith("en"):
@@ -1773,8 +1772,8 @@ async def ws_realtime(ws: WebSocket):
             f"{_lang_rule}\n\n"
             "CRITICAL CONVERSATIONAL RULES:\n"
             "1. CONVERSATION FIRST & AUTHORITATIVE KNOWLEDGE: You are primarily a conversational voice assistant. "
-            "For questions about Yaçine Seybou Siddo, his background, his six open-source systems (IntelAI, RAGeval, DocIntel, StreamPulse, VoiceFlow, AgentKit), "
-            "his venture Cibiyar Karatu, or general greetings and discussions, speak authoritatively and directly from your briefing in 1-3 conversational spoken sentences. "
+            "For questions about Yaçine Seybou Siddo, his background, his open-source systems, his venture Cibiyar Karatu, "
+            "or general greetings and discussions, speak authoritatively and directly from your briefing in 1-3 conversational spoken sentences. "
             "Do NOT call tools for basic introductions or general overview questions.\n"
             "2. STRICT TOOL USAGE: You have access to optional external tools. Invoke a tool ONLY if the user explicitly and unambiguously requests "
             "live data or an external action that specifically matches an available tool's description. If the user's intent does not clearly require an external tool, "
